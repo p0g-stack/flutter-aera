@@ -1,0 +1,48 @@
+From 62fb39339546a27ac42f3d363c3995d44e5d1d76 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 20:55:03 +0000
+Subject: [PATCH 16/16] aeraui: take an RPC request whose writer already hung
+ up
+
+RunFrame polls AERA's RPC input FIFO for POLLIN only. When a frame reads
+a request after its writer has written but before it closes,
+HandleInput() buffers the bytes and waits for EOF. Once the writer
+closes, a FIFO with no data left reports only POLLHUP, so the request
+sits in the buffer until the next client writes; that client's bytes
+are then appended and it gets the earlier request's answer. A shell
+client (printf > /system/bin/aerain) hits the window often:
+
+  plugin open: no answer for minutes, the counter opens only when the
+  next request (op mirror) arrives, which then receives
+  {"event":"log","id":"lab","text":"Opening counter\n"}
+  and never runs itself.
+
+Treat POLLHUP like POLLIN so the read sees the EOF and the request is
+dispatched at once. Rearm() reopens the FIFO for every request, and
+Linux reports no POLLHUP on a FIFO that no writer has opened since, so an
+idle channel does not wake the loop.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/core/engine.cpp | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
+index a82290d..77bf86a 100644
+--- a/aeraui/core/engine.cpp
++++ b/aeraui/core/engine.cpp
+@@ -461,7 +461,9 @@ public:
+     const int rpc_fd = aera::rpc::Channel::InputFd();
+     if (rpc_fd >= 0) {
+       pollfd rpc{rpc_fd, POLLIN, 0};
+-      if (poll(&rpc, 1, 0) > 0 && (rpc.revents & POLLIN))
++      // A writer that closes between two frames leaves only POLLHUP: the
++      // request is already buffered and its end is that hang-up.
++      if (poll(&rpc, 1, 0) > 0 && (rpc.revents & (POLLIN | POLLHUP)))
+         aera::rpc::Channel::HandleInput();
+     }
+     const int cancel_fd = aera::rpc::Channel::CancelFd();
+-- 
+2.43.0
+

@@ -32,6 +32,7 @@ Cuttlefish image.
 | 0013 | `minuitwrp/graphics_drm.cpp`: without a Qualcomm SDE topology, scan out on the CRTC's own primary plane with one layer mixer (devicelab D3) |
 | 0014 | `task_profiles.json` required and packed on every build, so logd stops aborting (devicelab D4) |
 | 0015 | pixel plugin scene: a contact in the side-edge zone is Back only once it swipes inward; taps there reach the plugin (devicelab D5) |
+| 0016 | `aeraui/core/engine.cpp`: take an RPC request whose writer already hung up (POLLHUP), so a request is never left waiting for the next client (devicelab D6) |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as
