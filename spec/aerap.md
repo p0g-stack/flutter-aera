@@ -47,6 +47,18 @@ Host API 2's schema (`plugin_manager.cpp`):
   pair. Add `network` or `audio-output` only when the app needs them
   (**ASSUMED** names).
 
+### Who sets which field
+
+| Fields | Source |
+| --- | --- |
+| `id`, `name`, `version`, `description`, optional `icon` | the app's `aera/plugin.json` |
+| extra `permissions` (`network`, `audio-output`) | the app's `aera/plugin.json`, merged after the fixed four |
+| `schema`, `type`, `entry`, `executable`, `min_host_api`, `protocol_version`, `payload`, base `permissions` | fixed by the packer, as above |
+| `payload_size`, `payload_sha256`, `expanded_size`, `expanded_sha256`, `member_count` | computed by the packer from `runtime.xz` |
+| `payload_url` | where `runtime.xz` is published; any https URL for local installs |
+
+The packer also writes a copy of `plugin.json` next to the `.aerap`.
+
 ## Payload (`runtime.xz`)
 
 xz (CRC32 check, ARM64 BCJ filter) of AERA's runtime stream: `AERAWEB1`, a
@@ -67,6 +79,10 @@ usr/share/flutter/flutter_assets/    the app's assets (+ kernel_blob.bin for deb
 usr/share/flutter/icudtl.dat         ICU data matching the engine
 etc/ssl/certs/ca-certificates.crt    CA bundle for Dart's HttpClient
 ```
+
+The runtime kit (embedder, launcher, engine, loader, glibc, Mesa, CA
+bundle) comes from flutter-aera releases; the app contributes only
+`flutter_assets` and, for AOT builds, `libapp.so`.
 
 `aera-plugin` binds AERA's fonts (`/twres/fonts`) at `/usr/share/fonts` and
 the payload's CA bundle at `/etc/ssl/certs` in a private mount namespace,
