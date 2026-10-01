@@ -61,11 +61,23 @@ The packer also writes a copy of `plugin.json` next to the `.aerap`.
 
 ## Payload (`runtime.xz`)
 
-xz (CRC32 check, ARM64 BCJ filter) of AERA's runtime stream: `AERAWEB1`, a
-little-endian u32 member count, then per member a `u16 name length`,
-`u16 mode` (0644 or 0755), `u64 size`, the name, padding to 4 bytes, the
-bytes. Regular files only, no symlinks, ≤ 4096 members, ≤ 100 MiB each,
-≤ 512 MiB compressed and expanded.
+xz (CRC32 check, ARM64 BCJ filter) of AERA's runtime stream, all integers
+little-endian:
+
+- `AERAWEB1`, then a u32 member count.
+- Per member: a 12-byte header (`u16` name length 1–239, `u16` mode 0644
+  or 0755, `u64` size), the name, then zero bytes until the **stream
+  offset** (bytes since the start of the uncompressed stream) is a multiple
+  of 4, then the body. There is no padding after a body.
+
+Padding is relative to the stream, not to the member header: once a body
+length is not a multiple of 4 the two differ, and AERA's reader
+(`aeraui/features/browser/runtime.cpp`, `Extract()`, at abf3316) rejects
+the package. Devicelab's `aera/tools/aerap.py` matches that reader.
+
+Regular files only (AERA's mode 0, an alias whose body is the target path,
+is not used), ≤ 4096 members, ≤ 100 MiB each, ≤ 512 MiB compressed and
+expanded.
 
 The expanded tree (`AERA_PLUGIN_ROOT`):
 
