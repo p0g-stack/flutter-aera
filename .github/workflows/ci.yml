@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libclang-dev libegl1 libegl-mesa0 libgles2
       - run: cargo test --workspace
-      - name: Simulator: counter, hot reload, text input
+      - name: "Simulator: counter, hot reload, text input"
         run: |
           curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.5-stable.tar.xz | tar -C "$RUNNER_TEMP" -xJ
           export PATH=$RUNNER_TEMP/flutter/bin:$PATH
