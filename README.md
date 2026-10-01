@@ -24,7 +24,7 @@ In: engine hosting, renderers, the AERA host transport and its spec, the
 standard-channel handlers, the static launcher, the host simulator, engine /
 Mesa / runtime-kit builds (CI), an example `.aerap`.
 
-Out: anything an app links, the app-developer tool (`flutterp0g_tool`, which
+Out: anything an app links, the app-developer tool (`flutter_p0g`, which
 builds, packs and runs `.aerap`s and adds the `aera/` platform folder), app code.
 
 ## Nest (proposed)
