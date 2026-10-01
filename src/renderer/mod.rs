@@ -7,10 +7,11 @@
 //!   lavapipe on a PC).
 //!
 //! Either draws with Skia, or Impeller with `--enable-impeller` (the
-//! engine's own switch, as on GTK), and copies the whole frame into the slot.
-//! Planned: cheaper copies, then dma-buf slots imported as render targets
-//! once AERA offers them (demo#1 item 9).
+//! engine's own switch, as on GTK). Skia on GL repaints and copies only what
+//! changed ([`damage`]); the rest copy whole frames. Planned: dma-buf slots
+//! imported as render targets once AERA offers them (demo#1 item 9).
 
+pub mod damage;
 pub mod gl;
 pub mod vk;
 

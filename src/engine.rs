@@ -18,6 +18,7 @@ use crate::ffi::{self, FlutterEngineProcTable, FlutterTask, FLUTTER_ENGINE_VERSI
 use crate::handlers::{self, Effect, Handlers};
 use crate::host::{kind, lifecycle, Control, Message, Slots};
 use crate::renderer::gl::{self, Gl};
+use crate::renderer::damage::{Damage, Rect};
 use crate::renderer::vk::Vk;
 use crate::renderer::Renderer;
 use crate::task_runner::TaskRunner;
@@ -63,12 +64,17 @@ struct Shared {
     control: Control,
     slots: Slots,
     renderer: Renderer,
+    /// What each slot still lacks (GL with partial repaint).
+    damage: Mutex<Damage>,
     runner: TaskRunner,
     view: Mutex<View>,
     handlers: Mutex<Handlers>,
     vsync: Mutex<Vsync>,
     exit: AtomicBool,
     frames: std::sync::atomic::AtomicU64,
+    /// Copy cost: nanoseconds and pixels, for the shutdown log.
+    copy_ns: std::sync::atomic::AtomicU64,
+    copy_px: std::sync::atomic::AtomicU64,
 }
 
 // SAFETY: the engine handle and proc table are thread-safe per
@@ -151,12 +157,15 @@ impl Engine {
             control,
             slots,
             renderer,
+            damage: Mutex::new(Damage::new(geometry.width, geometry.height, geometry.slots as usize)),
             runner: TaskRunner::new().map_err(|e| e.to_string())?,
             view: Mutex::new(View::new(geometry)),
             handlers: Mutex::new(Handlers::default()),
             vsync: Mutex::new(Vsync { baton: None, last_ns: 0 }),
             exit: AtomicBool::new(false),
             frames: Default::default(),
+            copy_ns: Default::default(),
+            copy_px: Default::default(),
         });
         let user_data = &*shared as *const Shared as *mut c_void;
 
@@ -168,14 +177,21 @@ impl Engine {
         // Extension name pointers, read during Initialize only.
         let mut vk_names: (Vec<*const c_char>, Vec<*const c_char>) = (vec![], vec![]);
         match &shared.renderer {
-            Renderer::Gl(_) => unsafe {
+            Renderer::Gl(g) => unsafe {
                 renderer.type_ = ffi::kOpenGL;
                 let gl = &mut renderer.__bindgen_anon_1.open_gl;
                 gl.struct_size = std::mem::size_of::<ffi::FlutterOpenGLRendererConfig>();
                 gl.make_current = Some(cb_make_current);
                 gl.clear_current = Some(cb_clear_current);
                 gl.make_resource_current = Some(cb_make_resource_current);
-                gl.present = Some(cb_present);
+                if g.partial_repaint() {
+                    // Our framebuffer keeps the last frame: Flutter repaints
+                    // and we copy only what changed (renderer/damage.rs).
+                    gl.present_with_info = Some(cb_present_with_info);
+                    gl.populate_existing_damage = Some(cb_existing_damage);
+                } else {
+                    gl.present = Some(cb_present);
+                }
                 gl.fbo_callback = Some(cb_fbo);
                 gl.surface_transformation = Some(cb_transformation);
                 gl.gl_proc_resolver = Some(cb_proc_resolver);
@@ -345,7 +361,17 @@ impl Engine {
                 }
             }
         }
-        eprintln!("aera-flutter: shutting down after {} frames", s.frames.load(Ordering::Relaxed));
+        let frames = s.frames.load(Ordering::Relaxed);
+        eprintln!("aera-flutter: shutting down after {frames} frames");
+        if frames > 0 {
+            let g = s.slots.geometry();
+            let px = s.copy_px.load(Ordering::Relaxed) as f64 / frames as f64;
+            eprintln!(
+                "aera-flutter: copies {:.2} ms and {:.0}% of the frame on average",
+                s.copy_ns.load(Ordering::Relaxed) as f64 / frames as f64 / 1e6,
+                100.0 * px / (g.width as f64 * g.height as f64)
+            );
+        }
         status
     }
 }
@@ -507,7 +533,33 @@ unsafe extern "C" fn cb_proc_resolver(user_data: *mut c_void, name: *const c_cha
 /// Raster thread: copy the frame into a free slot and tell AERA.
 unsafe extern "C" fn cb_present(user_data: *mut c_void) -> bool {
     let s = shared(user_data);
-    present(s, |slot, stride| s.renderer.gl().read_frame(slot, stride))
+    present(s, None, |slot, stride, rect| s.renderer.gl().read_frame(slot, stride, rect))
+}
+
+unsafe extern "C" fn cb_present_with_info(user_data: *mut c_void, info: *const ffi::FlutterPresentInfo) -> bool {
+    let s = shared(user_data);
+    let g = s.slots.geometry();
+    let d = &(*info).frame_damage;
+    let changed = (d.num_rects > 0 && !d.damage.is_null()).then(|| {
+        std::slice::from_raw_parts(d.damage, d.num_rects)
+            .iter()
+            .map(|r| Rect::from_float(r.left, r.top, r.right, r.bottom, g.width, g.height))
+            .fold(Rect { x0: 0, y0: 0, x1: 0, y1: 0 }, Rect::union)
+    });
+    present(s, changed, |slot, stride, rect| s.renderer.gl().read_frame(slot, stride, rect))
+}
+
+/// Our one framebuffer always holds the last frame, so nothing in it is
+/// stale. The engine asks once, when it wraps the framebuffer, and keeps the
+/// answer; its first frame has no previous one to diff against and is
+/// painted whole anyway.
+unsafe extern "C" fn cb_existing_damage(_user_data: *mut c_void, _fbo: isize, existing: *mut ffi::FlutterDamage) {
+    static NOTHING: ffi::FlutterRect = ffi::FlutterRect { left: 0.0, top: 0.0, right: 0.0, bottom: 0.0 };
+    *existing = ffi::FlutterDamage {
+        struct_size: std::mem::size_of::<ffi::FlutterDamage>(),
+        num_rects: 1,
+        damage: &NOTHING as *const ffi::FlutterRect as *mut ffi::FlutterRect,
+    };
 }
 
 unsafe extern "C" fn cb_vk_proc(user_data: *mut c_void, instance: *mut c_void, name: *const c_char) -> *mut c_void {
@@ -529,18 +581,26 @@ unsafe extern "C" fn cb_vk_present(user_data: *mut c_void, _image: *const ffi::F
     if s.frames.load(Ordering::Relaxed) == 0 {
         eprintln!("aera-flutter: Vulkan renderer {}", v.name());
     }
-    present(s, |slot, stride| v.read_frame(slot, stride))
+    present(s, None, |slot, stride, _| v.read_frame(slot, stride))
 }
 
-fn present(s: &Shared, read: impl FnOnce(&mut [u8], usize)) -> bool {
+/// Copies a frame into a free slot and tells AERA. `changed` is what
+/// Flutter repainted (`None`: unknown, all of it).
+fn present(s: &Shared, changed: Option<Rect>, read: impl FnOnce(&mut [u8], usize, Rect)) -> bool {
     let Some(index) = s.slots.acquire(Duration::from_secs(1)) else {
         // AERA held every slot for a second (or we are shutting down): drop
-        // this frame rather than stall the raster thread forever.
+        // this frame rather than stall the raster thread forever. What it
+        // changed is still owed to every slot.
+        s.damage.lock().unwrap().skip(changed);
         return true;
     };
     let stride = s.slots.geometry().stride as usize;
+    let rect = s.damage.lock().unwrap().next(index, changed);
+    let started = std::time::Instant::now();
     // SAFETY: `index` is ours until `present`.
-    read(unsafe { s.slots.slot_mut(index) }, stride);
+    read(unsafe { s.slots.slot_mut(index) }, stride, rect);
+    s.copy_ns.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    s.copy_px.fetch_add(((rect.x1 - rect.x0) * (rect.y1 - rect.y0)) as u64, Ordering::Relaxed);
     let message = s.slots.present(index);
     s.frames.fetch_add(1, Ordering::Relaxed);
     if let Err(e) = s.control.send(&message) {

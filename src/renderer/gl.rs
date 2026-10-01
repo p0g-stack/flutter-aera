@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 use libloading::Library;
 
+use super::damage::Rect;
 use crate::ffi::FlutterTransformation;
 
 type EGLDisplay = *mut c_void;
@@ -257,10 +258,16 @@ impl Gl {
         fbo
     }
 
-    /// Reads the whole frame into `out` as top-down BGRA rows of `stride`
-    /// bytes. Raster thread, render context current, after Flutter drew.
-    pub fn read_frame(&self, out: &mut [u8], stride: usize) {
+    /// Reads `rect` of the frame into the same place in `out`, top-down
+    /// BGRA rows of `stride` bytes. Raster thread, render context current,
+    /// after Flutter drew.
+    pub fn read_frame(&self, out: &mut [u8], stride: usize, rect: Rect) {
         assert!(out.len() >= stride * self.height as usize && stride >= self.width as usize * 4 && stride % 4 == 0);
+        assert!(rect.x1 <= self.width as u32 && rect.y1 <= self.height as u32);
+        if rect.is_empty() {
+            return;
+        }
+        let full = rect == Rect::full(self.width as u32, self.height as u32);
         let mut bgra = match self.bgra.load(Ordering::Relaxed) {
             0 => {
                 let ok = self.has_extension("GL_EXT_read_format_bgra");
@@ -269,17 +276,20 @@ impl Gl {
             }
             s => s == 1,
         };
+        let (x, y, w, h) = (rect.x0 as GLint, rect.y0 as GLint, (rect.x1 - rect.x0) as GLsizei, (rect.y1 - rect.y0) as GLsizei);
         let g = &self.gles;
-        // SAFETY: a current context; `out` holds `height` rows of `stride`
-        // bytes, which PACK_ROW_LENGTH = stride / 4 makes glReadPixels honor.
+        // SAFETY: a current context; the rows from `rect`'s first pixel hold
+        // `h` rows of `stride` bytes, which PACK_ROW_LENGTH = stride / 4 makes
+        // glReadPixels honor. GL row r is frame row r (Skia draws flipped,
+        // see `flip_vertically`; Impeller's are flipped back below).
         unsafe {
             (g.bind_framebuffer)(GL_FRAMEBUFFER, self.framebuffer());
             (g.pixel_storei)(GL_PACK_ALIGNMENT, 4);
             (g.pixel_storei)(GL_PACK_ROW_LENGTH, (stride / 4) as GLint);
             while (g.get_error)() != 0 {}
-            let p = out.as_mut_ptr().cast();
+            let p = out.as_mut_ptr().add(rect.y0 as usize * stride + rect.x0 as usize * 4).cast();
             if bgra {
-                (g.read_pixels)(0, 0, self.width, self.height, GL_BGRA_EXT, GL_UNSIGNED_BYTE, p);
+                (g.read_pixels)(x, y, w, h, GL_BGRA_EXT, GL_UNSIGNED_BYTE, p);
                 if (g.get_error)() != 0 {
                     eprintln!("aera-flutter: BGRA readback refused, swizzling on the CPU");
                     self.bgra.store(2, Ordering::Relaxed);
@@ -287,17 +297,25 @@ impl Gl {
                 }
             }
             if !bgra {
-                (g.read_pixels)(0, 0, self.width, self.height, GL_RGBA, GL_UNSIGNED_BYTE, p);
+                (g.read_pixels)(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, p);
             }
             // Skia assumes default pack state for its own readbacks.
             (g.pixel_storei)(GL_PACK_ROW_LENGTH, 0);
         }
         if !bgra {
-            super::rgba_to_bgra(out, self.width as usize, stride, self.height as usize);
+            let start = rect.y0 as usize * stride + rect.x0 as usize * 4;
+            super::rgba_to_bgra(&mut out[start..], w as usize, stride, h as usize);
         }
         if self.flip_rows {
+            assert!(full, "Impeller frames are copied whole");
             flip_rows(&mut out[..stride * self.height as usize], stride);
         }
+    }
+
+    /// Whether Flutter may repaint only what changed (Skia only: Impeller's
+    /// frames are flipped whole on the CPU).
+    pub fn partial_repaint(&self) -> bool {
+        !self.flip_rows
     }
 }
 
