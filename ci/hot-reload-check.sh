@@ -44,7 +44,7 @@ grep -q 'backgroundColor: Colors.green' "$app/lib/main.dart"
 printf r >&3
 wait_for "Reloaded [1-9]"
 sleep 2
-echo reloaded >"$out/snap"
+echo reloaded >"$out/snap.tmp" && mv "$out/snap.tmp" "$out/snap"
 for _ in $(seq 40); do [ -f "$out/reloaded.png" ] && break; sleep 0.25; done
 printf d >&3
 exec 3>&-

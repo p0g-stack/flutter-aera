@@ -24,7 +24,7 @@ flutter attach --debug-url "$(cat OUT/plugin-data/vm-service-url)" -d flutter-te
 
 Run `flutter attach` in the app's project. `-d flutter-tester` only gives
 the tool a device to talk through: everything goes over the VM service URL.
-`r` reloads, `R` restarts. While the sim runs, `echo NAME > OUT/snap` writes
+`r` reloads, `R` restarts. While the sim runs, `echo NAME > OUT/snap` (or a rename into place) writes
 `OUT/NAME.png` and `touch OUT/stop` ends it. `ci/hot-reload-check.sh` does
 all of this in CI: it taps the counter to 3, recolours the app bar, reloads,
 and checks the bar changed and the count did not.

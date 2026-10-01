@@ -308,7 +308,9 @@ fn run() -> Result<ExitCode, String> {
         }
         // Script hooks for interactive runs (ci/hot-reload-check.sh):
         // OUT/snap holding NAME writes NAME.png; OUT/stop ends the run.
-        if let Ok(name) = std::fs::read_to_string(o.out.join("snap")) {
+        // A writer should rename the file into place; an empty read is a
+        // write still in progress, so it is left for the next turn.
+        if let Some(name) = std::fs::read_to_string(o.out.join("snap")).ok().filter(|n| !n.trim().is_empty()) {
             let _ = std::fs::remove_file(o.out.join("snap"));
             match &last {
                 Some(f) => write_png(&o.out.join(format!("{}.png", name.trim())), f, &g)?,
