@@ -21,6 +21,8 @@ and, where they belong in AERA, answered with the next patch number.
 | Touch, keyboard and Back reach only AERA's own widgets | 0006 |
 | A plugin can only be started from the on-device UI, not over adb (no `flutter attach`) | 0008 |
 | Plugins cannot follow AERA's light or dark theme | 0009 |
+| Recovery does not start without FBE: `libandroidfw.so` needs `libincfs.so`, packed only for FBE builds (devicelab D1) | 0010 |
+| No x86_64 build: libwebp is built with NEON sources only, so recovery fails to link | 0011 |
 
 ## Worked around in the payload
 
@@ -31,6 +33,17 @@ and, where they belong in AERA, answered with the next patch number.
 | Fonts only at `/twres/fonts`, no fontconfig | `aera-plugin` bind-mounts them at `/usr/share/fonts` in a private namespace | a font path in the plugin environment |
 | No CA bundle for plugins | the payload ships one, bound at `/etc/ssl/certs` | a system CA path in the plugin environment |
 | No GPU driver for plugins; the GPU stack is the recovery's, not ours | the payload carries Mesa (Turnip, gfxstream, Zink) and picks it in `aera-plugin` | none; a plugin should bring its own userspace |
+
+## Fixed outside AERA's tree
+
+- x86_64 also needs `system/core` to keep `libcutils/arch-x86_64/cache.h`,
+  which AOSP dropped after Android 13 while this tree still builds the
+  x86_64 `android_memset` sources that include it. That fix belongs to the
+  `system/core` AERA builds against, not to `bootable/recovery`; devicelab
+  carries it (`aera/build/patches/system/core`), restoring the header from
+  android-13.0.0_r1.
+- Cuttlefish device-tree settings (`PRODUCT_BUILD_RECOVERY_IMAGE`, build
+  type, maximum brightness) are configuration, kept in devicelab.
 
 ## Not covered yet
 

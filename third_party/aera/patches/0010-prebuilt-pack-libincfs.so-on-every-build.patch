@@ -1,0 +1,47 @@
+From 1698126a8ad78af44a7bb33d9fd6ee84236bc3e2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 13:54:00 +0000
+Subject: [PATCH 10/11] prebuilt: pack libincfs.so on every build
+
+libandroidfw.so is packed on every build and links libincfs.so, but
+libincfs.so is only packed inside the TW_INCLUDE_CRYPTO_FBE block. A build
+without file-based encryption (Cuttlefish, or any device tree that leaves
+TW_INCLUDE_CRYPTO off) has no libincfs.so in the ramdisk, and recovery
+does not start:
+
+  CANNOT LINK EXECUTABLE "/system/bin/recovery": library "libincfs.so"
+  not found: needed by /system/lib64/libandroidfw.so
+
+Pack libincfs.so next to libandroidfw.so, outside the encryption blocks.
+FBE builds pack the same file as before.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ prebuilt/Android.mk | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/prebuilt/Android.mk b/prebuilt/Android.mk
+index 182b5d8..e54c506 100644
+--- a/prebuilt/Android.mk
++++ b/prebuilt/Android.mk
+@@ -103,6 +103,8 @@ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libcrecovery.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libusbhost.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libutils.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libandroidfw.so
++# libandroidfw.so needs libincfs.so on every build, not only FBE ones
++RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libincfs.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libext2_com_err.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libext2_e2p.so
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libext2fs.so
+@@ -232,7 +234,6 @@ ifeq ($(TW_INCLUDE_CRYPTO), true)
+         RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libhardware_legacy.so
+         RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libaconfig_storage_read_api_cc.so
+         RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/server_configurable_flags.so
+-        RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libincfs.so
+         RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/android.hardware.health.storage@1.0.so
+         RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/android.hardware.health.storage@1.0.so
+         RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/android.hardware.health.storage-V1-ndk.so
+-- 
+2.43.0
+

@@ -7,3 +7,5 @@
 0007-plugin_api-Host-API-3-tests-and-documentation.patch
 0008-rpc-open-an-installed-generic-plugin-op-plugin-actio.patch
 0009-plugin_api-tell-Host-API-3-plugins-AERA-s-light-or-d.patch
+0010-prebuilt-pack-libincfs.so-on-every-build.patch
+0011-aeraui-build-libwebp-s-SSE2-and-SSE4.1-sources.patch
