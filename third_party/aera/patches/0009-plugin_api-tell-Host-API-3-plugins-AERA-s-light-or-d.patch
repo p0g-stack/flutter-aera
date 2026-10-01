@@ -1,0 +1,81 @@
+From a415c009b6442eae0bd5277c5f1a2cc7f7609a8c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 07:15:08 +0000
+Subject: [PATCH] plugin_api: tell Host API 3 plugins AERA's light or dark
+ appearance
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/features/plugin_api/README.md         | 3 ++-
+ aeraui/features/plugin_api/launcher.cpp      | 6 ++++++
+ aeraui/tests/plugin_api_pixel_host_check.cpp | 7 +++++--
+ 3 files changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
+index 90f363e..201fdf4 100644
+--- a/aeraui/features/plugin_api/README.md
++++ b/aeraui/features/plugin_api/README.md
+@@ -76,7 +76,8 @@ A manifest with `protocol_version` 3 and `min_host_api` 3 (permissions
+ as a Flutter app. The runtime layout, verification and process model are
+ Host API 2's; `scenes/pixel_plugin_scene.cpp` replaces the declarative page.
+ 
+-- Launch: `--aera-host-api=3`, `AERA_HOST_API=3`, `AERA_SURFACE_FD=3` and
++- Launch: `--aera-host-api=3`, `AERA_HOST_API=3`, `AERA_SURFACE_FD=3`,
++  `AERA_APPEARANCE` (`light` or `dark`, AERA's surface mode) and
+   `AERA_PLUGIN_DATA`, a private directory that survives updates
+   (`/sdcard/AERA/plugin-data/<id>`, or RAM when storage is not mounted).
+ - Handshake: the worker's `HELLO` must offer version 3 (`value` 3, `flags`
+diff --git a/aeraui/features/plugin_api/launcher.cpp b/aeraui/features/plugin_api/launcher.cpp
+index 151d032..27df210 100644
+--- a/aeraui/features/plugin_api/launcher.cpp
++++ b/aeraui/features/plugin_api/launcher.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "protocol.hpp"
+ 
++#include <aeraui/backend.hpp>
+ #include <aeraui/i18n.hpp>
+ 
+ #include <cerrno>
+@@ -52,6 +53,10 @@ bool Process::Start(const std::string &runtime, int &control_fd,
+   const std::string api_env =
+       "AERA_HOST_API=" + std::to_string(options.host_api);
+   const std::string data_env = "AERA_PLUGIN_DATA=" + options.data_dir;
++  // Host API 3 apps follow AERA's light or dark surface, as desktop apps
++  // follow the system colour scheme.
++  const char *appearance_env =
++      RecoveryLightMode() ? "AERA_APPEARANCE=light" : "AERA_APPEARANCE=dark";
+   struct stat loader_info{}, program_info{};
+   if (lstat(program.c_str(), &program_info) != 0 ||
+       !S_ISREG(program_info.st_mode) || program_info.st_uid != 0 ||
+@@ -119,6 +124,7 @@ bool Process::Start(const std::string &runtime, int &control_fd,
+         const_cast<char *>(plugin_root.c_str()),
+         const_cast<char *>(data_dirs.c_str()),
+         v3 ? const_cast<char *>("AERA_SURFACE_FD=3") : nullptr,
++        v3 ? const_cast<char *>(appearance_env) : nullptr,
+         v3 && !options.data_dir.empty()
+             ? const_cast<char *>(data_env.c_str()) : nullptr,
+         nullptr};
+diff --git a/aeraui/tests/plugin_api_pixel_host_check.cpp b/aeraui/tests/plugin_api_pixel_host_check.cpp
+index 3ebc708..8c1abba 100644
+--- a/aeraui/tests/plugin_api_pixel_host_check.cpp
++++ b/aeraui/tests/plugin_api_pixel_host_check.cpp
+@@ -23,9 +23,12 @@
+ #include <thread>
+ #include <vector>
+ 
+-namespace aeraui::i18n {
++namespace aeraui {
++namespace i18n {
+ const char *CurrentLanguage() { return "en"; }
+-}  // namespace aeraui::i18n
++}  // namespace i18n
++bool RecoveryLightMode() { return true; }
++}  // namespace aeraui
+ 
+ using namespace aeraui::plugin_api;
+ using Clock = std::chrono::steady_clock;
+-- 
+2.43.0
+

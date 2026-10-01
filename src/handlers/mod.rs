@@ -14,12 +14,16 @@
 //! | `flutter/mousecursor` | standard method | [`mousecursor`]: no-op (touch only) | GDK cursors | DRM cursor |
 //! | `flutter/navigation` | JSON method | [`navigation`]: AERA Back → `popRoute` | not used | not used |
 //! | `flutter/lifecycle` | string | [`lifecycle`]: AERA `LIFECYCLE` | window focus/visibility | always resumed |
-//! | `flutter/settings` | JSON message | [`settings`]: sent once at start | GSettings | sent once |
+//! | `flutter/settings` | JSON message | [`settings`]: sent once at start; brightness from `AERA_APPEARANCE`, text scale 1.0, 24-hour clock | GSettings | sent once, light |
+//! | `flutter/keyboard` | standard method | [`keyboard`]: `getKeyboardState` → no keys down (no hardware keyboard) | pressed keys from GDK | not handled |
+//! | locales | embedder API | `LANG` (AERA sets it from its locale), else `en-US` | GLib languages | `LANG` |
+//! | `flutter/accessibility` | standard message | not-implemented; semantics never enabled (AERA has no screen reader) | ATK | not handled |
 //! | `flutter/keyevent` | JSON message | not sent: AERA's keyboard commits text, as an IME | GDK key events | evdev keys |
 //! | `flutter/restoration` | standard method | not-implemented (as GTK) | not-implemented | not-implemented |
 //! | anything else | | not-implemented | | |
 
 pub mod codec;
+pub mod keyboard;
 pub mod lifecycle;
 pub mod mousecursor;
 pub mod navigation;
@@ -59,6 +63,7 @@ impl Handlers {
             platform::CHANNEL => self.platform.handle(bytes, &mut effects),
             textinput::CHANNEL => textinput::handle(&mut self.ime, bytes, &mut effects),
             mousecursor::CHANNEL => mousecursor::handle(bytes),
+            keyboard::CHANNEL => keyboard::handle(bytes),
             _ => codec::not_implemented(),
         };
         (reply, effects)

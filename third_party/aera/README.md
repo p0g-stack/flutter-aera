@@ -24,6 +24,7 @@ Cuttlefish image.
 | 0006 | `scenes/pixel_plugin_scene.cpp`, routing, the engine's pointer hook |
 | 0007 | tests and the Host API 3 section of `plugin_api/README.md` |
 | 0008 | AERA RPC `plugin` / `open`: start an installed plugin over adb, for `flutter attach` (docs/debugging.md) |
+| 0009 | `AERA_APPEARANCE=light\|dark` in a Host API 3 plugin's environment, from AERA's theme (platform brightness) |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as
