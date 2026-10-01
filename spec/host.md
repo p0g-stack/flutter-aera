@@ -96,6 +96,15 @@ once the engine runs.
 AERA keeps touches that start on the side edges (its Back gesture) or the
 bottom edge (Recents), and those over its keyboard.
 
+A held Back is never the app's (patch 0024): the Back key held down for
+half a second, or the edge swipe held past the depth that accepts it for
+half a second before letting go, leaves the scene as AERA's Back does
+elsewhere. The app is paused, as for Home, and stays in Recents. So an app
+that keeps Back to itself, or has stopped answering, can always be left,
+also with gesture navigation (the bottom swipe) off. AERA Remote's Back
+button sends a press and release together, so it cannot hold; its Home
+button (0023) leaves instead.
+
 Plugin → host: `KEYBOARD_SHOW` (13) with `value` purpose (0 text, 2
 digits) and `flags` 1 for multiline; `KEYBOARD_HIDE` (14).
 

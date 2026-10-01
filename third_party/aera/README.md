@@ -41,6 +41,7 @@ Cuttlefish image.
 | 0021 | `plugin_api`, pixel plugin scene, engine: leaving the scene pauses the plugin (no `FRAME_DONE`) instead of stopping it; reopening sends a new `SURFACE` and resume; `kInactive` for a shade, sheet or picker over it; stopped by `CLOSE`, Recents or an update |
 | 0022 | `plugin_api`: `AERA_PLUGIN_DATA_VOLATILE=1` when the data directory is the RAM fallback |
 | 0023 | `core/runner.cpp`, engine: the Home and Menu keys (AERA Remote's buttons) show Home and toggle Recents, as the bottom-edge swipe does (devicelab D8) |
+| 0024 | `core/runner.cpp`, engine: a Back held for half a second (key or edge swipe) skips the pixel plugin and leaves its scene, so a plugin can never trap the user (Yuv's call) |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as

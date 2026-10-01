@@ -1,0 +1,213 @@
+From 5ff8db9e4ccd273d2338447ecb5c5b4611ab7eb4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 22:39:30 +0000
+Subject: [PATCH 24/24] aeraui: a held Back always leaves a pixel plugin
+
+A pixel plugin takes every Back, as an Android app does, so it can run
+its own navigation. Unlike Browser (Back only while it has history) or a
+Host API 2 page (SET_BACK_ACTION), nothing hands Back to AERA again. With
+gesture navigation off there is no bottom swipe to Home or Recents, so a
+plugin that ignores BACK, or has stopped answering, traps the user.
+
+Hold Back to leave: the Back key held down for half a second, or the edge
+swipe held past the depth that accepts it for half a second before
+letting go, skips the plugin and navigates back as AERA does elsewhere.
+The scene is left as for Home, so the plugin is paused and stays in
+Recents. A short Back still goes to the plugin. Every other scene treats
+a held Back as a Back.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/core/engine.cpp               | 40 +++++++++++++++++++++++-----
+ aeraui/core/runner.cpp               |  9 ++++++-
+ aeraui/features/plugin_api/README.md |  6 ++++-
+ aeraui/include/aeraui/engine.hpp     |  6 ++++-
+ 4 files changed, 51 insertions(+), 10 deletions(-)
+
+diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
+index 5577a74..aee366d 100644
+--- a/aeraui/core/engine.cpp
++++ b/aeraui/core/engine.cpp
+@@ -660,8 +660,13 @@ public:
+     else ShowRecents(false);
+   }
+ 
+-  void NavigateBack(bool feedback = true) {
+-    if (feedback) RecoveryVibrate(Haptic::kTouch);
++  void NavigateBack(bool feedback = true, bool held = false) {
++    // A held Back leaving a pixel plugin passes over everything the plugin
++    // would take: whatever it does with Back, or if it stopped answering,
++    // the user can always leave it.
++    const bool leave_plugin = held && PixelPluginActive();
++    if (feedback || leave_plugin)
++      RecoveryVibrate(leave_plugin ? Haptic::kAction : Haptic::kTouch);
+     if (recents_overlay_ != nullptr) {
+       DismissRecents();
+       return;
+@@ -669,7 +674,10 @@ public:
+     if (lock_overlay_ != nullptr || !backend_ready_ || decryption_active_ ||
+         operation_running_ || nas_running_ || plugin_running_)
+       return;
+-    if (widgets::DismissModal(lv_screen_active())) return;
++    if (leave_plugin)
++      __android_log_print(ANDROID_LOG_INFO, kLogTag,
++                          "Back held; leaving the pixel plugin");
++    else if (widgets::DismissModal(lv_screen_active())) return;
+     if (fastboot_mode_) {
+       if (current_tool_ == Action::kFormatData) ShowFastboot();
+       return;
+@@ -875,6 +883,13 @@ public:
+           0, swipe_right_edge_ ? swipe_start_x_ - pointer_.x
+                                : pointer_.x - swipe_start_x_);
+       swipe_max_inward_ = std::max(swipe_max_inward_, inward);
++      // How long the contact has stayed past the depth that accepts Back:
++      // released after kBackHoldMs there, it is a held Back.
++      const int32_t visible_width = landscape_ ? height_ : width_;
++      if (inward < visible_width / 6)
++        swipe_held_since_ = 0;
++      else if (swipe_held_since_ == 0)
++        swipe_held_since_ = std::max<uint32_t>(1, MonotonicMilliseconds());
+       UpdateEdgeSwipe(inward);
+       return;
+     }
+@@ -888,7 +903,9 @@ public:
+       const bool accepted = swipe_max_inward_ >= visible_width / 6 &&
+                             swipe_max_inward_ > vertical * 2;
+       const bool right_edge = swipe_right_edge_;
+-      FinishEdgeSwipe(accepted);
++      const bool held = accepted && swipe_held_since_ != 0 &&
++          MonotonicMilliseconds() - swipe_held_since_ >= Engine::kBackHoldMs;
++      FinishEdgeSwipe(accepted, held);
+       if (accepted) {
+         if (pointer_device_ != nullptr) lv_indev_reset(pointer_device_, nullptr);
+         RecoveryVibrate(Haptic::kTouch);
+@@ -2988,8 +3005,10 @@ private:
+     self->gesture_indicator_ = nullptr;
+     self->gesture_depth_ = 0;
+     const bool navigate_back = self->gesture_navigate_back_;
++    const bool held = self->gesture_held_;
+     self->gesture_navigate_back_ = false;
+-    if (navigate_back) self->NavigateBack(false);
++    self->gesture_held_ = false;
++    if (navigate_back) self->NavigateBack(false, held);
+   }
+ 
+   void BeginEdgeSwipe(bool right_edge) {
+@@ -3043,11 +3062,14 @@ private:
+     lv_obj_invalidate(gesture_indicator_);
+   }
+ 
+-  void FinishEdgeSwipe(bool accepted) {
++  void FinishEdgeSwipe(bool accepted, bool held = false) {
+     swipe_active_ = false;
++    swipe_held_since_ = 0;
+     gesture_navigate_back_ = accepted;
++    gesture_held_ = accepted && held;
+     if (gesture_indicator_ == nullptr) {
+       gesture_navigate_back_ = false;
++      gesture_held_ = false;
+       return;
+     }
+     lv_anim_delete(this, SetEdgeGestureDepth);
+@@ -3065,7 +3087,9 @@ private:
+ 
+   void CancelEdgeSwipe() {
+     swipe_active_ = false;
++    swipe_held_since_ = 0;
+     gesture_navigate_back_ = false;
++    gesture_held_ = false;
+     lv_anim_delete(this, SetEdgeGestureDepth);
+     if (gesture_indicator_ != nullptr) {
+       lv_obj_delete(gesture_indicator_);
+@@ -3343,6 +3367,7 @@ private:
+   int32_t swipe_start_y_ = 0;
+   int32_t swipe_last_y_ = 0;
+   int32_t swipe_max_inward_ = 0;
++  uint32_t swipe_held_since_ = 0;
+   int32_t gesture_depth_ = 0;
+   int32_t recents_swipe_start_x_ = 0;
+   int32_t recents_swipe_last_x_ = 0;
+@@ -3395,6 +3420,7 @@ private:
+   bool swipe_active_ = false;
+   bool swipe_right_edge_ = false;
+   bool gesture_navigate_back_ = false;
++  bool gesture_held_ = false;
+   bool recents_swipe_active_ = false;
+   bool suspended_ = false;
+   bool fastboot_mode_ = false;
+@@ -3421,7 +3447,7 @@ void Engine::AbandonForTerminalAction() { impl_.release(); }
+ uint32_t Engine::RunFrame() { return impl_->RunFrame(); }
+ Action Engine::TakeAction() { return impl_->TakeAction(); }
+ void Engine::NavigateHome() { impl_->NavigateHome(); }
+-void Engine::NavigateBack() { impl_->NavigateBack(); }
++void Engine::NavigateBack(bool held) { impl_->NavigateBack(true, held); }
+ void Engine::HomeKey() { impl_->HomeKey(); }
+ void Engine::MenuKey() { impl_->MenuKey(); }
+ void Engine::SetBackendReady() { impl_->SetBackendReady(); }
+diff --git a/aeraui/core/runner.cpp b/aeraui/core/runner.cpp
+index 0e13506..6432e1e 100644
+--- a/aeraui/core/runner.cpp
++++ b/aeraui/core/runner.cpp
+@@ -207,6 +207,7 @@ struct HardwareState {
+     bool screenshot_pending = false;
+     bool suppress_volume_down = false;
+     uint64_t power_pressed_at_ms = 0;
++    uint64_t back_pressed_at_ms = 0;
+     int volume = 30;
+ };
+ 
+@@ -352,8 +353,14 @@ bool HandleEvent(Engine& engine, InteractionBoost& performance,
+         return false;
+     }
+ 
++    if (event.code == KEY_BACK && event.value == 1)
++        hardware.back_pressed_at_ms = MonotonicMilliseconds();
+     if (event.code == KEY_BACK && event.value == 0 && !hardware.screen_off) {
+-        engine.NavigateBack();
++        const bool held = hardware.back_pressed_at_ms != 0 &&
++            MonotonicMilliseconds() - hardware.back_pressed_at_ms >=
++                Engine::kBackHoldMs;
++        hardware.back_pressed_at_ms = 0;
++        engine.NavigateBack(held);
+     }
+     if (event.code == KEY_HOMEPAGE && event.value == 0 && !hardware.screen_off) {
+         engine.HomeKey();
+diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
+index f7b012c..c4f8908 100644
+--- a/aeraui/features/plugin_api/README.md
++++ b/aeraui/features/plugin_api/README.md
+@@ -121,7 +121,11 @@ Host API 2's; `scenes/pixel_plugin_scene.cpp` replaces the declarative page.
+   AERA's. `PRESENT` is outside the 128 messages per second limit.
+ - Input: `TOUCH_DOWN`/`MOVE`/`UP` (`request_id` pointer, `value` x, `flags`
+   y, surface pixels); side edges and the bottom edge stay AERA's gestures.
+-  `BACK` is AERA's Back; the worker leaves with `CLOSE`.
++  `BACK` is AERA's Back; the worker leaves with `CLOSE`. A Back held for
++  half a second (the Back key held down, or the edge swipe held past the
++  depth that accepts it before letting go) never reaches the plugin: AERA
++  leaves the scene as for Home, so the plugin is paused, and a plugin that
++  stopped answering cannot trap the user.
+ - Keyboard: `KEYBOARD_SHOW` (`value` 0 text or 2 digits, `flags` 1 for
+   multiline) and `KEYBOARD_HIDE` show AERA's keyboard, which sends `KEY`
+   (`value` code point; 8 backspace, 13 Enter, and OK on a single-line
+diff --git a/aeraui/include/aeraui/engine.hpp b/aeraui/include/aeraui/engine.hpp
+index f027bd9..2bc65f6 100644
+--- a/aeraui/include/aeraui/engine.hpp
++++ b/aeraui/include/aeraui/engine.hpp
+@@ -117,8 +117,12 @@ class Engine final {
+ 
+     // Explicit Home clears navigation history. Hardware Back and the edge
+     // gesture use NavigateBack() to return to the previous native surface.
++    // A Back held for kBackHoldMs (the key held down, or the edge swipe held
++    // at the depth that accepts it) is always AERA's: it leaves a pixel
++    // plugin, which otherwise takes every Back.
++    static constexpr uint32_t kBackHoldMs = 500;
+     void NavigateHome();
+-    void NavigateBack();
++    void NavigateBack(bool held = false);
+     // The Home and Menu keys (AERA Remote's buttons, KEY_HOMEPAGE and
+     // KEY_MENU) do what the bottom-edge swipe does: Home, and Recents when
+     // gesture navigation is on.
+-- 
+2.43.0
+
