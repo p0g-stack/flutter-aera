@@ -23,7 +23,7 @@ and, where they belong in AERA, answered with the next patch number.
 | Plugins cannot follow AERA's light or dark theme | 0009 |
 | Recovery does not start without FBE: `libandroidfw.so` needs `libincfs.so`, packed only for FBE builds (devicelab D1) | 0010 |
 | No x86_64 build: libwebp is built with NEON sources only, so recovery fails to link | 0011 |
-| A declared health HAL that never starts stalls recovery before it draws: the battery read waits for it forever (devicelab D2) | 0012 |
+| The battery monitor re-queries the health HAL every second, so without one it is two failed service manager lookups per second (log spam, wasted binder calls) (devicelab D2) | 0012 |
 
 ## Worked around in the payload
 

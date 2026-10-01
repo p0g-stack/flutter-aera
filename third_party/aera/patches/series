@@ -9,4 +9,4 @@
 0009-plugin_api-tell-Host-API-3-plugins-AERA-s-light-or-d.patch
 0010-prebuilt-pack-libincfs.so-on-every-build.patch
 0011-aeraui-build-libwebp-s-SSE2-and-SSE4.1-sources.patch
-0012-recovery_utils-bound-the-wait-for-a-declared-health-.patch
+0012-recovery_utils-look-the-health-HAL-up-once-not-on-ev.patch

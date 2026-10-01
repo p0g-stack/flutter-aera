@@ -27,7 +27,7 @@ Cuttlefish image.
 | 0009 | `AERA_APPEARANCE=light\|dark` in a Host API 3 plugin's environment, from AERA's theme (platform brightness) |
 | 0010 | `prebuilt/Android.mk`: pack `libincfs.so` on every build (`libandroidfw.so` needs it), not only with FBE |
 | 0011 | libwebp's SSE2/SSE4.1 sources, so recovery links for x86_64 (Cuttlefish) |
-| 0012 | `recovery_utils/battery_utils.cpp`: wait at most 5 s for a declared health HAL, then fall back to the defaults (devicelab D2) |
+| 0012 | `recovery_utils/battery_utils.cpp`: look the health HAL up once (again at most once a minute if missing, or after it dies) instead of on every 1 s battery read (devicelab D2) |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as

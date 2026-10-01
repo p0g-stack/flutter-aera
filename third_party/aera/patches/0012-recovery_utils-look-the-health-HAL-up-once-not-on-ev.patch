@@ -1,0 +1,126 @@
+From 14cb5afa7efe7db40ed315b771907376620db3cc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 15:44:05 +0000
+Subject: [PATCH 12/12] recovery_utils: look the health HAL up once, not on
+ every battery read
+
+TWRP's battery monitor calls GetBatteryInfo() every second, and every call
+looked the health HAL up from scratch: an AIDL isDeclared() query, then a
+HIDL getService(). On a device or emulator without a health HAL (or with
+one that is not running) that is two failed service manager queries and
+their log lines every second for as long as recovery runs, which floods
+logcat with IHealth/default lookups and makes it look as if recovery is
+stuck waiting for the HAL.
+
+Look the HAL up once and keep it. When none is found, look again at most
+once a minute, in case it starts late; when a call fails with
+DEAD_OBJECT, drop it so the next call finds the restarted service. The
+battery values and the defaults used without a HAL do not change.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ recovery_utils/battery_utils.cpp | 58 +++++++++++++++++++++++++++++---
+ 1 file changed, 54 insertions(+), 4 deletions(-)
+
+diff --git a/recovery_utils/battery_utils.cpp b/recovery_utils/battery_utils.cpp
+index 6b126bd..608d261 100644
+--- a/recovery_utils/battery_utils.cpp
++++ b/recovery_utils/battery_utils.cpp
+@@ -19,18 +19,36 @@
+ #include <stdint.h>
+ #include <unistd.h>
+ 
++#include <chrono>
++#include <memory>
++#include <mutex>
++
+ #include <android-base/logging.h>
+ #include <android/binder_manager.h>
+ #include <health-shim/shim.h>
+ #include <healthhalutils/HealthHalUtils.h>
+ 
+-BatteryInfo GetBatteryInfo() {
++using aidl::android::hardware::health::IHealth;
++
++namespace {
++
++// Callers such as TWRP's battery monitor ask every second. Without a cache
++// each call repeats the AIDL and HIDL lookups, and on a device without a
++// health HAL that is two failed service manager queries (and their log
++// lines) per second for as long as recovery runs. So the HAL is looked up
++// once and kept; a missing one is looked up again at most once a minute, in
++// case it starts late, and a dead one at the next call.
++constexpr auto HEALTH_RETRY_INTERVAL = std::chrono::minutes(1);
++
++std::mutex health_lock;
++std::shared_ptr<IHealth> health_cache;
++std::chrono::steady_clock::time_point health_lookup_time;
++bool health_looked_up = false;
++
++std::shared_ptr<IHealth> LookUpHealth() {
+   using android::hardware::health::V2_0::get_health_service;
+   using HidlHealth = android::hardware::health::V2_0::IHealth;
+-  using aidl::android::hardware::health::BatteryStatus;
+   using aidl::android::hardware::health::HealthShim;
+-  using aidl::android::hardware::health::IHealth;
+-  using aidl::android::hardware::health::toString;
+   using std::string_literals::operator""s;
+ 
+   auto service_name = IHealth::descriptor + "/default"s;
+@@ -49,6 +67,36 @@ BatteryInfo GetBatteryInfo() {
+   if (health == nullptr) {
+     LOG(WARNING) << "No health implementation is found; assuming defaults";
+   }
++  return health;
++}
++
++std::shared_ptr<IHealth> GetHealth() {
++  std::lock_guard<std::mutex> guard(health_lock);
++  auto now = std::chrono::steady_clock::now();
++  if (health_cache == nullptr &&
++      (!health_looked_up || now - health_lookup_time >= HEALTH_RETRY_INTERVAL)) {
++    health_cache = LookUpHealth();
++    health_looked_up = true;
++    health_lookup_time = now;
++  }
++  return health_cache;
++}
++
++// Forgets a health HAL whose process died, so the next call finds its restart.
++void DropHealth(const ndk::ScopedAStatus& status) {
++  if (status.getStatus() != STATUS_DEAD_OBJECT) return;
++  std::lock_guard<std::mutex> guard(health_lock);
++  health_cache = nullptr;
++  health_looked_up = false;
++}
++
++}  // namespace
++
++BatteryInfo GetBatteryInfo() {
++  using aidl::android::hardware::health::BatteryStatus;
++  using aidl::android::hardware::health::toString;
++
++  std::shared_ptr<IHealth> health = GetHealth();
+ 
+   int wait_second = 0;
+   while (true) {
+@@ -57,6 +105,7 @@ BatteryInfo GetBatteryInfo() {
+       auto res = health->getChargeStatus(&charge_status);
+       if (!res.isOk()) {
+         LOG(WARNING) << "Unable to call getChargeStatus: " << res.getDescription();
++        DropHealth(res);
+         charge_status = BatteryStatus::UNKNOWN;
+       }
+     }
+@@ -71,6 +120,7 @@ BatteryInfo GetBatteryInfo() {
+       auto res = health->getCapacity(&capacity);
+       if (!res.isOk()) {
+         LOG(WARNING) << "Unable to call getCapacity: " << res.getDescription();
++        DropHealth(res);
+         capacity = INT32_MIN;
+       }
+     }
+-- 
+2.43.0
+
