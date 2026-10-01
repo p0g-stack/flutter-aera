@@ -1,4 +1,4 @@
-From 68029730988c2366ce59e19be29bafc39084fa2a Mon Sep 17 00:00:00 2001
+From 4a8946e9fde9f41a0bc74c6e42a15a28737f259b Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 17:20:22 +0000
 Subject: [PATCH 14/20] prebuilt: pack task_profiles.json on every build

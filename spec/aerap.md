@@ -84,6 +84,7 @@ The expanded tree (`AERA_PLUGIN_ROOT`):
 ```
 usr/bin/aera-plugin                  static launcher (launcher/)
 usr/bin/aera-flutter                 the embedder, glibc
+usr/bin/xdg-user-dir                 Documents and Downloads for path_provider (launcher/)
 usr/lib/ld-linux-aarch64.so.1        the payload's own loader, then glibc,
 usr/lib/*.so*                        libflutter_engine.so, Mesa (Zink, Turnip), libc++ …
 usr/lib/libapp.so                    the AOT app (profile/release engines only)
@@ -98,6 +99,36 @@ etc/ssl/certs/ca-certificates.crt    CA bundle for Dart's HttpClient
 The runtime kit (embedder, launcher, engine, loader, glibc, Mesa, Vulkan
 loader, Turnip ICD, CA bundle) comes from flutter-aera releases; the app
 contributes only `flutter_assets` and, for AOT builds, `libapp.so`.
+
+## Storage and lifecycle
+
+AERA picks the data directory (`AERA_PLUGIN_DATA`, patch 0005) at every
+launch: `/sdcard/AERA/plugin-data/<id>` when `/sdcard/AERA` exists
+(storage mounted and decrypted; AERA asks to unlock it on first launch),
+otherwise `/tmp/aera/plugin-data/<id>` in RAM. The embedder (`src/env.rs`)
+and the payload's `xdg-user-dir` map the stock APIs onto it:
+
+| Flutter API (stock) | AERA path | Lifetime |
+| --- | --- | --- |
+| `getApplicationSupportDirectory` | `$AERA_PLUGIN_DATA/data/<app id>` (`XDG_DATA_HOME`) | survives updates and reboots; removed with the plugin |
+| `SharedPreferences` | `shared_preferences.json` in the support directory | same |
+| `getApplicationDocumentsDirectory` | `$AERA_PLUGIN_DATA` (`HOME`), as WebUI's | same |
+| `getApplicationCacheDirectory` | `$AERA_PLUGIN_DATA/cache/<app id>` (`XDG_CACHE_HOME`) | same; the app may clear it |
+| `getTemporaryDirectory` | `/tmp/aera-flutter/<id>` (`TMPDIR`), recovery's RAM | until reboot |
+| `getDownloadsDirectory` | `/sdcard/Download` when mounted, else `HOME` | the user's |
+| files the user picks | anywhere, through AERA's picker (`spec/host.md`, Files) | the user's |
+
+Launched while storage is locked, the app runs on an empty RAM directory
+that is gone at reboot; its data on storage is untouched and back at the
+next launch with storage mounted. Removing the plugin deletes both data
+directories (a locked storage one stays behind). Updates keep them.
+
+Lifecycle: AERA starts the plugin when its scene opens (`RESUME`, so
+`resumed`) and, when the scene is left, sends `STOP` (`detached`, the
+embedder exits) and ends the process group: SIGTERM, half a second, then
+SIGKILL. Nothing runs in the background and nothing pauses it: a blanked
+screen does not, and recovery never suspends. Rotation keeps it running
+(patch 0020).
 
 ## Runtime kit
 

@@ -1,4 +1,4 @@
-From 62fb39339546a27ac42f3d363c3995d44e5d1d76 Mon Sep 17 00:00:00 2001
+From 142447761df4fc21e102621b6f8477738f1bf426 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 20:55:03 +0000
 Subject: [PATCH 16/20] aeraui: take an RPC request whose writer already hung

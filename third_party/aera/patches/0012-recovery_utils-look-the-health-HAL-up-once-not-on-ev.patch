@@ -1,4 +1,4 @@
-From 14cb5afa7efe7db40ed315b771907376620db3cc Mon Sep 17 00:00:00 2001
+From c447f2b924ad18677edb23965e4f9b86440910bc Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 15:44:05 +0000
 Subject: [PATCH 12/20] recovery_utils: look the health HAL up once, not on

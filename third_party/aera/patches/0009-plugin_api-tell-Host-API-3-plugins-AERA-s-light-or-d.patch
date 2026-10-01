@@ -1,4 +1,4 @@
-From 08dfe7b9acd58d2b5bf901ee1a48ac87d6ea955a Mon Sep 17 00:00:00 2001
+From ce0c44b907b57c96b2addf61bb1f436170a9dd03 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 07:15:08 +0000
 Subject: [PATCH 09/20] plugin_api: tell Host API 3 plugins AERA's light or

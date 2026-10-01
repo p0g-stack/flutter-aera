@@ -1,4 +1,4 @@
-From 1698126a8ad78af44a7bb33d9fd6ee84236bc3e2 Mon Sep 17 00:00:00 2001
+From 6d4507fa4512e1a93ad6a8eea02507d6a57d0730 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 13:54:00 +0000
 Subject: [PATCH 10/20] prebuilt: pack libincfs.so on every build

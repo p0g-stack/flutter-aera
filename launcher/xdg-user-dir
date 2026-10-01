@@ -1,0 +1,10 @@
+#!/system/bin/sh
+# usr/bin/xdg-user-dir in the payload (first on AERA's plugin PATH):
+# path_provider_linux asks it for Documents and Downloads, and recovery has
+# none. Documents is the app's own folder (HOME, AERA_PLUGIN_DATA), as on
+# WebUI; Downloads is internal storage's Download folder when storage is
+# mounted. Anything else is HOME, as xdg-user-dir answers an unset name.
+case "$1" in
+  DOWNLOAD) [ -d /sdcard/Download ] && { echo /sdcard/Download; exit 0; } ;;
+esac
+echo "$HOME"

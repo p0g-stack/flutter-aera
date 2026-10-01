@@ -22,7 +22,7 @@ Cuttlefish image.
 | 0002 | session: per-scene version, `SURFACE` before `RESUME`, `PRESENT` outside the rate limit |
 | 0003 | `plugin_api/surface.*`: sealed memfd slots and who owns each |
 | 0004 | launcher: surface on fd 3, `AERA_SURFACE_FD`, `AERA_PLUGIN_DATA`, `--aera-host-api=3` |
-| 0005 | plugin manager: v3 manifests (`pixel-surface` …), data directory |
+| 0005 | plugin manager: v3 manifests (`pixel-surface` …), data directory, removed with the plugin |
 | 0006 | `scenes/pixel_plugin_scene.cpp`, routing, the engine's pointer hook |
 | 0007 | tests and the Host API 3 section of `plugin_api/README.md` |
 | 0008 | AERA RPC `plugin` / `open`: start an installed plugin over adb, for `flutter attach` (docs/debugging.md) |

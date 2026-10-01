@@ -72,7 +72,8 @@ def main():
 
     shutil.copy2(a.embedder, out / "usr/bin/aera-flutter")
     shutil.copy2(a.launcher, out / "usr/bin/aera-plugin")
-    for b in ("aera-flutter", "aera-plugin"):
+    shutil.copy2(Path(__file__).resolve().parent.parent / "launcher/xdg-user-dir", out / "usr/bin/xdg-user-dir")
+    for b in ("aera-flutter", "aera-plugin", "xdg-user-dir"):
         (out / "usr/bin" / b).chmod(0o755)
     shutil.copy2(a.engine, lib / "libflutter_engine.so")
     shutil.copy2(a.icu, out / "usr/share/flutter/icudtl.dat")

@@ -1,25 +1,23 @@
-From 09104cf8bb3c8784026ed1c8a3c32b6e7a002fee Mon Sep 17 00:00:00 2001
+From 00acaf138c57fd2ea5dd726cd99dc1753e55e8c1 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:27:24 +0000
 Subject: [PATCH 05/20] plugins: accept Host API 3 pixel plugin manifests;
  per-plugin data directory
 
-The plugin manager only accepts version 2 generic manifests.
-
 Accept protocol 3 manifests whose min_host_api matches, requiring the
 display, touch-input and pixel-surface permissions and allowing
 gpu-acceleration, network and audio-output. Add IsPixel() and the data
-directory used by the launcher.
+directory used by the launcher; removing a plugin removes its data.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
 ---
- aeraui/features/plugins/plugin_manager.cpp | 46 ++++++++++++++++++++--
+ aeraui/features/plugins/plugin_manager.cpp | 52 +++++++++++++++++++---
  aeraui/features/plugins/plugin_manager.hpp | 10 ++++-
- 2 files changed, 51 insertions(+), 5 deletions(-)
+ 2 files changed, 56 insertions(+), 6 deletions(-)
 
 diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
-index d87b435..76e7f4b 100644
+index d87b435..4667e7a 100644
 --- a/aeraui/features/plugins/plugin_manager.cpp
 +++ b/aeraui/features/plugins/plugin_manager.cpp
 @@ -37,6 +37,9 @@ constexpr char kCatalogSignatureUrl[] =
@@ -68,7 +66,20 @@ index d87b435..76e7f4b 100644
        (has_permission("display") && has_permission("touch-input") &&
         std::all_of(plugin.permissions.begin(), plugin.permissions.end(),
                     [](const std::string &permission) {
-@@ -1048,10 +1068,28 @@ bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
+@@ -927,7 +947,11 @@ bool Remove(const std::string &id, Progress &progress) {
+   if (!SafeId(id)) { progress.error = "Invalid plugin identifier."; return false; }
+   const bool memory = RemoveTree(std::string(kMemoryRoot) + "/" + id);
+   const bool storage = RemoveTree(std::string(kStorageRoot) + "/" + id);
+-  if (!memory || !storage) {
++  // The plugin's data goes with it, as an app's does on Android; data on
++  // storage that is not mounted now stays behind.
++  const bool data = RemoveTree(std::string(kMemoryDataRoot) + "/" + id) &&
++                    RemoveTree(std::string(kStorageDataRoot) + "/" + id);
++  if (!memory || !storage || !data) {
+     progress.error = "One or more plugin files could not be removed."; return false;
+   }
+   progress.status = "Plugin removed"; progress.value.store(100); return true;
+@@ -1048,10 +1072,28 @@ bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
  
  bool IsGeneric(const Plugin &plugin) {
    return plugin.type == "ui-runtime" && plugin.entry == "main" &&
@@ -99,7 +110,7 @@ index d87b435..76e7f4b 100644
    return std::find(plugin.permissions.begin(), plugin.permissions.end(),
                     permission) != plugin.permissions.end();
 diff --git a/aeraui/features/plugins/plugin_manager.hpp b/aeraui/features/plugins/plugin_manager.hpp
-index 1e7b91e..54f7b37 100644
+index 1e7b91e..ade4a79 100644
 --- a/aeraui/features/plugins/plugin_manager.hpp
 +++ b/aeraui/features/plugins/plugin_manager.hpp
 @@ -11,7 +11,7 @@
@@ -120,9 +131,9 @@ index 1e7b91e..54f7b37 100644
  bool IsGeneric(const Plugin &plugin);
 +// Host API 3: the plugin draws its own pixels (IsGeneric is also true).
 +bool IsPixel(const Plugin &plugin);
-+// Host API 3's AERA_PLUGIN_DATA: a private directory that survives updates,
-+// on internal storage when it is mounted and in RAM otherwise. Created on
-+// demand; empty when it cannot be.
++// Host API 3's AERA_PLUGIN_DATA: a private directory that survives updates
++// but not Remove, on internal storage when it is mounted and in RAM
++// otherwise. Created on demand; empty when it cannot be.
 +std::string DataDirectory(const Plugin &plugin);
  bool HasPermission(const Plugin &plugin, const std::string &permission);
  
