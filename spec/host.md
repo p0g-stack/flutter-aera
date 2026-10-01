@@ -31,7 +31,8 @@ Manifest and payload rules: `aeraui/features/plugins/plugin_manager.cpp`
 - Host API 3 adds `--aera-host-api=3`, `AERA_HOST_API=3`,
   `AERA_SURFACE_FD=3` and `AERA_PLUGIN_DATA`, a private directory that
   survives updates (`/sdcard/AERA/plugin-data/<id>`, or RAM when storage is
-  not mounted), and `AERA_APPEARANCE=light|dark` from AERA's theme.
+  not mounted, then also `AERA_PLUGIN_DATA_VOLATILE=1`, patch 0022), and
+  `AERA_APPEARANCE=light|dark` from AERA's theme.
 - Nothing gates the GPU (`/dev/kgsl-3d0`, the DMA heap): plugins are root.
 
 ## Wire

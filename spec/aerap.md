@@ -105,7 +105,9 @@ contributes only `flutter_assets` and, for AOT builds, `libapp.so`.
 AERA picks the data directory (`AERA_PLUGIN_DATA`, patch 0005) at every
 launch: `/sdcard/AERA/plugin-data/<id>` when `/sdcard/AERA` exists
 (storage mounted and decrypted; AERA asks to unlock it on first launch),
-otherwise `/tmp/aera/plugin-data/<id>` in RAM. The embedder (`src/env.rs`)
+otherwise `/tmp/aera/plugin-data/<id>` in RAM, and then AERA also sets
+`AERA_PLUGIN_DATA_VOLATILE=1` (patch 0022) so the app can warn that nothing
+it saves survives a reboot (`Platform.environment`). The embedder (`src/env.rs`)
 and the payload's `xdg-user-dir` map the stock APIs onto it:
 
 | Flutter API (stock) | AERA path | Lifetime |
