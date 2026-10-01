@@ -1,4 +1,4 @@
-From 5ff8db9e4ccd273d2338447ecb5c5b4611ab7eb4 Mon Sep 17 00:00:00 2001
+From 1121ecf5cbfddf649f3b166bf4f9318fc53b8003 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:39:30 +0000
 Subject: [PATCH 24/24] aeraui: a held Back always leaves a pixel plugin

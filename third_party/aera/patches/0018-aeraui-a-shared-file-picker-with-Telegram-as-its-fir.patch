@@ -1,4 +1,4 @@
-From b98bd507e5c02e44fa748cff23a28a429745fb70 Mon Sep 17 00:00:00 2001
+From f92f5d180154d48c3e248b41eb6e46a39d4e9e71 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:35:35 +0000
 Subject: [PATCH 18/24] aeraui: a shared file picker, with Telegram as its
@@ -32,13 +32,13 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
 ---
  aeraui/Android.bp                      |   2 +
- aeraui/components/file_picker.cpp      | 627 +++++++++++++++++++++++++
+ aeraui/components/file_picker.cpp      | 644 +++++++++++++++++++++++++
  aeraui/components/file_picker.hpp      |  88 ++++
  aeraui/components/file_picker_list.cpp | 100 ++++
  aeraui/scenes/telegram_scene.cpp       | 309 ++----------
  aeraui/tests/CMakeLists.txt            |   6 +
  aeraui/tests/file_picker_test.cpp      |  73 +++
- 7 files changed, 925 insertions(+), 280 deletions(-)
+ 7 files changed, 942 insertions(+), 280 deletions(-)
  create mode 100644 aeraui/components/file_picker.cpp
  create mode 100644 aeraui/components/file_picker.hpp
  create mode 100644 aeraui/components/file_picker_list.cpp
@@ -59,10 +59,10 @@ index cab79e8..b85d5a2 100644
          "components/picture_viewer.cpp",
 diff --git a/aeraui/components/file_picker.cpp b/aeraui/components/file_picker.cpp
 new file mode 100644
-index 0000000..0546f07
+index 0000000..95e406a
 --- /dev/null
 +++ b/aeraui/components/file_picker.cpp
-@@ -0,0 +1,627 @@
+@@ -0,0 +1,644 @@
 +/* SPDX-License-Identifier: Apache-2.0 */
 +#include "file_picker.hpp"
 +
@@ -570,6 +570,12 @@ index 0000000..0546f07
 +  const auto found = gPickers.find(overlay);
 +  return found == gPickers.end() ? nullptr : found->second;
 +}
++bool Listable(const std::string &path) {
++  DIR *directory = opendir(path.c_str());
++  if (directory == nullptr) return false;
++  closedir(directory);
++  return true;
++}
 +}  // namespace
 +
 +lv_obj_t *Show(lv_obj_t *screen, Request request, Chosen chosen,
@@ -672,6 +678,17 @@ index 0000000..0546f07
 +      !S_ISDIR(info.st_mode)) {
 +    start = req.roots.empty() ? RecoveryStorage() : std::string{};
 +    if (req.roots.empty() && start.empty()) start = "/sdcard";
++  }
++  // The current storage can be a folder that cannot be listed, such as
++  // /data/media before Android has made user 0's folder in it; start in
++  // internal storage instead of on an error.
++  if (req.roots.empty() && !Listable(start)) {
++    for (const char *fallback : {"/data/media/0", "/sdcard"}) {
++      if (Listable(fallback)) {
++        start = fallback;
++        break;
++      }
++    }
 +  }
 +  picker->timer = lv_timer_create(Tick, 35, picker);
 +  Navigate(picker, start);
