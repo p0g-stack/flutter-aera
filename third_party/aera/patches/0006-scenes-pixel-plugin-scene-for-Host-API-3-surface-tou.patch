@@ -1,0 +1,655 @@
+From c0ba59c54eed2616e6f96b2533ea534e3c3d34ca Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 06:27:24 +0000
+Subject: [PATCH 6/7] scenes: pixel plugin scene for Host API 3 (surface,
+ touch, keyboard, Back)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/Android.bp                      |   2 +
+ aeraui/core/engine.cpp                 |   4 +-
+ aeraui/scenes/generic_plugin_scene.cpp |   6 +
+ aeraui/scenes/pixel_plugin_scene.cpp   | 560 +++++++++++++++++++++++++
+ aeraui/scenes/scene.hpp                |   6 +
+ 5 files changed, 577 insertions(+), 1 deletion(-)
+ create mode 100644 aeraui/scenes/pixel_plugin_scene.cpp
+
+diff --git a/aeraui/Android.bp b/aeraui/Android.bp
+index 158e148..cab79e8 100644
+--- a/aeraui/Android.bp
++++ b/aeraui/Android.bp
+@@ -41,6 +41,7 @@ cc_library_static {
+         "features/media/session.cpp",
+         "features/plugin_api/launcher.cpp",
+         "features/plugin_api/session.cpp",
++        "features/plugin_api/surface.cpp",
+         "features/plugins/plugin_manager.cpp",
+         "features/recorder/service.cpp",
+         "features/retroarch/launcher.cpp",
+@@ -69,6 +70,7 @@ cc_library_static {
+         "scenes/media_scene.cpp",
+         "scenes/nas_scene.cpp",
+         "scenes/operation_scene.cpp",
++        "scenes/pixel_plugin_scene.cpp",
+         "scenes/plugin_scene.cpp",
+         "scenes/reboot_scene.cpp",
+         "scenes/recorder_scene.cpp",
+diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
+index 05928ac..07db3c6 100644
+--- a/aeraui/core/engine.cpp
++++ b/aeraui/core/engine.cpp
+@@ -820,7 +820,9 @@ public:
+       return;
+     }
+     if (BrowserHandlePointer(event.slot, visible_x, visible_y,
+-                             event.pressed)) {
++                             event.pressed) ||
++        PixelPluginHandlePointer(event.slot, visible_x, visible_y,
++                                 event.pressed)) {
+       CancelEdgeSwipe();
+       pointer_.pressed = false;
+       if (pointer_device_ != nullptr) lv_indev_reset(pointer_device_, nullptr);
+diff --git a/aeraui/scenes/generic_plugin_scene.cpp b/aeraui/scenes/generic_plugin_scene.cpp
+index 22c1439..fcf8e7b 100644
+--- a/aeraui/scenes/generic_plugin_scene.cpp
++++ b/aeraui/scenes/generic_plugin_scene.cpp
+@@ -580,6 +580,12 @@ void BuildGenericPluginScene(lv_obj_t *screen, const std::string &id,
+     delete scene;
+     return;
+   }
++  if (plugins::IsPixel(scene->plugin)) {
++    const plugins::Plugin plugin = scene->plugin;
++    delete scene;
++    BuildPixelPluginScene(screen, plugin, callback, context);
++    return;
++  }
+   lv_obj_add_event_cb(screen, [](lv_event_t *event) {
+     delete static_cast<GenericScene *>(lv_event_get_user_data(event));
+   }, LV_EVENT_DELETE, scene);
+diff --git a/aeraui/scenes/pixel_plugin_scene.cpp b/aeraui/scenes/pixel_plugin_scene.cpp
+new file mode 100644
+index 0000000..1367af3
+--- /dev/null
++++ b/aeraui/scenes/pixel_plugin_scene.cpp
+@@ -0,0 +1,560 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++// Host API 3: a plugin that draws its own pixels into a shared surface, with
++// AERA forwarding touch, its keyboard and Back. Everything else (runtime
++// verification, process isolation, the bounded control channel) is Host API
++// 2's, unchanged.
++#include "scene.hpp"
++
++#include "browser/runtime.hpp"
++#include "phone_keyboard.hpp"
++#include "plugin_api/launcher.hpp"
++#include "plugin_api/protocol.hpp"
++#include "plugin_api/session.hpp"
++#include "plugin_api/surface.hpp"
++#include "plugins/plugin_manager.hpp"
++#include "ui_components.hpp"
++#include "src/misc/cache/instance/lv_image_cache.h"
++
++#include <aeraui/status_bar.hpp>
++#include <linux/types.h>
++#include <minuitwrp/minui.h>
++
++#include <algorithm>
++#include <cmath>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <sys/system_properties.h>
++#include <thread>
++#include <time.h>
++#include <vector>
++
++namespace aeraui {
++namespace {
++using namespace design;
++using namespace widgets;
++
++constexpr int kMaxPointers = 10;
++
++uint64_t NowMs() {
++  timespec now{};
++  clock_gettime(CLOCK_MONOTONIC, &now);
++  return static_cast<uint64_t>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
++}
++
++struct PixelScene {
++  lv_obj_t *screen = nullptr;
++  lv_display_t *display = nullptr;
++  lv_obj_t *loading = nullptr, *title = nullptr, *detail = nullptr;
++  lv_obj_t *progress = nullptr;
++  lv_obj_t *viewport = nullptr, *image = nullptr, *keyboard = nullptr;
++  lv_image_dsc_t descriptor{};
++  ActionCallback callback = nullptr;
++  void *context = nullptr;
++  plugins::Plugin plugin;
++  web::Preparation preparation;
++  plugin_api::Process process;
++  plugin_api::Session session;
++  plugin_api::Surface surface;
++  std::thread worker;
++  lv_timer_t *timer = nullptr;
++  // The viewport in AERA's logical coordinates, and surface pixels per
++  // logical unit (the panel is usually smaller than AERA's 1440 columns).
++  int view_left = 0, view_top = 0, view_width = 0, view_height = 0;
++  double pixels_per_unit = 1.0;
++  bool touch_pressed[kMaxPointers]{};
++  bool touch_ignored[kMaxPointers]{};
++  bool keyboard_multiline = false;
++  uint32_t keyboard_inset = 0;
++  bool frame_waiting_for_refresh = false;
++  bool showing = false;
++  bool launched = false;
++  bool stopped = false;
++  bool leaving = false;
++  uint64_t launched_ms = 0;
++
++  ~PixelScene();
++};
++
++PixelScene *gPixelScene = nullptr;
++
++void PixelRefreshReady(lv_event_t *event);
++
++PixelScene::~PixelScene() {
++  if (gPixelScene == this) gPixelScene = nullptr;
++  if (timer) lv_timer_delete(timer);
++  if (display)
++    lv_display_remove_event_cb_with_user_data(display, PixelRefreshReady,
++                                              this);
++  preparation.cancel.store(true);
++  if (worker.joinable()) worker.join();
++  if (session.Connected()) {
++    session.Send(plugin_api::Kind::kLifecycle, 0,
++                 static_cast<uint32_t>(plugin_api::Lifecycle::kStop));
++    session.Send(plugin_api::Kind::kClose);
++  }
++  session.Close();
++  process.Stop();
++  // The image may still point into the mapping until LVGL forgets it.
++  if (image) lv_image_set_src(image, nullptr);
++  lv_image_cache_drop(&descriptor);
++  surface.Close();
++  web::RemoveRuntime(preparation.directory);
++}
++
++void SetStatus(PixelScene *scene, const char *title, const std::string &detail) {
++  if (scene->loading) lv_obj_remove_flag(scene->loading, LV_OBJ_FLAG_HIDDEN);
++  if (scene->title) i18n::BindLabel(scene->title, title);
++  if (scene->detail) i18n::BindLabel(scene->detail, detail.c_str());
++}
++
++// Android's own density, so a plugin lays out as apps do on this phone.
++double DeviceScale(int surface_width) {
++  char value[PROP_VALUE_MAX]{};
++  if (__system_property_get("ro.sf.lcd_density", value) > 0) {
++    const long density = strtol(value, nullptr, 10);
++    if (density >= 80 && density <= 1280) return density / 160.0;
++  }
++  // A typical phone is about 411 logical pixels wide.
++  return std::clamp(std::round(surface_width / 411.0 * 4) / 4, 1.0, 4.0);
++}
++
++// A Sheet or other transient modal over the surface owns input.
++bool SheetVisible(lv_obj_t *screen) {
++  for (uint32_t index = 0; index < lv_obj_get_child_count(screen); ++index) {
++    auto *child = lv_obj_get_child(screen, static_cast<int32_t>(index));
++    if (lv_obj_get_user_data(child) == &kModalMarker &&
++        !lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) return true;
++  }
++  return false;
++}
++
++void SendFrameDone(PixelScene *scene, const std::vector<uint32_t> &released) {
++  for (const uint32_t sequence : released)
++    scene->session.Send(plugin_api::Kind::kFrameDone, sequence);
++}
++
++void PixelRefreshReady(lv_event_t *event) {
++  auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
++  if (!scene->frame_waiting_for_refresh) return;
++  scene->frame_waiting_for_refresh = false;
++  std::vector<uint32_t> released;
++  scene->surface.RefreshDone(released);
++  if (scene->session.Connected()) SendFrameDone(scene, released);
++}
++
++uint32_t KeyboardInset(PixelScene *scene) {
++  if (!scene->keyboard || lv_obj_has_flag(scene->keyboard, LV_OBJ_FLAG_HIDDEN))
++    return 0;
++  lv_obj_update_layout(scene->keyboard);
++  lv_area_t area{};
++  lv_obj_get_coords(scene->keyboard, &area);
++  const int covered = scene->view_top + scene->view_height - area.y1;
++  if (covered <= 0) return 0;
++  return static_cast<uint32_t>(std::lround(
++      std::min(covered, scene->view_height) * scene->pixels_per_unit));
++}
++
++void SendKeyboardInset(PixelScene *scene) {
++  const uint32_t inset = KeyboardInset(scene);
++  if (inset == scene->keyboard_inset) return;
++  scene->keyboard_inset = inset;
++  if (scene->session.Negotiated())
++    scene->session.Send(plugin_api::Kind::kKeyboardInset, 0, inset);
++}
++
++void ReleaseTouches(PixelScene *scene) {
++  for (int slot = 0; slot < kMaxPointers; ++slot) {
++    if (scene->touch_pressed[slot] && scene->session.Negotiated())
++      scene->session.Send(plugin_api::Kind::kTouchUp,
++                          static_cast<uint32_t>(slot), 0, 0);
++    scene->touch_pressed[slot] = false;
++    scene->touch_ignored[slot] = false;
++  }
++}
++
++void HideKeyboard(PixelScene *scene) {
++  if (!scene->keyboard) return;
++  lv_obj_add_flag(scene->keyboard, LV_OBJ_FLAG_HIDDEN);
++  SendKeyboardInset(scene);
++}
++
++void ShowKeyboard(PixelScene *scene, uint32_t purpose, bool multiline) {
++  if (!scene->keyboard) return;
++  ReleaseTouches(scene);
++  scene->keyboard_multiline = multiline;
++  lv_keyboard_set_mode(scene->keyboard,
++      purpose == static_cast<uint32_t>(plugin_api::Purpose::kDigits)
++          ? LV_KEYBOARD_MODE_NUMBER : LV_KEYBOARD_MODE_TEXT_LOWER);
++  lv_obj_remove_flag(scene->keyboard, LV_OBJ_FLAG_HIDDEN);
++  lv_obj_move_foreground(scene->keyboard);
++  SendKeyboardInset(scene);
++}
++
++// One key as a Unicode code point; 0 for keyboard UI (mode switches).
++uint32_t KeyCode(const char *key) {
++  if (!strcmp(key, LV_SYMBOL_BACKSPACE)) return 8;
++  if (!strcmp(key, LV_SYMBOL_NEW_LINE)) return 13;
++  const auto *bytes = reinterpret_cast<const unsigned char *>(key);
++  const size_t length = strlen(key);
++  if (length == 1) return bytes[0] >= 32 && bytes[0] < 127 ? bytes[0] : 0;
++  // A single UTF-8 character that is not an LVGL symbol (those live in the
++  // private use area).
++  uint32_t code = 0;
++  size_t expected = 0;
++  if ((bytes[0] & 0xe0) == 0xc0) { code = bytes[0] & 0x1f; expected = 2; }
++  else if ((bytes[0] & 0xf0) == 0xe0) { code = bytes[0] & 0x0f; expected = 3; }
++  else if ((bytes[0] & 0xf8) == 0xf0) { code = bytes[0] & 0x07; expected = 4; }
++  if (expected == 0 || length != expected) return 0;
++  for (size_t i = 1; i < length; ++i) {
++    if ((bytes[i] & 0xc0) != 0x80) return 0;
++    code = (code << 6) | (bytes[i] & 0x3f);
++  }
++  if (code >= 0xe000 && code <= 0xf8ff) return 0;
++  return code;
++}
++
++// Leaves the scene once the plugin is gone, outside of any LVGL callback that
++// still holds the scene.
++void Leave(PixelScene *scene) {
++  if (scene->leaving) return;
++  scene->leaving = true;
++  if (scene->viewport) lv_obj_set_user_data(scene->viewport, nullptr);
++  auto callback = scene->callback;
++  auto *context = scene->context;
++  lv_async_call([](void *data) {
++    auto *pair = static_cast<std::pair<ActionCallback, void *> *>(data);
++    pair->first(Action::kBack, pair->second);
++    delete pair;
++  }, new std::pair<ActionCallback, void *>(callback, context));
++}
++
++void Stop(PixelScene *scene, const char *title, const std::string &detail) {
++  scene->stopped = true;
++  scene->session.Close();
++  scene->process.Stop();
++  if (scene->viewport) {
++    lv_obj_set_user_data(scene->viewport, nullptr);
++    lv_obj_add_flag(scene->viewport, LV_OBJ_FLAG_HIDDEN);
++  }
++  scene->showing = false;
++  HideKeyboard(scene);
++  SetStatus(scene, title, detail);
++}
++
++void HandleMessage(PixelScene *scene, const plugin_api::Message &message) {
++  switch (message.kind) {
++    case plugin_api::Kind::kPresent: {
++      std::vector<uint32_t> released;
++      if (!scene->surface.Present(message.request_id, message.value,
++                                  released)) {
++        Stop(scene, "Plugin stopped",
++             "The plugin presented a frame it does not own.");
++        return;
++      }
++      SendFrameDone(scene, released);
++      break;
++    }
++    case plugin_api::Kind::kKeyboardShow:
++      // Unknown purposes get the text keyboard.
++      ShowKeyboard(scene, message.value, message.flags & 1U);
++      break;
++    case plugin_api::Kind::kKeyboardHide:
++      HideKeyboard(scene);
++      break;
++    case plugin_api::Kind::kSetStatus:
++      // Shown only while there is no frame yet (start-up and failures).
++      if (!scene->showing && scene->detail)
++        i18n::BindLabel(scene->detail, message.text);
++      break;
++    case plugin_api::Kind::kClose:
++      Stop(scene, "Plugin closed", "");
++      Leave(scene);
++      break;
++    case plugin_api::Kind::kRequestOperation:
++      // Host operations stay with the declarative API.
++      scene->session.Send(plugin_api::Kind::kOperationResult,
++                          message.request_id, 0, 0, nullptr,
++                          "Unsupported host operation.");
++      break;
++    default:
++      // Host API 2's page messages have no meaning on a pixel surface.
++      Stop(scene, "Plugin stopped",
++           "The plugin sent a message Host API 3 does not allow.");
++      break;
++  }
++}
++
++void ShowNextFrame(PixelScene *scene) {
++  if (scene->frame_waiting_for_refresh) return;
++  const uint8_t *pixels = scene->surface.LatchNext();
++  if (!pixels) return;
++  scene->descriptor.data = pixels;
++  lv_image_cache_drop(&scene->descriptor);
++  lv_image_set_src(scene->image, &scene->descriptor);
++  lv_obj_invalidate(scene->image);
++  scene->frame_waiting_for_refresh = true;
++  if (!scene->showing) {
++    scene->showing = true;
++    lv_obj_add_flag(scene->loading, LV_OBJ_FLAG_HIDDEN);
++    lv_obj_remove_flag(scene->viewport, LV_OBJ_FLAG_HIDDEN);
++  }
++}
++
++bool Launch(PixelScene *scene) {
++  plugin_api::LaunchOptions options;
++  options.host_api = plugin_api::kProtocolVersion3;
++  options.surface_fd = scene->surface.PluginFd();
++  options.data_dir = plugins::DataDirectory(scene->plugin);
++  int control = -1;
++  std::string error;
++  if (!scene->process.Start(scene->preparation.directory, control, error,
++                            options)) {
++    Stop(scene, "Plugin unavailable", error);
++    return false;
++  }
++  if (!scene->session.Adopt(control, plugin_api::kProtocolVersion3,
++                            {scene->surface.SurfaceMessage()})) {
++    Stop(scene, "Plugin unavailable", scene->session.Status());
++    return false;
++  }
++  return true;
++}
++
++void Tick(lv_timer_t *timer) {
++  auto *scene = static_cast<PixelScene *>(lv_timer_get_user_data(timer));
++  if (scene->stopped) return;
++  if (!scene->preparation.done.load(std::memory_order_acquire)) {
++    lv_bar_set_value(scene->progress, scene->preparation.progress.load(),
++                     LV_ANIM_OFF);
++    return;
++  }
++  if (!scene->preparation.verified) {
++    Stop(scene, "Plugin unavailable", scene->preparation.error);
++    return;
++  }
++  if (!scene->launched) {
++    scene->launched = true;
++    scene->launched_ms = NowMs();
++    lv_bar_set_value(scene->progress, 100, LV_ANIM_ON);
++    i18n::BindLabel(scene->detail, "Starting");
++    if (!Launch(scene)) return;
++  }
++  const bool was_negotiated = scene->session.Negotiated();
++  for (const auto &message : scene->session.Poll()) {
++    HandleMessage(scene, message);
++    if (scene->stopped) return;
++  }
++  if (!was_negotiated && scene->session.Negotiated() &&
++      scene->viewport) {
++    // Back now belongs to the plugin, as on Android.
++    lv_obj_set_user_data(scene->viewport, &kPersistentModalMarker);
++    scene->keyboard_inset = 0;
++    SendKeyboardInset(scene);
++  }
++  if (!scene->session.Connected()) {
++    Stop(scene, "Plugin stopped", scene->session.Status());
++    return;
++  }
++  if (!scene->session.Negotiated() && NowMs() - scene->launched_ms > 5000) {
++    Stop(scene, "Plugin unavailable", "Plugin handshake timed out");
++    return;
++  }
++  ShowNextFrame(scene);
++  if (!scene->process.Running()) {
++    Stop(scene, "Plugin stopped",
++         "Plugin process exited; its resources were reclaimed");
++  }
++}
++}  // namespace
++
++bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed) {
++  auto *s = gPixelScene;
++  if (!s || slot < 0 || slot >= kMaxPointers || !s->showing || s->stopped ||
++      !s->session.Negotiated())
++    return false;
++  if (StatusBarShadeOpen() || SheetVisible(s->screen)) {
++    ReleaseTouches(s);
++    return false;
++  }
++  const bool inside = x >= s->view_left && y >= s->view_top &&
++      x < s->view_left + s->view_width && y < s->view_top + s->view_height;
++  if (s->touch_ignored[slot]) {
++    if (!pressed) s->touch_ignored[slot] = false;
++    return false;
++  }
++  const bool was_pressed = s->touch_pressed[slot];
++  if (pressed && !was_pressed) {
++    bool on_keyboard = false;
++    if (s->keyboard && !lv_obj_has_flag(s->keyboard, LV_OBJ_FLAG_HIDDEN)) {
++      lv_area_t area{};
++      lv_obj_get_coords(s->keyboard, &area);
++      on_keyboard = x >= area.x1 && x <= area.x2 && y >= area.y1 &&
++                    y <= area.y2;
++    }
++    // Side edges stay AERA's Back gesture, as in Browser.
++    const int screen_width = lv_obj_get_width(s->screen);
++    const int edge = std::max(72, screen_width / 20);
++    if (!inside || on_keyboard ||
++        (slot == 0 && (x <= edge || x >= screen_width - edge))) {
++      s->touch_ignored[slot] = true;
++      return false;
++    }
++  } else if (!was_pressed) {
++    return false;
++  }
++  const int px = std::clamp(static_cast<int>(std::lround(
++      (x - s->view_left) * s->pixels_per_unit)), 0,
++      static_cast<int>(s->surface.Geometry().width) - 1);
++  const int py = std::clamp(static_cast<int>(std::lround(
++      (y - s->view_top) * s->pixels_per_unit)), 0,
++      static_cast<int>(s->surface.Geometry().height) - 1);
++  const auto kind = !pressed ? plugin_api::Kind::kTouchUp
++      : was_pressed ? plugin_api::Kind::kTouchMove
++                    : plugin_api::Kind::kTouchDown;
++  s->session.Send(kind, static_cast<uint32_t>(slot),
++                  static_cast<uint32_t>(px), static_cast<uint32_t>(py));
++  s->touch_pressed[slot] = pressed;
++  return true;
++}
++
++void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
++                           ActionCallback callback, void *context) {
++  auto *scene = new PixelScene;
++  gPixelScene = scene;
++  scene->screen = screen;
++  scene->display = lv_obj_get_display(screen);
++  scene->callback = callback;
++  scene->context = context;
++  scene->plugin = plugin;
++  lv_obj_add_event_cb(screen, [](lv_event_t *event) {
++    delete static_cast<PixelScene *>(lv_event_get_user_data(event));
++  }, LV_EVENT_DELETE, scene);
++  MainBackground(screen);
++  AttachStatusBar(screen, callback, context, StatusBarAction::kNone, true);
++
++  // Full width below the status bar; the dock is hidden on app surfaces.
++  scene->view_left = 0;
++  scene->view_top = StatusBarHeight();
++  scene->view_width = lv_obj_get_width(screen);
++  scene->view_height = lv_obj_get_height(screen) - scene->view_top;
++  const int logical_long = std::max(lv_display_get_horizontal_resolution(
++      scene->display), lv_display_get_vertical_resolution(scene->display));
++  const int physical_long = std::max(gr_fb_width(), gr_fb_height());
++  scene->pixels_per_unit = logical_long > 0 && physical_long > 0
++      ? std::min(1.0, static_cast<double>(physical_long) / logical_long)
++      : 1.0;
++
++  plugin_api::SurfaceGeometry geometry;
++  geometry.width = static_cast<uint32_t>(
++      std::lround(scene->view_width * scene->pixels_per_unit));
++  geometry.height = static_cast<uint32_t>(
++      std::lround(scene->view_height * scene->pixels_per_unit));
++  geometry.stride = geometry.width * 4;
++  geometry.slots = 3;
++  geometry.scale = DeviceScale(static_cast<int>(
++      std::min(geometry.width, geometry.height)));
++  geometry.refresh_hz = 60.0;
++
++  scene->viewport = lv_obj_create(screen);
++  Clear(scene->viewport);
++  lv_obj_set_pos(scene->viewport, scene->view_left, scene->view_top);
++  lv_obj_set_size(scene->viewport, scene->view_width, scene->view_height);
++  lv_obj_remove_flag(scene->viewport, LV_OBJ_FLAG_CLICKABLE);
++  lv_obj_add_flag(scene->viewport, LV_OBJ_FLAG_HIDDEN);
++  lv_obj_add_event_cb(scene->viewport, [](lv_event_t *event) {
++    auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
++    if (scene->session.Negotiated()) {
++      ReleaseTouches(scene);
++      scene->session.Send(plugin_api::Kind::kBack);
++    }
++  }, LV_EVENT_CANCEL, scene);
++  scene->image = lv_image_create(scene->viewport);
++  lv_image_set_pivot(scene->image, 0, 0);
++  lv_image_set_scale_x(scene->image, static_cast<uint32_t>(
++      (scene->view_width * 256 + geometry.width / 2) / geometry.width));
++  lv_image_set_scale_y(scene->image, static_cast<uint32_t>(
++      (scene->view_height * 256 + geometry.height / 2) / geometry.height));
++  lv_obj_remove_flag(scene->image, LV_OBJ_FLAG_CLICKABLE);
++  scene->descriptor.header.magic = LV_IMAGE_HEADER_MAGIC;
++  // BGRA bytes are LVGL's ARGB8888. USER1 selects the OpenGL renderer's
++  // streaming-texture path, as for Browser.
++  scene->descriptor.header.cf = LV_COLOR_FORMAT_ARGB8888;
++  scene->descriptor.header.flags =
++      LV_IMAGE_FLAGS_MODIFIABLE | LV_IMAGE_FLAGS_USER1;
++  scene->descriptor.header.w = geometry.width;
++  scene->descriptor.header.h = geometry.height;
++  scene->descriptor.header.stride = geometry.stride;
++  scene->descriptor.data_size = static_cast<uint32_t>(geometry.FrameBytes());
++
++  scene->loading = lv_obj_create(screen);
++  Panel(scene->loading, 44, kMainPanel);
++  lv_obj_set_size(scene->loading, std::min(1312, scene->view_width - 128),
++                  720);
++  lv_obj_align(scene->loading, LV_ALIGN_CENTER, 0, 0);
++  scene->title = Label(scene->loading, plugin.name.c_str(),
++                       &lv_font_montserrat_48, kText);
++  lv_obj_set_width(scene->title, std::min(1150, scene->view_width - 240));
++  lv_obj_set_style_text_align(scene->title, LV_TEXT_ALIGN_CENTER, 0);
++  lv_obj_align(scene->title, LV_ALIGN_TOP_MID, 0, 120);
++  scene->detail = Label(scene->loading,
++      "Verifying the plugin runtime and expanding it into private RAM.",
++      &lv_font_montserrat_32, kMutedStrong);
++  lv_obj_set_width(scene->detail, std::min(1080, scene->view_width - 240));
++  lv_obj_set_style_text_align(scene->detail, LV_TEXT_ALIGN_CENTER, 0);
++  lv_obj_set_style_text_line_space(scene->detail, 16, 0);
++  lv_obj_align(scene->detail, LV_ALIGN_TOP_MID, 0, 240);
++  scene->progress = lv_bar_create(scene->loading);
++  lv_obj_set_size(scene->progress, std::min(1020, scene->view_width - 300),
++                  16);
++  lv_obj_align(scene->progress, LV_ALIGN_TOP_MID, 0, 520);
++  lv_obj_set_style_bg_color(scene->progress, kAccent, LV_PART_INDICATOR);
++  Navigation(screen, Action::kNone, callback, context, true);
++
++  scene->keyboard = lv_keyboard_create(screen);
++  lv_obj_set_user_data(scene->keyboard, &kPersistentModalMarker);
++  phone_keyboard::Apply(scene->keyboard);
++  const bool landscape = Landscape(screen);
++  lv_obj_set_size(scene->keyboard, landscape ? 2408 : scene->view_width,
++                  landscape ? 720 : 760);
++  lv_obj_align(scene->keyboard, landscape ? LV_ALIGN_BOTTOM_RIGHT
++                                          : LV_ALIGN_BOTTOM_MID, 0, 0);
++  lv_obj_add_flag(scene->keyboard, LV_OBJ_FLAG_HIDDEN);
++  lv_obj_add_event_cb(scene->keyboard, [](lv_event_t *event) {
++    auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
++    const auto code = lv_event_get_code(event);
++    if (code == LV_EVENT_CANCEL) {
++      HideKeyboard(scene);
++    } else if (code == LV_EVENT_READY) {
++      // OK submits a single-line field, as Enter would.
++      if (!scene->keyboard_multiline && scene->session.Negotiated())
++        scene->session.Send(plugin_api::Kind::kKey, 0, 13);
++      HideKeyboard(scene);
++    } else if (code == LV_EVENT_VALUE_CHANGED &&
++               scene->session.Negotiated()) {
++      const auto selected = lv_buttonmatrix_get_selected_button(
++          scene->keyboard);
++      const char *key = lv_buttonmatrix_get_button_text(scene->keyboard,
++                                                        selected);
++      const uint32_t code_point = key ? KeyCode(key) : 0;
++      if (code_point)
++        scene->session.Send(plugin_api::Kind::kKey, 0, code_point);
++    }
++  }, LV_EVENT_ALL, scene);
++
++  if (!scene->surface.Create(geometry)) {
++    Stop(scene, "Plugin unavailable",
++         "Could not create the plugin's display surface.");
++    return;
++  }
++  lv_display_add_event_cb(scene->display, PixelRefreshReady,
++                          LV_EVENT_REFR_READY, scene);
++  scene->worker = std::thread([scene] {
++    web::PreparePluginRuntime(scene->preparation, scene->plugin.id.c_str(),
++                              scene->plugin.type.c_str(),
++                              scene->plugin.entry.c_str());
++  });
++  scene->timer = lv_timer_create(Tick, 4, scene);
++}
++
++}  // namespace aeraui
+diff --git a/aeraui/scenes/scene.hpp b/aeraui/scenes/scene.hpp
+index 32d040d..4fdb093 100644
+--- a/aeraui/scenes/scene.hpp
++++ b/aeraui/scenes/scene.hpp
+@@ -147,6 +147,12 @@ void SetSelectedPluginId(const std::string &id);
+ std::string GetSelectedPluginId();
+ void BuildGenericPluginScene(lv_obj_t *screen, const std::string &id,
+                              ActionCallback callback, void *context);
++// Host API 3: BuildGenericPluginScene routes pixel plugins here.
++void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
++                           ActionCallback callback, void *context);
++// Consumes touch slots that start on a pixel plugin's surface and forwards
++// them as Host API 3 touches; edges stay AERA's gestures.
++bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed);
+ void BuildRootManagerScene(lv_obj_t *screen, ActionCallback callback,
+                            void *context);
+ void BuildAboutScene(lv_obj_t *screen, ActionCallback callback, void *context);
+-- 
+2.43.0
+

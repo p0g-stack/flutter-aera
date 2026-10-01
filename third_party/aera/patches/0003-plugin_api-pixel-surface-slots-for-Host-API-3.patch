@@ -1,0 +1,265 @@
+From f39e9983bdde9b6c1d3468b7cc79e44afbf4401f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 06:16:35 +0000
+Subject: [PATCH 3/7] plugin_api: pixel surface slots for Host API 3
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/features/plugin_api/surface.cpp      | 100 ++++++++++++++++++++
+ aeraui/features/plugin_api/surface.hpp      |  75 +++++++++++++++
+ aeraui/features/plugin_api/surface_test.cpp |  53 +++++++++++
+ 3 files changed, 228 insertions(+)
+ create mode 100644 aeraui/features/plugin_api/surface.cpp
+ create mode 100644 aeraui/features/plugin_api/surface.hpp
+ create mode 100644 aeraui/features/plugin_api/surface_test.cpp
+
+diff --git a/aeraui/features/plugin_api/surface.cpp b/aeraui/features/plugin_api/surface.cpp
+new file mode 100644
+index 0000000..0ec9af3
+--- /dev/null
++++ b/aeraui/features/plugin_api/surface.cpp
+@@ -0,0 +1,100 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include "surface.hpp"
++
++#include <cstdio>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++namespace aeraui::plugin_api {
++
++bool SurfaceGeometry::Valid() const {
++  return width >= 1 && width <= 8192 && height >= 1 && height <= 8192 &&
++         stride >= width * 4 && stride % 4 == 0 && slots >= 2 &&
++         slots <= kMaxSurfaceSlots && scale >= 0.5 && scale <= 8.0 &&
++         refresh_hz >= 1.0 && refresh_hz <= 240.0;
++}
++
++bool Surface::Create(const SurfaceGeometry &geometry) {
++  Close();
++  if (!geometry.Valid()) return false;
++  const int fd = memfd_create("aera-plugin-surface",
++                              MFD_CLOEXEC | MFD_ALLOW_SEALING);
++  if (fd < 0) return false;
++  if (ftruncate(fd, static_cast<off_t>(geometry.TotalBytes())) != 0 ||
++      fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL) != 0) {
++    close(fd);
++    return false;
++  }
++  void *pixels = mmap(nullptr, geometry.TotalBytes(), PROT_READ, MAP_SHARED,
++                      fd, 0);
++  if (pixels == MAP_FAILED) {
++    close(fd);
++    return false;
++  }
++  geometry_ = geometry;
++  fd_ = fd;
++  pixels_ = static_cast<uint8_t *>(pixels);
++  slots_.assign(geometry.slots, Slot{});
++  pending_ = latched_ = shown_ = -1;
++  last_sequence_ = 0;
++  return true;
++}
++
++void Surface::Close() {
++  if (pixels_) munmap(pixels_, geometry_.TotalBytes());
++  if (fd_ >= 0) close(fd_);
++  pixels_ = nullptr;
++  fd_ = -1;
++  slots_.clear();
++  pending_ = latched_ = shown_ = -1;
++}
++
++Message Surface::SurfaceMessage() const {
++  Message message;
++  message.kind = Kind::kSurface;
++  message.request_id = geometry_.stride;
++  message.value = geometry_.width;
++  message.flags = geometry_.height;
++  snprintf(message.title, sizeof(message.title), "%s", kSurfaceFormat);
++  snprintf(message.text, sizeof(message.text), "slots=%u scale=%g refresh=%g",
++           geometry_.slots, geometry_.scale, geometry_.refresh_hz);
++  return message;
++}
++
++bool Surface::Present(uint32_t sequence, uint32_t slot,
++                      std::vector<uint32_t> &released) {
++  if (!pixels_ || slot >= slots_.size() || sequence == 0 ||
++      sequence == last_sequence_ || slots_[slot].owner != Owner::kPlugin)
++    return false;
++  if (pending_ >= 0) {
++    // Superseded before it was ever latched: give it straight back.
++    released.push_back(slots_[pending_].sequence);
++    slots_[pending_] = Slot{};
++  }
++  slots_[slot] = {Owner::kPending, sequence};
++  pending_ = static_cast<int>(slot);
++  last_sequence_ = sequence;
++  return true;
++}
++
++const uint8_t *Surface::LatchNext() {
++  if (pending_ < 0 || latched_ >= 0) return nullptr;
++  latched_ = pending_;
++  pending_ = -1;
++  slots_[latched_].owner = Owner::kLatched;
++  return Pixels(latched_);
++}
++
++void Surface::RefreshDone(std::vector<uint32_t> &released) {
++  if (latched_ < 0) return;
++  if (shown_ >= 0) {
++    released.push_back(slots_[shown_].sequence);
++    slots_[shown_] = Slot{};
++  }
++  shown_ = latched_;
++  latched_ = -1;
++  slots_[shown_].owner = Owner::kShown;
++}
++
++}  // namespace aeraui::plugin_api
+diff --git a/aeraui/features/plugin_api/surface.hpp b/aeraui/features/plugin_api/surface.hpp
+new file mode 100644
+index 0000000..d4351df
+--- /dev/null
++++ b/aeraui/features/plugin_api/surface.hpp
+@@ -0,0 +1,75 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#pragma once
++
++#include "protocol.hpp"
++
++#include <cstdint>
++#include <vector>
++
++namespace aeraui::plugin_api {
++
++struct SurfaceGeometry {
++  uint32_t width = 0;
++  uint32_t height = 0;
++  uint32_t stride = 0;  // bytes per row
++  uint32_t slots = 3;
++  double scale = 1.0;   // physical pixels per logical pixel for the plugin
++  double refresh_hz = 60.0;
++  uint64_t FrameBytes() const { return uint64_t{stride} * height; }
++  uint64_t TotalBytes() const { return FrameBytes() * slots; }
++  bool Valid() const;
++};
++
++// Host API 3's pixel surface: a sealed memfd of `slots` BGRA8888 top-down
++// frames that the plugin writes and AERA reads. Each slot belongs to exactly
++// one side. The plugin hands one over with PRESENT; AERA hands it back with
++// FRAME_DONE once a newer frame has replaced it on screen, or at once if a
++// newer frame arrived before it was ever shown. The slot on screen stays
++// AERA's, because LVGL may redraw from it at any time.
++//
++// No LVGL here, so the state machine is unit-tested on its own.
++class Surface final {
++ public:
++  ~Surface() { Close(); }
++  Surface() = default;
++  Surface(const Surface &) = delete;
++  Surface &operator=(const Surface &) = delete;
++
++  // Creates and maps the frames. PluginFd() is what the plugin gets on fd 3.
++  bool Create(const SurfaceGeometry &geometry);
++  void Close();
++  int PluginFd() const { return fd_; }
++  const SurfaceGeometry &Geometry() const { return geometry_; }
++  Message SurfaceMessage() const;
++
++  // A PRESENT from the plugin. False for a protocol violation (unknown slot,
++  // a slot AERA holds, sequence 0 or reused). `released` receives sequences
++  // to answer with FRAME_DONE right away (a skipped, never shown frame).
++  bool Present(uint32_t sequence, uint32_t slot,
++               std::vector<uint32_t> &released);
++  // The newest presented frame not yet on screen, latched for the next
++  // refresh; nullptr if there is none.
++  const uint8_t *LatchNext();
++  // The refresh that showed the latched frame has finished. `released`
++  // receives the sequence of the frame it replaced.
++  void RefreshDone(std::vector<uint32_t> &released);
++  bool HasFrame() const { return shown_ >= 0; }
++
++ private:
++  enum class Owner : uint8_t { kPlugin, kPending, kLatched, kShown };
++  struct Slot {
++    Owner owner = Owner::kPlugin;
++    uint32_t sequence = 0;
++  };
++  const uint8_t *Pixels(int slot) const {
++    return pixels_ + static_cast<uint64_t>(slot) * geometry_.FrameBytes();
++  }
++  SurfaceGeometry geometry_{};
++  int fd_ = -1;
++  uint8_t *pixels_ = nullptr;
++  std::vector<Slot> slots_;
++  int pending_ = -1, latched_ = -1, shown_ = -1;
++  uint32_t last_sequence_ = 0;
++};
++
++}  // namespace aeraui::plugin_api
+diff --git a/aeraui/features/plugin_api/surface_test.cpp b/aeraui/features/plugin_api/surface_test.cpp
+new file mode 100644
+index 0000000..7a238f5
+--- /dev/null
++++ b/aeraui/features/plugin_api/surface_test.cpp
+@@ -0,0 +1,53 @@
++// SPDX-License-Identifier: Apache-2.0
++#include "surface.hpp"
++
++#include <cassert>
++#include <cstring>
++#include <sys/mman.h>
++#include <unistd.h>
++#include <vector>
++
++using namespace aeraui::plugin_api;
++
++int main() {
++  SurfaceGeometry g;
++  g.width = 4; g.height = 2; g.stride = 16; g.slots = 3; g.scale = 3.5;
++  Surface surface;
++  assert(surface.Create(g));
++  // The plugin writes through its own mapping of fd 3.
++  auto *plugin = static_cast<uint8_t *>(mmap(nullptr, g.TotalBytes(),
++      PROT_READ | PROT_WRITE, MAP_SHARED, surface.PluginFd(), 0));
++  assert(plugin != MAP_FAILED);
++  // Sealed: the plugin cannot shrink the frames under AERA.
++  assert(ftruncate(surface.PluginFd(), 1) != 0);
++
++  const Message m = surface.SurfaceMessage();
++  assert(m.kind == Kind::kSurface && m.value == 4 && m.flags == 2 &&
++         m.request_id == 16 && !strcmp(m.title, "BGRA8888") &&
++         !strcmp(m.text, "slots=3 scale=3.5 refresh=60"));
++
++  std::vector<uint32_t> released;
++  assert(!surface.Present(0, 0, released));   // sequence 0
++  assert(!surface.Present(1, 3, released));   // no such slot
++  memset(plugin, 0x11, g.FrameBytes());
++  assert(surface.Present(1, 0, released) && released.empty());
++  assert(!surface.Present(2, 0, released));   // slot 0 is AERA's now
++  assert(!surface.Present(1, 1, released));   // sequence reused
++  const uint8_t *frame = surface.LatchNext();
++  assert(frame && frame[0] == 0x11 && !surface.LatchNext());
++  surface.RefreshDone(released);
++  assert(released.empty() && surface.HasFrame());  // first frame replaces none
++
++  // Two frames before a refresh: the older one is skipped and returned.
++  assert(surface.Present(2, 1, released) && released.empty());
++  assert(surface.Present(3, 2, released));
++  assert(released == std::vector<uint32_t>{2});
++  released.clear();
++  assert(surface.Present(4, 1, released));     // slot 1 was given back
++  assert(released == std::vector<uint32_t>{3});
++  released.clear();
++  assert(surface.LatchNext() != nullptr);
++  surface.RefreshDone(released);
++  assert(released == std::vector<uint32_t>{1});  // frame 1 left the screen
++  return 0;
++}
+-- 
+2.43.0
+

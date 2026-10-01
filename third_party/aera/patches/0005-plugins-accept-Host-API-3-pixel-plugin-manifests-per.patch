@@ -1,0 +1,125 @@
+From c89ff44dad9aa915f0e9f9c8e1204a51eaa32c5e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 06:27:24 +0000
+Subject: [PATCH 5/7] plugins: accept Host API 3 pixel plugin manifests;
+ per-plugin data directory
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/features/plugins/plugin_manager.cpp | 46 ++++++++++++++++++++--
+ aeraui/features/plugins/plugin_manager.hpp | 10 ++++-
+ 2 files changed, 51 insertions(+), 5 deletions(-)
+
+diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
+index d87b435..76e7f4b 100644
+--- a/aeraui/features/plugins/plugin_manager.cpp
++++ b/aeraui/features/plugins/plugin_manager.cpp
+@@ -37,6 +37,9 @@ constexpr char kCatalogSignatureUrl[] =
+ constexpr char kCacheRoot[] = "/tmp/aera-plugin-store";
+ constexpr char kStorageRoot[] = "/sdcard/AERA/plugins";
+ constexpr char kMemoryRoot[] = "/tmp/aera/plugins";
++// Kept apart from the install roots, which an update replaces wholesale.
++constexpr char kStorageDataRoot[] = "/sdcard/AERA/plugin-data";
++constexpr char kMemoryDataRoot[] = "/tmp/aera/plugin-data";
+ constexpr uint64_t kMaxCatalog = 1024 * 1024;
+ constexpr uint64_t kMaxManifest = 64 * 1024;
+ constexpr uint64_t kMaxSignature = 4096;
+@@ -298,15 +301,32 @@ bool ParsePlugin(const std::string &text, Plugin &plugin, std::string &error,
+       (plugin.id == "streams" && plugin.type == "app-runtime" &&
+        plugin.entry == "streams");
+   const bool generic_entry = plugin.type == "ui-runtime" &&
+-      plugin.entry == "main" && plugin.protocol_version == 2 &&
+-      plugin.min_host_api == 2 &&
++      plugin.entry == "main" &&
++      (plugin.protocol_version == 2 || plugin.protocol_version == 3) &&
++      plugin.min_host_api == plugin.protocol_version &&
+       plugin.executable == "usr/bin/aera-plugin" &&
+       plugin.icon.size() <= 24;
++  const bool pixel_entry = generic_entry && plugin.protocol_version == 3;
+   const auto has_permission = [&](const char *name) {
+     return std::find(plugin.permissions.begin(), plugin.permissions.end(), name) !=
+            plugin.permissions.end();
+   };
+-  const bool permissions_ok = !generic_entry ||
++  // Host API 3 pixel plugins draw and take input through their own surface;
++  // host operations stay with the declarative API.
++  const bool pixel_permissions_ok = !pixel_entry ||
++      (has_permission("display") && has_permission("touch-input") &&
++       has_permission("pixel-surface") &&
++       std::all_of(plugin.permissions.begin(), plugin.permissions.end(),
++                   [](const std::string &permission) {
++                     return permission == "display" ||
++                            permission == "touch-input" ||
++                            permission == "pixel-surface" ||
++                            permission == "gpu-acceleration" ||
++                            permission == "network" ||
++                            permission == "audio-output";
++                   }));
++  const bool permissions_ok = pixel_entry ? pixel_permissions_ok :
++      !generic_entry ||
+       (has_permission("display") && has_permission("touch-input") &&
+        std::all_of(plugin.permissions.begin(), plugin.permissions.end(),
+                    [](const std::string &permission) {
+@@ -1048,10 +1068,28 @@ bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
+ 
+ bool IsGeneric(const Plugin &plugin) {
+   return plugin.type == "ui-runtime" && plugin.entry == "main" &&
+-         plugin.protocol_version == 2 &&
++         (plugin.protocol_version == 2 || plugin.protocol_version == 3) &&
+          plugin.executable == "usr/bin/aera-plugin";
+ }
+ 
++bool IsPixel(const Plugin &plugin) {
++  return IsGeneric(plugin) && plugin.protocol_version == 3;
++}
++
++std::string DataDirectory(const Plugin &plugin) {
++  if (!SafeId(plugin.id)) return {};
++  struct stat storage{};
++  const bool on_storage = stat("/sdcard/AERA", &storage) == 0 &&
++      S_ISDIR(storage.st_mode);
++  const std::string root = on_storage ? kStorageDataRoot : kMemoryDataRoot;
++  const std::string path = root + "/" + plugin.id;
++  if (!EnsureDirectory(root)) return {};
++  if (mkdir(path.c_str(), 0700) != 0 && errno != EEXIST) return {};
++  struct stat info{};
++  if (lstat(path.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return {};
++  return path;
++}
++
+ bool HasPermission(const Plugin &plugin, const std::string &permission) {
+   return std::find(plugin.permissions.begin(), plugin.permissions.end(),
+                    permission) != plugin.permissions.end();
+diff --git a/aeraui/features/plugins/plugin_manager.hpp b/aeraui/features/plugins/plugin_manager.hpp
+index 1e7b91e..54f7b37 100644
+--- a/aeraui/features/plugins/plugin_manager.hpp
++++ b/aeraui/features/plugins/plugin_manager.hpp
+@@ -11,7 +11,7 @@
+ 
+ namespace aeraui::plugins {
+ 
+-constexpr uint32_t kHostApi = 2;
++constexpr uint32_t kHostApi = 3;
+ 
+ enum class Location {
+   kNone = 0,
+@@ -98,7 +98,15 @@ bool IsPackageFile(const std::string &name);
+ // payload hash is checked by its consumer immediately before extraction/use.
+ bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
+                     std::string &error);
++// A Host API 2 declarative plugin or a Host API 3 pixel plugin; both run
++// usr/bin/aera-plugin from an expanded ui-runtime payload.
+ bool IsGeneric(const Plugin &plugin);
++// Host API 3: the plugin draws its own pixels (IsGeneric is also true).
++bool IsPixel(const Plugin &plugin);
++// Host API 3's AERA_PLUGIN_DATA: a private directory that survives updates,
++// on internal storage when it is mounted and in RAM otherwise. Created on
++// demand; empty when it cannot be.
++std::string DataDirectory(const Plugin &plugin);
+ bool HasPermission(const Plugin &plugin, const std::string &permission);
+ 
+ const char *LocationLabel(Location location);
+-- 
+2.43.0
+

@@ -5,10 +5,10 @@ is to GTK, this is to AERA: it hosts `libflutter_engine.so`, renders through GL
 (Zink), Vulkan or Impeller, hands frames to AERA, and answers Flutter's standard
 platform channels from AERA's input. A stock app runs unmodified.
 
-It targets AERA's **generic pixel + GPU plugin host** (Host API 3). That host
-is not published yet, so we build against an assumed interface
-([aera-flutter-demo#1](https://github.com/1vivy/aera-flutter-demo/issues/1));
-every assumption is marked `ASSUMED` until AERA publishes. Plugins run as root
+It targets AERA's **pixel plugin host** (Host API 3). AERA has not published
+one, so we wrote it: a patch series against AERA in `third_party/aera/`,
+built into the devicelab Cuttlefish image and offered upstream from there.
+`spec/host.md` is its contract. Plugins run as root
 in recovery's namespaces, so apps get root in-process; there is no helper.
 
 ## Parity reference
@@ -30,7 +30,7 @@ builds, packs and runs `.aerap`s and adds the `aera/` platform folder), app code
 ## Nest
 
 ```
-spec/host.md          Host API 3 messages we rely on, ASSUMED items marked
+spec/host.md          the Host API 3 contract (launch, handshake, frames, input)
 spec/engine-pin.md    Flutter release, engine revision, header provenance
 src/engine.rs         dlopen, proc table, project args, run          ≈ fl_engine
 src/view.rs           window metrics, pointer, frame slots           ≈ fl_view
@@ -42,7 +42,8 @@ src/ime.rs            text-input model
 src/env.rs            XDG dirs inside AERA_PLUGIN_DATA
 launcher/             static aera-plugin: private mount ns, font + CA binds, exec via payload ld-linux
 sim/                  aera-host-sim: AERA's side on a PC
-vendor/               AERA protocol.hpp + flutter_embedder.h, fetched by hash
+vendor/               AERA protocol.hpp (as published and as patched) + flutter_embedder.h
+third_party/aera/     Host API 3 for AERA, as patches against its pin
 third_party/mesa/     Zink-on-KGSL surfaceless patch
 ci/                   engine + gen_snapshot, Mesa, runtime-kit build scripts
 example/              the counter app as an .aerap
@@ -50,12 +51,14 @@ example/              the counter app as an .aerap
 
 ## Status
 
-The counter app renders and counts taps in `sim/` against the assumed host
-(GL renderer, full-frame readback, x64 debug engine). Not yet: the arm64
-runtime kit and a device run, async/damage readback, Vulkan and Impeller,
-`example/` .aerap.
+The counter app renders and counts taps in `sim/` and through AERA's own
+launcher, session and pixel surface with the Host API 3 patches
+(`ci/aera-host-check.sh`), on the GL renderer with full-frame readback. The
+debug runtime kits for arm64 and x64 are published (`spec/aerap.md`). Not
+yet: a run inside an AERA image (devicelab's Cuttlefish build), a device
+run, async/damage readback, Vulkan and Impeller, `example/` .aerap.
 
-Next, in order: the arm64 runtime kit and a phone run; then a debug run for
+Next, in order: the Host API 3 image on Cuttlefish; then a debug run for
 `flutter_p0g run aera` hot reload, flutter-pi style: a debug (JIT) engine in
 the kit loading the app's `kernel_blob.bin`, the VM service URL in the log
 (the debug engine already prints it) for port forwarding and
@@ -65,6 +68,7 @@ sim; then faster frame copies, Vulkan, Impeller. `spec/aerap.md` is the package 
 ```sh
 cargo test --workspace
 ci/sim-smoke.sh /tmp/smoke      # needs flutter 3.47.5 on PATH; frames in /tmp/smoke/sim
+sudo ci/aera-host-check.sh /tmp/smoke   # AERA + patches; frames in /tmp/smoke/aera-host
 ```
 
 ## License

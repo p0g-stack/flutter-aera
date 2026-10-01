@@ -1,12 +1,11 @@
 //! AERA's generic pixel + GPU plugin host (Host API 3), as far as this
 //! embedder relies on it.
 //!
-//! Host API 3 is not published. Everything here is Host API 2
-//! (`vendor/aera/protocol.hpp`, verbatim from AERA) plus the additions we
-//! asked for in aera-flutter-demo#1, which live in
-//! `vendor/aera/protocol_v3_assumed.hpp` and are marked `ASSUMED` there, here
-//! and in `spec/host.md`. The three change together; `tests/drift.rs` keeps
-//! the numbers in step.
+//! Host API 2 is AERA's (`vendor/aera/protocol.hpp`, verbatim). Host API 3
+//! is our patch series for AERA (`third_party/aera/`), whose header is
+//! vendored as `vendor/aera/protocol_v3.hpp` until AERA takes it. That
+//! header, this module and `spec/host.md` change together; `tests/drift.rs`
+//! keeps the numbers in step.
 
 pub mod surface;
 pub mod transport;
@@ -16,7 +15,7 @@ pub use transport::Control;
 
 /// `A2PI`, Host API 2.
 pub const MAGIC: u32 = 0x4132_5049;
-/// ASSUMED: Host API 3 bumps the wire version (Host API 2 is 2).
+/// Host API 3 (`kProtocolVersion3`); Host API 2 is 2.
 pub const PROTOCOL_VERSION: u32 = 3;
 pub const TITLE_LEN: usize = 96;
 pub const TEXT_LEN: usize = 1024;
@@ -26,12 +25,12 @@ pub const MESSAGE_LEN: usize = 6 * 4 + TITLE_LEN + TEXT_LEN;
 /// Host API 2: the control socket, also named in `AERA_PLUGIN_FD`.
 pub const CONTROL_FD: i32 = 4;
 pub const CONTROL_FD_ENV: &str = "AERA_PLUGIN_FD";
-/// ASSUMED: the frame memfd, also named in `AERA_SURFACE_FD`.
+/// Host API 3: the frame memfd, also named in `AERA_SURFACE_FD`.
 pub const SURFACE_FD: i32 = 3;
 pub const SURFACE_FD_ENV: &str = "AERA_SURFACE_FD";
 /// Host API 2: where the payload was extracted.
 pub const ROOT_ENV: &str = "AERA_PLUGIN_ROOT";
-/// ASSUMED: persistent per-plugin data directory.
+/// Host API 3: persistent per-plugin data directory.
 pub const DATA_ENV: &str = "AERA_PLUGIN_DATA";
 
 /// `HELLO_ACK` feature bits.
@@ -40,13 +39,13 @@ pub mod feature {
     pub const METRICS: u32 = 1 << 0;
     /// Host API 2.
     pub const BACK_NAVIGATION: u32 = 1 << 1;
-    /// ASSUMED.
+    /// Host API 3.
     pub const PIXEL_SURFACE: u32 = 1 << 2;
-    /// ASSUMED.
+    /// Host API 3.
     pub const KEYBOARD_INSET: u32 = 1 << 3;
 }
 
-/// Message kinds. Host API 2 numbers are unchanged; ASSUMED kinds are
+/// Message kinds. Host API 2 numbers are unchanged; Host API 3 kinds are
 /// appended after each direction's last Host API 2 kind.
 pub mod kind {
     // Plugin to host, Host API 2.
@@ -55,7 +54,7 @@ pub mod kind {
     pub const CLOSE: u32 = 7;
     /// Host API 2's last plugin kind.
     pub const SET_BACK_ACTION: u32 = 11;
-    // Plugin to host, ASSUMED.
+    // Plugin to host, Host API 3.
     /// A frame is ready: `request_id` sequence, `value` slot.
     pub const PRESENT: u32 = 12;
     /// Show AERA's keyboard: `value` input purpose ([`super::purpose`]),
@@ -68,11 +67,12 @@ pub mod kind {
     pub const LIFECYCLE: u32 = 66;
     /// Host API 2's last host kind.
     pub const OPERATION_RESULT: u32 = 67;
-    // Host to plugin, ASSUMED.
+    // Host to plugin, Host API 3.
     /// Surface geometry: `value` width, `flags` height, `request_id` stride,
     /// `title` pixel format, `text` `slots=N scale=S refresh=HZ`.
     pub const SURFACE: u32 = 68;
-    /// The frame `request_id` has been shown; its slot is free again.
+    /// The frame `request_id`'s slot is the plugin's again: a newer frame
+    /// replaced it on screen, or superseded it before it was shown.
     pub const FRAME_DONE: u32 = 69;
     /// `request_id` pointer, `value` x, `flags` y, in surface pixels.
     pub const TOUCH_DOWN: u32 = 70;
@@ -101,7 +101,7 @@ pub mod lifecycle {
     pub const STOP: u32 = 3;
 }
 
-/// ASSUMED: keyboard input purposes, as AERA Browser's keyboard has them.
+/// Host API 3: keyboard input purposes, as AERA Browser's keyboard has them.
 pub mod purpose {
     pub const TEXT: u32 = 0;
     pub const DIGITS: u32 = 2;

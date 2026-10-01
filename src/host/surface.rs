@@ -1,9 +1,9 @@
 //! The pixel surface: geometry from `SURFACE` and the shared frame slots.
 //!
-//! ASSUMED (aera-flutter-demo#1, items 3 and 4): a sealed memfd holding
-//! `slots` BGRA8888 top-down frames of `stride * height` bytes. The plugin
-//! writes a free slot, sends `PRESENT`, and may not touch that slot again
-//! until the host answers `FRAME_DONE` for it.
+//! Host API 3: a sealed memfd holding `slots` BGRA8888 top-down frames of
+//! `stride * height` bytes. The plugin writes a free slot, sends `PRESENT`,
+//! and may not touch that slot again until the host answers `FRAME_DONE`
+//! for it (AERA keeps the frame on screen until a newer one replaces it).
 
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -23,7 +23,7 @@ pub struct Geometry {
     pub slots: u32,
     /// Physical pixels per logical pixel.
     pub scale: f64,
-    /// ASSUMED: the panel's refresh rate, for frame timing.
+    /// The panel's refresh rate, for frame timing.
     pub refresh_hz: f64,
 }
 

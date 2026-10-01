@@ -1,8 +1,7 @@
 # The `.aerap` layout
 
-What `flutter_p0g` produces and AERA installs. Stable for building against
-the assumed host; fields marked **ASSUMED** follow Host API 3 when AERA
-publishes it.
+What `flutter_p0g` produces and AERA installs with the Host API 3 patches
+(`third_party/aera/`, patch 0005).
 
 ## Package
 
@@ -41,11 +40,12 @@ Host API 2's schema (`plugin_manager.cpp`):
 - `id`: lowercase letters, digits, `-` and `.`, 1–64, not starting or ending
   with `.`; never `browser`.
 - `name` ≤ 80, `description` ≤ 320, `version` ≤ 32, `icon` ≤ 24 characters.
-- `min_host_api` 3, `protocol_version` 3, permissions `pixel-surface` and
-  `gpu-acceleration`: **ASSUMED** (Host API 2 accepts only 2 and its own
-  permission list). `display` and `touch-input` are Host API 2's required
-  pair. Add `network` or `audio-output` only when the app needs them
-  (**ASSUMED** names).
+- `min_host_api` 3 and `protocol_version` 3 make it a pixel plugin.
+  Permissions: `display`, `touch-input` and `pixel-surface` are required;
+  `gpu-acceleration`, `network` and `audio-output` are the only others
+  allowed. They are declarations shown to the user: plugins run as root and
+  nothing enforces them. Add `network` or `audio-output` only when the app
+  needs them.
 
 ### Who sets which field
 

@@ -13,8 +13,12 @@ jobs:
           export PATH=$RUNNER_TEMP/flutter/bin:$PATH
           flutter --disable-analytics >/dev/null
           ci/sim-smoke.sh "$RUNNER_TEMP/smoke"
+      - name: Counter through AERA with the Host API 3 patches
+        run: sudo ci/aera-host-check.sh "$RUNNER_TEMP/smoke"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: sim-frames
-          path: ${{ runner.temp }}/smoke/sim/*.png
+          path: |
+            ${{ runner.temp }}/smoke/sim/*.png
+            ${{ runner.temp }}/smoke/aera-host/*.ppm

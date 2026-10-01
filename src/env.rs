@@ -2,7 +2,7 @@
 //!
 //! `path_provider_linux` (and anything else following the XDG base
 //! directory spec, as on GTK) finds its directories through `XDG_*`. AERA
-//! gives each plugin a persistent directory (ASSUMED `AERA_PLUGIN_DATA`), so
+//! gives each plugin a persistent directory (Host API 3's `AERA_PLUGIN_DATA`), so
 //! the XDG homes point inside it. Values already set are kept.
 
 use std::path::Path;

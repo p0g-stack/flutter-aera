@@ -2,8 +2,9 @@
 //!
 //! It makes the frame memfd and control socket as AERA would, starts the
 //! embedder with them on fds 3 and 4, answers the handshake, takes each
-//! `PRESENT` (answering `FRAME_DONE` on a simulated vsync), replays a
-//! script of input, and writes frames as PNG files.
+//! `PRESENT` and hands slots back with `FRAME_DONE` as AERA's pixel scene
+//! does (see [`Screen`]), replays a script of input, and writes frames as
+//! PNG files.
 //!
 //! ```text
 //! aera-host-sim --root PAYLOAD [--embedder BIN] [--out DIR]
@@ -28,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use flutter_aera::host::surface::create_memfd;
 use flutter_aera::host::transport::pair;
-use flutter_aera::host::{feature, kind, lifecycle, Control, Geometry, Message};
+use flutter_aera::host::{feature, kind, lifecycle, Control, Geometry, Message, PROTOCOL_VERSION};
 
 #[derive(Debug, Clone)]
 enum Action {
@@ -149,6 +150,47 @@ fn main() -> ExitCode {
     }
 }
 
+/// AERA's pixel scene's slot ownership (`plugin_api/surface.cpp` in the
+/// Host API 3 patches): a newer `PRESENT` releases a pending frame at once;
+/// each refresh shows the latched frame and releases the one it replaced;
+/// the frame on screen stays the host's.
+#[derive(Default)]
+struct Screen {
+    /// (sequence, slot) of each stage.
+    pending: Option<(u32, usize)>,
+    latched_frame: Option<(u32, usize)>,
+    shown: Option<(u32, usize)>,
+    /// The slot being drawn this refresh, for snapshots.
+    latched: Option<usize>,
+}
+
+impl Screen {
+    fn holds(&self, slot: usize) -> bool {
+        [self.pending, self.latched_frame, self.shown].iter().flatten().any(|(_, s)| *s == slot)
+    }
+
+    /// `None` for a slot the host holds; else the sequence to release now.
+    fn present(&mut self, seq: u32, slot: usize) -> Option<Option<u32>> {
+        if self.holds(slot) {
+            return None;
+        }
+        Some(self.pending.replace((seq, slot)).map(|(s, _)| s))
+    }
+
+    /// One display refresh: the latched frame goes on screen and the one it
+    /// replaces is released; the newest pending frame is latched for the
+    /// next refresh.
+    fn refresh(&mut self) -> Vec<u32> {
+        let mut released = vec![];
+        if let Some(next) = self.latched_frame.take() {
+            released.extend(self.shown.replace(next).map(|(s, _)| s));
+        }
+        self.latched_frame = self.pending.take();
+        self.latched = self.latched_frame.map(|(_, slot)| slot);
+        released
+    }
+}
+
 fn run() -> Result<ExitCode, String> {
     let o = parse()?;
     let g = o.geometry;
@@ -202,7 +244,7 @@ fn run() -> Result<ExitCode, String> {
         return Err(format!("bad HELLO {hello:?}"));
     }
     let features = feature::PIXEL_SURFACE | feature::BACK_NAVIGATION | feature::KEYBOARD_INSET;
-    host.send(&Message::with(kind::HELLO_ACK, 0, features, 0)).map_err(|e| e.to_string())?;
+    host.send(&Message::with(kind::HELLO_ACK, 0, PROTOCOL_VERSION, features)).map_err(|e| e.to_string())?;
     host.send(&g.to_message()).map_err(|e| e.to_string())?;
     host.send(&Message::with(kind::LIFECYCLE, 0, lifecycle::RESUME, 0)).map_err(|e| e.to_string())?;
     println!("sim: handshake done, {}x{} x{} slots", g.width, g.height, g.slots);
@@ -212,8 +254,7 @@ fn run() -> Result<ExitCode, String> {
     let mut first_frame: Option<Instant> = None;
     let mut script: VecDeque<(Duration, Action)> = o.script.into();
     let mut last: Option<Vec<u8>> = None;
-    // Frames shown but not yet released: (sequence, release time).
-    let mut showing: VecDeque<(u32, Instant)> = VecDeque::new();
+    let mut screen = Screen::default();
     let mut frames = 0u32;
     let mut closed = false;
     let mut keyboard = false;
@@ -222,11 +263,11 @@ fn run() -> Result<ExitCode, String> {
     loop {
         let now = Instant::now();
         if now >= next_vsync {
-            // Like a compositor: a presented frame is released at the vsync
-            // after it was shown.
-            while showing.front().is_some_and(|(_, t)| *t <= now) {
-                let (seq, _) = showing.pop_front().unwrap();
+            for seq in screen.refresh() {
                 let _ = host.send(&Message::with(kind::FRAME_DONE, seq, 0, 0));
+            }
+            if let Some(slot) = screen.latched {
+                last = Some(surface[slot * g.frame_bytes()..][..g.frame_bytes()].to_vec());
             }
             next_vsync += period * ((now - next_vsync).as_nanos() / period.as_nanos() + 1) as u32;
         }
@@ -272,14 +313,18 @@ fn run() -> Result<ExitCode, String> {
                     if slot >= g.slots as usize {
                         return Err(format!("PRESENT for slot {slot}"));
                     }
-                    let frame = &surface[slot * g.frame_bytes()..][..g.frame_bytes()];
-                    last = Some(frame.to_vec());
+                    match screen.present(msg.request_id, slot) {
+                        Some(Some(seq)) => {
+                            let _ = host.send(&Message::with(kind::FRAME_DONE, seq, 0, 0));
+                        }
+                        Some(None) => {}
+                        None => return Err(format!("PRESENT for slot {slot}, which the host holds")),
+                    }
                     frames += 1;
                     if first_frame.is_none() {
                         first_frame = Some(Instant::now());
                         println!("sim: first frame after {} ms", started.elapsed().as_millis());
                     }
-                    showing.push_back((msg.request_id, next_vsync));
                 }
                 kind::KEYBOARD_SHOW => {
                     println!("sim: keyboard show (purpose {}, multiline {})", msg.value, msg.flags);
@@ -331,4 +376,24 @@ fn run() -> Result<ExitCode, String> {
     }
     drop(host);
     Ok(if frames > 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Screen;
+
+    #[test]
+    fn slots_come_back_as_aera_hands_them_back() {
+        let mut s = Screen::default();
+        assert_eq!(s.present(1, 0), Some(None));
+        // Superseded before it was shown: back at once.
+        assert_eq!(s.present(2, 1), Some(Some(1)));
+        assert!(s.refresh().is_empty()); // 2 latched
+        assert_eq!(s.present(3, 1), None); // the host holds slot 1
+        assert_eq!(s.present(3, 0), Some(None));
+        assert!(s.refresh().is_empty()); // 2 shown, 3 latched
+        assert_eq!(s.refresh(), vec![2]); // 3 shown; 2 replaced
+        assert!(s.refresh().is_empty()); // 3 stays on screen
+        assert!(s.holds(0));
+    }
 }

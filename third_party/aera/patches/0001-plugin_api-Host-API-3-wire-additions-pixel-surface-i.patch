@@ -1,0 +1,106 @@
+From fbb54b443609103745f48a208731f80809a32551 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 06:14:19 +0000
+Subject: [PATCH 1/7] plugin_api: Host API 3 wire additions (pixel surface,
+ input, keyboard)
+
+---
+ aeraui/features/plugin_api/protocol.hpp | 52 +++++++++++++++++++++----
+ 1 file changed, 45 insertions(+), 7 deletions(-)
+
+diff --git a/aeraui/features/plugin_api/protocol.hpp b/aeraui/features/plugin_api/protocol.hpp
+index 7fdcb62..80fb81d 100644
+--- a/aeraui/features/plugin_api/protocol.hpp
++++ b/aeraui/features/plugin_api/protocol.hpp
+@@ -8,6 +8,10 @@ namespace aeraui::plugin_api {
+ 
+ constexpr uint32_t kMagic = 0x41325049U;  // A2PI
+ constexpr uint32_t kProtocolVersion = 2;
++// Host API 3 adds a GPU pixel surface for plugins that draw their own UI.
++// Messages carry the negotiated version; API 2 plugins never see API 3 kinds.
++constexpr uint32_t kProtocolVersion3 = 3;
++constexpr uint32_t kMaxProtocolVersion = kProtocolVersion3;
+ constexpr uint32_t kMaxButtons = 12;
+ constexpr uint32_t kMaxMetrics = 64;
+ constexpr uint32_t kMaxSections = 16;
+@@ -15,6 +19,12 @@ constexpr uint32_t kMaxSections = 16;
+ enum Features : uint32_t {
+   kFeatureMetrics = 1U << 0,
+   kFeatureBackNavigation = 1U << 1,
++  // Host API 3: a pixel surface on fd 3 (AERA_SURFACE_FD), SURFACE/PRESENT/
++  // FRAME_DONE, touch, keys, Back and keyboard requests.
++  kFeaturePixelSurface = 1U << 2,
++  // Host API 3: KEYBOARD_INSET whenever AERA's keyboard shows, hides or
++  // resizes over the surface.
++  kFeatureKeyboardInset = 1U << 3,
+ };
+ 
+ enum class Kind : uint32_t {
+@@ -29,12 +39,32 @@ enum class Kind : uint32_t {
+   kAddMetric,
+   kUpdateMetric,
+   kSetBackAction,
++  // Host API 3, plugin to host.
++  kPresent,       // request_id sequence (non-zero), value slot
++  kKeyboardShow,  // value Purpose, flags 1 for multiline
++  kKeyboardHide,
+   kHelloAck = 64,
+   kAction,
+   kLifecycle,
+   kOperationResult,
++  // Host API 3, host to plugin.
++  kSurface,        // value width, flags height, request_id stride, title
++                   // "BGRA8888", text "slots=N scale=S refresh=HZ"
++  kFrameDone,      // request_id sequence; its slot belongs to the plugin again
++  kTouchDown,      // request_id pointer, value x, flags y, surface pixels
++  kTouchMove,
++  kTouchUp,
++  kKey,            // value Unicode code point; 8 backspace, 13 Enter or OK
++  kBack,
++  kKeyboardInset,  // value keyboard height over the surface in pixels, 0 hidden
+ };
+ 
++// Host API 3 keyboard purposes, as AERA Browser's keyboard has them.
++enum class Purpose : uint32_t { kText = 0, kDigits = 2 };
++constexpr char kSurfaceFormat[] = "BGRA8888";
++constexpr int kSurfaceFd = 3;
++constexpr uint32_t kMaxSurfaceSlots = 4;
++
+ enum class Lifecycle : uint32_t { kResume = 1, kPause, kStop };
+ // Operation numbers are part of the public Host API 2 wire contract. Never
+ // renumber an existing entry: independently released plugins send these raw
+@@ -78,16 +108,24 @@ inline bool StringsValid(const Message &message) {
+   return memchr(message.title, '\0', sizeof(message.title)) != nullptr &&
+          memchr(message.text, '\0', sizeof(message.text)) != nullptr;
+ }
+-inline bool WorkerKind(Kind kind) {
+-  return kind >= Kind::kHello && kind <= Kind::kSetBackAction;
++inline bool WorkerKind(Kind kind, uint32_t version = kProtocolVersion) {
++  return kind >= Kind::kHello &&
++         kind <= (version >= kProtocolVersion3 ? Kind::kKeyboardHide
++                                               : Kind::kSetBackAction);
+ }
+-inline bool HostKind(Kind kind) {
+-  return kind >= Kind::kHelloAck && kind <= Kind::kOperationResult;
++inline bool HostKind(Kind kind, uint32_t version = kProtocolVersion) {
++  return kind >= Kind::kHelloAck &&
++         kind <= (version >= kProtocolVersion3 ? Kind::kKeyboardInset
++                                               : Kind::kOperationResult);
+ }
+-inline bool Valid(const Message &message, bool from_worker) {
+-  return message.magic == kMagic && message.version == kProtocolVersion &&
++// `version` is the negotiated protocol version. Before negotiation the host
++// accepts a HELLO carrying any version it supports.
++inline bool Valid(const Message &message, bool from_worker,
++                  uint32_t version = kProtocolVersion) {
++  return message.magic == kMagic && message.version == version &&
+          StringsValid(message) &&
+-         (from_worker ? WorkerKind(message.kind) : HostKind(message.kind));
++         (from_worker ? WorkerKind(message.kind, version)
++                      : HostKind(message.kind, version));
+ }
+ 
+ }  // namespace aeraui::plugin_api
+-- 
+2.43.0
+

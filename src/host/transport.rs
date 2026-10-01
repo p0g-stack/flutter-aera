@@ -5,7 +5,7 @@ use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
 
-use super::{feature, kind, Geometry, Message, MESSAGE_LEN};
+use super::{feature, kind, Geometry, Message, MESSAGE_LEN, PROTOCOL_VERSION};
 
 /// What the host told us in the handshake.
 #[derive(Clone, Debug, PartialEq)]
@@ -112,8 +112,8 @@ impl Control {
         }
     }
 
-    /// The plugin's side of the handshake: `HELLO` → `HELLO_ACK` (must
-    /// offer the pixel surface) → `SURFACE`. Anything else that arrives
+    /// The plugin's side of the handshake: `HELLO` → `HELLO_ACK` (version
+    /// 3, must offer the pixel surface) → `SURFACE`. Anything else that arrives
     /// first is returned so the caller can replay it.
     pub fn handshake(&self, timeout: Duration) -> io::Result<(Session, Vec<Message>)> {
         self.send(&Message::hello())?;
@@ -126,11 +126,13 @@ impl Control {
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "no HELLO_ACK and SURFACE from the host"));
             };
             match m.kind {
+                // AERA: `value` is the negotiated version, `flags` the
+                // features.
                 kind::HELLO_ACK => {
-                    if m.value & feature::PIXEL_SURFACE == 0 {
+                    if m.value != PROTOCOL_VERSION || m.flags & feature::PIXEL_SURFACE == 0 {
                         return Err(io::Error::new(io::ErrorKind::Unsupported, "host has no pixel surface"));
                     }
-                    features = Some(m.value);
+                    features = Some(m.flags);
                 }
                 kind::SURFACE if features.is_some() => {
                     let geometry = Geometry::from_message(&m)
@@ -169,13 +171,15 @@ mod tests {
             assert_eq!((hello.kind, hello.value, hello.flags), (kind::HELLO, 3, 3));
             // A host-bound kind sent the wrong way is dropped.
             host.send(&Message::new(kind::PRESENT)).unwrap();
-            host.send(&Message::with(kind::HELLO_ACK, 0, feature::PIXEL_SURFACE | feature::BACK_NAVIGATION, 0)).unwrap();
+            host.send(&Message::with(kind::HELLO_ACK, 0, PROTOCOL_VERSION, feature::PIXEL_SURFACE | feature::BACK_NAVIGATION))
+                .unwrap();
             host.send(&Message::with(kind::LIFECYCLE, 0, 1, 0)).unwrap();
             host.send(&Geometry::PHONE.to_message()).unwrap();
             host
         });
         let (session, early) = plugin.handshake(Duration::from_secs(5)).unwrap();
         let _host = t.join().unwrap();
+        assert_eq!(session.features, feature::PIXEL_SURFACE | feature::BACK_NAVIGATION);
         assert_eq!(session.geometry, Geometry::PHONE);
         assert_eq!(early, vec![Message::with(kind::LIFECYCLE, 0, 1, 0)]);
     }
@@ -185,7 +189,7 @@ mod tests {
         let (a, b) = pair().unwrap();
         let plugin = Control::plugin(a);
         let host = Control::host(b);
-        host.send(&Message::with(kind::HELLO_ACK, 0, feature::METRICS, 0)).unwrap();
+        host.send(&Message::with(kind::HELLO_ACK, 0, PROTOCOL_VERSION, feature::METRICS)).unwrap();
         let e = plugin.handshake(Duration::from_secs(1)).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::Unsupported);
     }

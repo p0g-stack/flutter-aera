@@ -8,9 +8,10 @@ Self-contained; no external base file.
   documented no-op) on the standard channel. A custom channel needs a written
   reason that no standard channel covers it.
 - No Dart here. Anything an app links lives elsewhere.
-- `spec/host.md`, `vendor/protocol.hpp` and `src/host/` change together; the
-  drift test is the gate. Guesses about the unpublished host are marked
-  `ASSUMED` in all three.
+- `spec/host.md`, `third_party/aera/patches` (the Host API 3 we carry for
+  AERA), `vendor/aera/protocol_v3.hpp` and `src/host/` change together; the
+  drift test is the gate. A host change ships with `ci/aera-host-check.sh`
+  passing.
 - Pins are recorded, not remembered: Flutter tag, engine revision, header
   hash, Mesa hash, AERA commit. An artifact without its pins is not releasable.
 - Proof runs under the simulator; a renderer or host change ships with a

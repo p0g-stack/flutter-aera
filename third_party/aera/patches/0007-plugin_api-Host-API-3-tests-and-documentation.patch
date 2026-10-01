@@ -1,0 +1,361 @@
+From 185a883e54665f3191348a207527799dd72e5de9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 06:27:24 +0000
+Subject: [PATCH 7/7] plugin_api: Host API 3 tests and documentation
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/features/plugin_api/README.md         |  40 +++++
+ aeraui/tests/CMakeLists.txt                  |  14 ++
+ aeraui/tests/plugin_api_pixel_host_check.cpp | 178 +++++++++++++++++++
+ aeraui/tests/plugin_api_session_test.cpp     |  54 +++++-
+ aeraui/tests/plugin_api_surface_test.cpp     |   4 +-
+ 5 files changed, 286 insertions(+), 4 deletions(-)
+ create mode 100644 aeraui/tests/plugin_api_pixel_host_check.cpp
+
+diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
+index 6aa416a..90f363e 100644
+--- a/aeraui/features/plugin_api/README.md
++++ b/aeraui/features/plugin_api/README.md
+@@ -67,3 +67,43 @@ without changing the Host API 2 wire format.
+ `AERA-settings-backup-plugin` is the reference implementation. It proves a new
+ ID can render and request backup/restore without being added to recovery's
+ launcher source.
++
++## Host API 3: pixel plugins
++
++A manifest with `protocol_version` 3 and `min_host_api` 3 (permissions
++`display`, `touch-input` and `pixel-surface`; optionally `gpu-acceleration`,
++`network`, `audio-output`) declares a plugin that draws its own pixels, such
++as a Flutter app. The runtime layout, verification and process model are
++Host API 2's; `scenes/pixel_plugin_scene.cpp` replaces the declarative page.
++
++- Launch: `--aera-host-api=3`, `AERA_HOST_API=3`, `AERA_SURFACE_FD=3` and
++  `AERA_PLUGIN_DATA`, a private directory that survives updates
++  (`/sdcard/AERA/plugin-data/<id>`, or RAM when storage is not mounted).
++- Handshake: the worker's `HELLO` must offer version 3 (`value` 3, `flags`
++  3); AERA answers `HELLO_ACK` with `value` 3 and `flags`
++  `kFeatureBackNavigation | kFeaturePixelSurface | kFeatureKeyboardInset`,
++  then `SURFACE`, then `LIFECYCLE/RESUME`. Version 3 packets carry 3 in the
++  header.
++- Surface: fd 3 is a sealed memfd of `slots` BGRA8888 top-down frames.
++  `SURFACE` gives width (`value`), height (`flags`), stride in bytes
++  (`request_id`), title `BGRA8888` and text `slots=N scale=S refresh=HZ`
++  (scale from `ro.sf.lcd_density`). The size is the panel's pixels for the
++  area below the status bar.
++- Frames: the worker writes a slot it owns and sends `PRESENT` (`request_id`
++  sequence, never 0 or repeated; `value` slot). `FRAME_DONE` returns a slot:
++  at once when a newer `PRESENT` supersedes a frame never shown, otherwise
++  when a newer frame has replaced it on screen. The frame on screen stays
++  AERA's. `PRESENT` is outside the 128 messages per second limit.
++- Input: `TOUCH_DOWN`/`MOVE`/`UP` (`request_id` pointer, `value` x, `flags`
++  y, surface pixels); side edges and the bottom edge stay AERA's gestures.
++  `BACK` is AERA's Back; the worker leaves with `CLOSE`.
++- Keyboard: `KEYBOARD_SHOW` (`value` 0 text or 2 digits, `flags` 1 for
++  multiline) and `KEYBOARD_HIDE` show AERA's keyboard, which sends `KEY`
++  (`value` code point; 8 backspace, 13 Enter, and OK on a single-line
++  field). `KEYBOARD_INSET` gives the keyboard's height over the surface in
++  pixels on every show, hide and resize.
++- Host operations are not offered to pixel plugins; Host API 2 page messages
++  end the session.
++
++`tests/plugin_api_pixel_host_check.cpp` runs a real pixel plugin through
++the launcher, session and surface without LVGL.
+diff --git a/aeraui/tests/CMakeLists.txt b/aeraui/tests/CMakeLists.txt
+index 9687030..7deb46a 100644
+--- a/aeraui/tests/CMakeLists.txt
++++ b/aeraui/tests/CMakeLists.txt
+@@ -46,6 +46,20 @@ target_include_directories(plugin_api_session_test PRIVATE ..
+   ../features)
+ target_compile_options(plugin_api_session_test PRIVATE -UNDEBUG)
+ add_test(NAME plugin_api_negotiation_and_limits COMMAND plugin_api_session_test)
++add_executable(plugin_api_surface_test plugin_api_surface_test.cpp
++  ../features/plugin_api/surface.cpp)
++target_include_directories(plugin_api_surface_test PRIVATE .. ../features)
++target_compile_options(plugin_api_surface_test PRIVATE -UNDEBUG)
++add_test(NAME plugin_api_pixel_surface_slots COMMAND plugin_api_surface_test)
++# Needs root and an expanded pixel plugin runtime, so it is not an add_test:
++#   plugin_api_pixel_host_check RUNTIME_TREE OUT_DIR
++add_executable(plugin_api_pixel_host_check plugin_api_pixel_host_check.cpp
++  ../features/plugin_api/launcher.cpp ../features/plugin_api/session.cpp
++  ../features/plugin_api/surface.cpp)
++target_include_directories(plugin_api_pixel_host_check PRIVATE .. ../include
++  ../features)
++target_compile_options(plugin_api_pixel_host_check PRIVATE -UNDEBUG)
++target_link_libraries(plugin_api_pixel_host_check PRIVATE lvgl)
+ add_executable(sideload_ui_test sideload_ui_test.cpp
+   ../localization/fonts/aera_fallback.cpp ../localization/i18n.cpp
+   ../localization/catalog/catalog_generated.cpp
+diff --git a/aeraui/tests/plugin_api_pixel_host_check.cpp b/aeraui/tests/plugin_api_pixel_host_check.cpp
+new file mode 100644
+index 0000000..3ebc708
+--- /dev/null
++++ b/aeraui/tests/plugin_api_pixel_host_check.cpp
+@@ -0,0 +1,178 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++// Runs a real Host API 3 plugin through AERA's own launcher, session and
++// pixel surface, playing the pixel scene's part without LVGL: one refresh
++// every 16 ms, touches in surface pixels, Back.
++//
++//   plugin_api_pixel_host_check RUNTIME_TREE OUT_DIR
++//
++// RUNTIME_TREE is an expanded ui-runtime payload (usr/bin/aera-plugin ...).
++// Written for flutter-aera's counter app: it taps the floating button three
++// times, checks the picture changed, then presses Back on the root route and
++// expects the plugin to CLOSE. Frames are written as PPM files.
++#include "plugin_api/launcher.hpp"
++#include "plugin_api/session.hpp"
++#include "plugin_api/surface.hpp"
++
++#include <cassert>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <sys/stat.h>
++#include <thread>
++#include <vector>
++
++namespace aeraui::i18n {
++const char *CurrentLanguage() { return "en"; }
++}  // namespace aeraui::i18n
++
++using namespace aeraui::plugin_api;
++using Clock = std::chrono::steady_clock;
++
++namespace {
++std::vector<uint8_t> gShown;
++
++void WritePpm(const std::string &path, const SurfaceGeometry &g,
++              const std::vector<uint8_t> &bgra) {
++  FILE *file = fopen(path.c_str(), "wb");
++  assert(file);
++  fprintf(file, "P6\n%u %u\n255\n", g.width, g.height);
++  std::vector<uint8_t> row(g.width * 3);
++  for (uint32_t y = 0; y < g.height; ++y) {
++    const uint8_t *in = bgra.data() + uint64_t{y} * g.stride;
++    for (uint32_t x = 0; x < g.width; ++x) {
++      row[x * 3] = in[x * 4 + 2];
++      row[x * 3 + 1] = in[x * 4 + 1];
++      row[x * 3 + 2] = in[x * 4];
++    }
++    fwrite(row.data(), 1, row.size(), file);
++  }
++  fclose(file);
++}
++
++struct Host {
++  Surface surface;
++  Session session;
++  const uint8_t *latched = nullptr;
++  unsigned presents = 0, shown = 0;
++  bool closed = false;
++
++  // One iteration of the scene's timer and the display's refresh.
++  void Tick() {
++    for (const auto &message : session.Poll()) {
++      if (message.kind == Kind::kPresent) {
++        std::vector<uint32_t> released;
++        assert(surface.Present(message.request_id, message.value, released));
++        for (uint32_t sequence : released)
++          session.Send(Kind::kFrameDone, sequence);
++        ++presents;
++      } else if (message.kind == Kind::kClose) {
++        closed = true;
++      } else if (message.kind == Kind::kKeyboardShow ||
++                 message.kind == Kind::kKeyboardHide) {
++        printf("host: keyboard %s\n",
++               message.kind == Kind::kKeyboardShow ? "show" : "hide");
++      } else {
++        printf("host: kind %u\n", static_cast<unsigned>(message.kind));
++      }
++    }
++    // REFR_READY for the frame latched last tick, then latch the next.
++    if (latched) {
++      std::vector<uint32_t> released;
++      surface.RefreshDone(released);
++      for (uint32_t sequence : released)
++        session.Send(Kind::kFrameDone, sequence);
++      gShown.assign(latched, latched + surface.Geometry().FrameBytes());
++      ++shown;
++      latched = nullptr;
++    }
++    latched = surface.LatchNext();
++  }
++
++  void RunFor(int ms) {
++    const auto end = Clock::now() + std::chrono::milliseconds(ms);
++    while (Clock::now() < end && session.Connected() && !closed) {
++      Tick();
++      std::this_thread::sleep_for(std::chrono::milliseconds(16));
++    }
++  }
++
++  void Tap(uint32_t x, uint32_t y) {
++    session.Send(Kind::kTouchDown, 0, x, y);
++    RunFor(50);
++    session.Send(Kind::kTouchUp, 0, x, y);
++    RunFor(250);
++  }
++};
++}  // namespace
++
++int main(int argc, char **argv) {
++  if (argc != 3) {
++    fprintf(stderr, "usage: %s RUNTIME_TREE OUT_DIR\n", argv[0]);
++    return 2;
++  }
++  const std::string out = argv[2];
++  // The launcher only accepts AERA's private RAM runtime layout.
++  char runtime[] = "/tmp/aera-p2-XXXXXX";
++  assert(mkdtemp(runtime));
++  const std::string copy = std::string("cp -R --preserve=mode ") + argv[1] + "/. " + runtime;
++  assert(system(copy.c_str()) == 0);
++  assert(chmod(runtime, 0700) == 0);
++  const std::string data = out + "/plugin-data";
++  assert(system(("mkdir -p " + data).c_str()) == 0);
++
++  Host host;
++  SurfaceGeometry g;
++  g.width = 1080;
++  g.height = 2400;
++  g.stride = g.width * 4;
++  g.slots = 3;
++  g.scale = 2.75;
++  assert(host.surface.Create(g));
++
++  Process process;
++  LaunchOptions options;
++  options.host_api = kProtocolVersion3;
++  options.surface_fd = host.surface.PluginFd();
++  options.data_dir = data;
++  int control = -1;
++  std::string error;
++  if (!process.Start(runtime, control, error, options)) {
++    fprintf(stderr, "launch: %s\n", error.c_str());
++    return 1;
++  }
++  assert(host.session.Adopt(control, kProtocolVersion3,
++                            {host.surface.SurfaceMessage()}));
++
++  const auto started = Clock::now();
++  while (host.shown == 0 && host.session.Connected() &&
++         Clock::now() - started < std::chrono::seconds(60))
++    host.RunFor(100);
++  assert(host.session.Negotiated() && host.session.Version() == 3);
++  assert(host.shown > 0);
++  printf("host: first frame after %lld ms\n",
++         static_cast<long long>(
++             std::chrono::duration_cast<std::chrono::milliseconds>(
++                 Clock::now() - started).count()));
++  host.RunFor(1000);
++  const auto before = gShown;
++  WritePpm(out + "/start.ppm", g, before);
++  for (int i = 0; i < 3; ++i) host.Tap(980, 2250);
++  host.RunFor(1000);
++  WritePpm(out + "/after.ppm", g, gShown);
++  assert(gShown != before);
++  printf("host: %u presents, %u refreshes\n", host.presents, host.shown);
++
++  // Back on the root route: Flutter pops the app, which closes the plugin.
++  host.session.Send(Kind::kBack);
++  host.RunFor(3000);
++  assert(host.closed);
++  host.session.Send(Kind::kLifecycle, 0,
++                    static_cast<uint32_t>(Lifecycle::kStop));
++  host.session.Close();
++  process.Stop();
++  assert(system((std::string("rm -rf ") + runtime).c_str()) == 0);
++  printf("PIXEL_HOST_OK\n");
++  return 0;
++}
+diff --git a/aeraui/tests/plugin_api_session_test.cpp b/aeraui/tests/plugin_api_session_test.cpp
+index 18bbc8c..ce62ec1 100644
+--- a/aeraui/tests/plugin_api_session_test.cpp
++++ b/aeraui/tests/plugin_api_session_test.cpp
+@@ -18,11 +18,23 @@ static void SendWorker(int fd, Kind kind, uint32_t request = 0,
+          static_cast<ssize_t>(sizeof(message)));
+ }
+ 
+-static Message ReceiveHost(int fd) {
++static void SendWorker3(int fd, Kind kind, uint32_t request = 0,
++                        uint32_t value = 0, uint32_t flags = 0) {
++  Message message;
++  message.version = kProtocolVersion3;
++  message.kind = kind;
++  message.request_id = request;
++  message.value = value;
++  message.flags = flags;
++  assert(send(fd, &message, sizeof(message), MSG_NOSIGNAL) ==
++         static_cast<ssize_t>(sizeof(message)));
++}
++
++static Message ReceiveHost(int fd, uint32_t version = kProtocolVersion) {
+   Message message;
+   assert(recv(fd, &message, sizeof(message), MSG_WAITALL) ==
+          static_cast<ssize_t>(sizeof(message)));
+-  assert(Valid(message, false));
++  assert(Valid(message, false, version));
+   return message;
+ }
+ 
+@@ -76,4 +88,42 @@ int main() {
+   }
+   assert(!session.Connected());
+   close(pair[1]);
++
++  // Host API 3: the pixel scene offers exactly version 3 and sends SURFACE
++  // between HELLO_ACK and RESUME.
++  assert(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
++  Message surface;
++  surface.kind = Kind::kSurface;
++  surface.value = 1080;
++  surface.flags = 2400;
++  assert(session.Adopt(pair[0], kProtocolVersion3, {surface}));
++  SendWorker3(pair[1], Kind::kHello, 0, 3, 3);
++  assert(session.Poll().empty());
++  assert(session.Negotiated() && session.Version() == kProtocolVersion3);
++  const Message ack3 = ReceiveHost(pair[1], kProtocolVersion3);
++  assert(ack3.kind == Kind::kHelloAck && ack3.value == kProtocolVersion3);
++  assert((ack3.flags & kFeaturePixelSurface) != 0);
++  assert((ack3.flags & kFeatureKeyboardInset) != 0);
++  const Message surface3 = ReceiveHost(pair[1], kProtocolVersion3);
++  assert(surface3.kind == Kind::kSurface && surface3.value == 1080);
++  assert(ReceiveHost(pair[1], kProtocolVersion3).kind == Kind::kLifecycle);
++  // Frames are outside the control rate limit.
++  for (unsigned index = 0; index < 300 && session.Connected(); ++index) {
++    SendWorker3(pair[1], Kind::kPresent, index + 1, 0);
++    (void)session.Poll();
++  }
++  assert(session.Connected());
++  // A v2 kind number past v3's range is still refused.
++  SendWorker3(pair[1], static_cast<Kind>(99));
++  (void)session.Poll();
++  assert(!session.Connected());
++  close(pair[1]);
++
++  // A Host API 2 plugin cannot open a pixel scene.
++  assert(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
++  assert(session.Adopt(pair[0], kProtocolVersion3));
++  SendWorker(pair[1], Kind::kHello, 0, 2, 2);
++  assert(session.Poll().empty());
++  assert(!session.Connected());
++  close(pair[1]);
+ }
+diff --git a/aeraui/tests/plugin_api_surface_test.cpp b/aeraui/tests/plugin_api_surface_test.cpp
+index 7a238f5..f5bd91c 100644
+--- a/aeraui/tests/plugin_api_surface_test.cpp
++++ b/aeraui/tests/plugin_api_surface_test.cpp
+@@ -1,5 +1,5 @@
+-// SPDX-License-Identifier: Apache-2.0
+-#include "surface.hpp"
++/* SPDX-License-Identifier: Apache-2.0 */
++#include "plugin_api/surface.hpp"
+ 
+ #include <cassert>
+ #include <cstring>
+-- 
+2.43.0
+
