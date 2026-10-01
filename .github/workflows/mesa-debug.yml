@@ -1,0 +1,43 @@
+name: Mesa debug
+# A debug build of the kit's Mesa for diagnosing a driver on a device: the
+# same version, patches and drivers as ci/build-mesa.sh, with Mesa's debug
+# output. Published as mesa-debug-linux-<arch>.tar.xz on the kit release;
+# unpack it over a kit's usr/lib (docs/device.md).
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: x64 or arm64
+        default: x64
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: 3.47.5
+
+jobs:
+  mesa:
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config flex bison glslang-tools libdrm-dev libexpat1-dev \
+            libzstd-dev zlib1g-dev libelf-dev python3-pip
+          pip3 install --user --break-system-packages 'meson>=1.4' mako pyyaml packaging
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Mesa (debug)
+        run: MESA_BUILDTYPE=debug ci/build-mesa.sh "$RUNNER_TEMP/mesa"
+      - name: Package and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name=mesa-debug-linux-${{ inputs.arch }}.tar.xz
+          lib=$RUNNER_TEMP/mesa/usr/lib
+          tar -h -C "$lib" -cJf "$name" $(cd "$lib" && ls libgallium-*.so libvulkan_*.so libEGL.so.1* libGLESv2.so.2* 2>/dev/null)
+          tar -tJf "$name"
+          sha256sum "$name" > "$name.sha256"
+          gh release upload "kit-$FLUTTER_VERSION" "$name" "$name.sha256" --clobber

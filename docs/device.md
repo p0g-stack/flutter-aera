@@ -94,6 +94,11 @@ loader and ICDs: versions, extensions, features and limits per device, as
 `vulkaninfo` would. Zink checks these before it runs on a device and does
 not say which one failed in a release build.
 
+For Mesa's own debug output (driver checks a release build skips
+silently), the `Mesa debug` workflow publishes `mesa-debug-linux-<arch>.tar.xz`
+on the kit release: the same Mesa built for debugging. Unpack it over the
+kit's `usr/lib` and run as before.
+
 GL is the default elsewhere. `--vulkan` in `$AERA_PLUGIN_DATA/engine-switches` (one
 switch per line, `docs/debugging.md`) renders with Vulkan instead: Turnip
 on a Qualcomm phone, gfxstream on x64 Cuttlefish; where Vulkan cannot start

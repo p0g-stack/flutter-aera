@@ -4,6 +4,8 @@
 # gfxstream modes, x86_64), virgl for virtio-gpu with virgl, and softpipe
 # for the simulator. Installs into DEST/usr.
 #   ci/build-mesa.sh DEST
+# MESA_BUILDTYPE=debug builds with Mesa's debug output (debug_printf, asserts)
+# for diagnosing a driver on a device (.github/workflows/mesa-debug.yml).
 set -euo pipefail
 dest=$(realpath -m "${1:?usage: ci/build-mesa.sh DEST}")
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -20,7 +22,7 @@ case $(uname -m) in
 esac
 patch -p1 < "$repo/third_party/mesa/mesa-26.2.2-zink-kgsl-surfaceless.patch"
 meson setup build --wrap-mode=nodownload --prefix=/usr --libdir=lib \
-  -Dbuildtype=release -Db_ndebug=true -Dplatforms= -Degl=enabled -Dgles1=disabled \
+  -Dbuildtype="${MESA_BUILDTYPE:-release}" -Db_ndebug="$([ "${MESA_BUILDTYPE:-release}" = release ] && echo true || echo false)" -Dplatforms= -Degl=enabled -Dgles1=disabled \
   -Dgles2=enabled -Dopengl=true -Dglx=disabled -Dgbm=disabled -Dglvnd=disabled \
   -Dgallium-drivers=zink,softpipe,virgl "${vulkan[@]}" \
   -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled \
