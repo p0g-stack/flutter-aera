@@ -39,7 +39,9 @@ src/renderer/         gl.rs (default), vk.rs (--vulkan); Skia or Impeller; readb
 src/host/             socket + memfd slots, SURFACE, input, lifecycle, keyboard inset
 src/handlers/         one per standard channel
 src/ime.rs            text-input model
-src/env.rs            XDG dirs inside AERA_PLUGIN_DATA
+src/env.rs            XDG dirs inside AERA_PLUGIN_DATA, ALSA config in the payload
+src/audio.rs          starts AERA's audio bridge, as AERA's own features do
+audio/                ALSA's default device for the payload: AERA's audio bridge
 launcher/             static aera-plugin: private mount ns, font + CA binds, exec via payload ld-linux
 sim/                  aera-host-sim: AERA's side on a PC
 vendor/               AERA protocol.hpp (as published and as patched) + flutter_embedder.h
@@ -64,6 +66,8 @@ published (`spec/aerap.md`). Checked in CI under the simulator:
   `docs/debugging.md`).
 - Text input through AERA's keyboard, with its height as the bottom inset
   (`ci/text-input-check.sh`).
+- Sound through ALSA's default device into a stand-in for AERA's closed
+  audio bridge (`ci/audio-check.sh`; `spec/host.md`, Sound).
 
 What AERA itself lacks, and which patch or workaround answers it:
 `docs/aera-deficiencies.md`.
@@ -77,6 +81,7 @@ cargo test --workspace
 ci/sim-smoke.sh /tmp/smoke      # needs flutter 3.47.5 on PATH; frames in /tmp/smoke/sim
 ci/renderer-check.sh /tmp/smoke         # GL/Vulkan x Skia/Impeller (Vulkan needs a driver, e.g. lavapipe)
 sudo ci/aera-host-check.sh /tmp/smoke   # AERA + patches; frames in /tmp/smoke/aera-host
+sudo ci/audio-check.sh /tmp/smoke       # needs libasound2-dev, alsa-utils
 ```
 
 ## License

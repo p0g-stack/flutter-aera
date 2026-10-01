@@ -8,6 +8,7 @@ pub mod ffi {
 }
 
 pub mod aera_settings;
+pub mod audio;
 pub mod debug;
 pub mod engine;
 pub mod env;

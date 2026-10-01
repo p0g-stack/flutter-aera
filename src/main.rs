@@ -51,7 +51,9 @@ fn run() -> Result<i32, String> {
             exe.ancestors().nth(3).ok_or("cannot find the payload root")?.to_path_buf()
         }
     };
-    flutter_aera::env::apply();
+    flutter_aera::env::apply(&root);
+    // Stopped when run() returns.
+    let _bridge = flutter_aera::audio::Bridge::start();
     flutter_aera::debug::clear_url();
     engine_args.extend(flutter_aera::debug::switches());
     let vulkan = flutter_aera::renderer::vk::take_switch(&mut engine_args);

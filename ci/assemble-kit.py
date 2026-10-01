@@ -9,7 +9,8 @@ The DT_NEEDED closure of every ELF is resolved from --sysroot directories.
     ci/assemble-kit.py --out kit --embedder aera-flutter --launcher aera-plugin \\
         --engine libflutter_engine.so --icu icudtl.dat --mesa mesa-dest \\
         --sysroot /usr/lib/aarch64-linux-gnu --sysroot /lib/aarch64-linux-gnu \\
-        --ca-bundle /etc/ssl/certs/ca-certificates.crt --pins kit.json
+        --ca-bundle /etc/ssl/certs/ca-certificates.crt --pins kit.json \\
+        --alsa-module libasound_module_pcm_aera.so --alsa-conf audio/aera.conf
 """
 import argparse
 import json
@@ -20,8 +21,9 @@ from pathlib import Path
 
 LOADERS = {"arm64": "ld-linux-aarch64.so.1", "x64": "ld-linux-x86-64.so.2"}
 # dlopen()ed, so no DT_NEEDED names them: the embedder opens libEGL, Zink
-# opens the Vulkan loader, the Vulkan loader opens Turnip (arm64 only).
-DLOPENED = ["libEGL.so.1", "libGLESv2.so.2", "libvulkan.so.1"]
+# opens the Vulkan loader, the Vulkan loader opens Turnip (arm64 only), and
+# audio plugins (miniaudio) open ALSA.
+DLOPENED = ["libEGL.so.1", "libGLESv2.so.2", "libvulkan.so.1", "libasound.so.2"]
 
 
 def needed(path, readelf):
@@ -53,6 +55,8 @@ def main():
     ap.add_argument("--sysroot", action="append", default=[])
     ap.add_argument("--ca-bundle", type=Path, required=True)
     ap.add_argument("--pins", type=Path, required=True, help="kit.json to place at the kit root")
+    ap.add_argument("--alsa-module", type=Path, required=True, help="libasound_module_pcm_aera.so (audio/pcm_aera.c)")
+    ap.add_argument("--alsa-conf", type=Path, required=True, help="audio/aera.conf")
     ap.add_argument("--readelf", default="readelf")
     ap.add_argument("--arch", choices=sorted(LOADERS), default="arm64")
     a = ap.parse_args()
@@ -61,7 +65,9 @@ def main():
     if out.exists() and any(out.iterdir()):
         sys.exit(f"{out} is not empty")
     lib = out / "usr/lib"
-    for d in (lib, out / "usr/bin", out / "usr/share/flutter", out / "usr/share/vulkan/icd.d", out / "etc/ssl/certs"):
+    dirs = (lib, lib / "alsa-lib", out / "usr/bin", out / "usr/share/flutter", out / "usr/share/alsa", out / "usr/share/vulkan/icd.d",
+            out / "etc/ssl/certs")
+    for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
 
     shutil.copy2(a.embedder, out / "usr/bin/aera-flutter")
@@ -71,6 +77,10 @@ def main():
     shutil.copy2(a.engine, lib / "libflutter_engine.so")
     shutil.copy2(a.icu, out / "usr/share/flutter/icudtl.dat")
     shutil.copyfile(a.ca_bundle, out / "etc/ssl/certs/ca-certificates.crt")
+    # ALSA reads only these (src/env.rs): the default device is AERA's audio
+    # bridge (src/audio.rs).
+    shutil.copy2(a.alsa_module, lib / "alsa-lib/libasound_module_pcm_aera.so")
+    shutil.copyfile(a.alsa_conf, out / "usr/share/alsa/alsa.conf")
 
     mesa_lib = a.mesa / "usr/lib"
     search = [mesa_lib] + a.sysroot

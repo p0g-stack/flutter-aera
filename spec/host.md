@@ -119,6 +119,21 @@ absolute path, `flags` 1 while more follow. A closed picker answers `value`
 reason. No permission or prompt: the pick is the user's consent. The
 embedder answers the stock `file_selector` plugin's Linux channel with it.
 
+## Sound
+
+Not a Host API message: AERA's own features (Browser, Media, Streams, Doom,
+RetroArch) start `/system/bin/aera-audio-bridge --browser-audio` themselves
+when it exists and stop it when they leave (SIGTERM, then SIGKILL after
+half a second), and so does the embedder (`src/audio.rs`). The bridge is a
+closed binary only official AERA builds ship; without it there is no sound.
+It listens on the abstract stream socket `aera-browser-audio-v1`; a client
+checks the peer is root, sends four little-endian u32s (`0x41525041`
+"APRA", 48000, 2, 16) and then interleaved S16LE 48 kHz stereo until it
+closes. Read from `aeraui/features/browser/gst_aera_audio_sink.c` and the
+features' `launcher.cpp`; AERA's volume (`/tmp/aera-audio-volume`) is
+AERA's. In the payload, ALSA's default device writes there
+(`audio/pcm_aera.c`).
+
 ## Not used
 
 Host API 2's declarative UI (`BEGIN_PAGE` … `SET_BACK_ACTION`), which ends
@@ -128,5 +143,4 @@ pixel plugins: a Flutter app draws its own UI.
 ## Later (not in the patches yet)
 
 dma-buf slots with sync_file fences (zero copy); damage rectangles on
-`PRESENT`; speaker audio through
-`aera-audio-bridge` (not the embedder's: no Flutter system channel).
+`PRESENT`.

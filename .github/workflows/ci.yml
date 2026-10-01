@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libclang-dev libegl1 libegl-mesa0 libgles2 mesa-vulkan-drivers
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev libegl1 libegl-mesa0 libgles2 mesa-vulkan-drivers libasound2-dev alsa-utils
       - run: cargo test --workspace
       - name: "Simulator: counter, hot reload, text input, renderers"
         run: |
@@ -20,6 +20,8 @@ jobs:
           ci/hot-reload-check.sh "$RUNNER_TEMP/smoke"
           ci/text-input-check.sh "$RUNNER_TEMP/smoke"
           ci/renderer-check.sh "$RUNNER_TEMP/smoke"
+      - name: ALSA device against a stand-in AERA audio bridge
+        run: sudo ci/audio-check.sh "$RUNNER_TEMP/smoke"
       - name: Counter through AERA with the Host API 3 patches
         run: sudo ci/aera-host-check.sh "$RUNNER_TEMP/smoke"
       - uses: actions/upload-artifact@v4

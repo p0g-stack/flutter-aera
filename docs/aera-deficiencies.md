@@ -57,4 +57,6 @@ and, where they belong in AERA, answered with the next patch number.
   frame is read back before AERA sees it.
 - No damage rectangles on `PRESENT`: AERA redraws the whole surface even
   when we copied only what changed (`src/renderer/damage.rs`).
-- No audio.
+- Sound needs AERA's closed `aera-audio-bridge`, which only official AERA
+  builds ship: images built from AERA's source (ours on Cuttlefish) have no
+  sound.

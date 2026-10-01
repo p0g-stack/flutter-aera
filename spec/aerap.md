@@ -90,6 +90,8 @@ usr/lib/libapp.so                    the AOT app (profile/release engines only)
 usr/share/flutter/flutter_assets/    the app's assets (+ kernel_blob.bin for debug)
 usr/share/flutter/icudtl.dat         ICU data matching the engine
 usr/share/vulkan/icd.d/freedreno_icd.json  Turnip ICD (relative library_path)
+usr/lib/alsa-lib/libasound_module_pcm_aera.so  ALSA's default device: AERA's audio bridge
+usr/share/alsa/alsa.conf             ALSA's only configuration (audio/aera.conf)
 etc/ssl/certs/ca-certificates.crt    CA bundle for Dart's HttpClient
 ```
 

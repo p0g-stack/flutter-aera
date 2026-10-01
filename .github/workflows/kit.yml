@@ -61,7 +61,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build pkg-config flex bison glslang-tools libdrm-dev libexpat1-dev \
-            libzstd-dev zlib1g-dev libelf-dev libclang-dev libvulkan1 libegl1 python3-pip
+            libzstd-dev zlib1g-dev libelf-dev libclang-dev libvulkan1 libegl1 libasound2-dev python3-pip
           pip3 install --user --break-system-packages 'meson>=1.4' mako pyyaml packaging
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@stable
@@ -84,6 +84,8 @@ jobs:
             cp "target/static/$t/release/$b" target/static/release/
             file target/static/release/$b | grep -E 'statically linked|static-pie'
           done
+      - name: ALSA device for AERA's audio bridge
+        run: cc -shared -fPIC -DPIC -O2 -Wall -Wextra -Werror -o target/release/libasound_module_pcm_aera.so audio/pcm_aera.c -lasound
       - name: Engine
         run: ci/fetch-engine.sh "$RUNNER_TEMP/engine" ${{ matrix.arch }}
       - name: Assemble
@@ -98,7 +100,8 @@ jobs:
             --launcher target/static/release/aera-plugin --engine "$RUNNER_TEMP/engine/embedder/libflutter_engine.so" \
             --icu "$RUNNER_TEMP/engine/icudtl.dat" --mesa "$RUNNER_TEMP/mesa" \
             --sysroot /usr/lib/${{ matrix.triple }} --sysroot /lib/${{ matrix.triple }} \
-            --ca-bundle /etc/ssl/certs/ca-certificates.crt --pins kit.json
+            --ca-bundle /etc/ssl/certs/ca-certificates.crt --pins kit.json \
+            --alsa-module target/release/libasound_module_pcm_aera.so --alsa-conf audio/aera.conf
           mkdir -p dist
           tar -C "$RUNNER_TEMP/kit" -cJf "dist/$name.tar.xz" .
           cp target/static/release/aera-host-sim "dist/aera-host-sim-linux-$arch"

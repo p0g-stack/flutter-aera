@@ -2,3 +2,4 @@
 /out
 *.png
 !example/**/*.png
+__pycache__/
