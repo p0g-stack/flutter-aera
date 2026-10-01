@@ -1,7 +1,7 @@
 From 6a91db16b4b322530bc363d738daabf0dbe70e09 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:27:23 +0000
-Subject: [PATCH 04/19] plugin_api: launch Host API 3 plugins with the surface
+Subject: [PATCH 04/20] plugin_api: launch Host API 3 plugins with the surface
  on fd 3
 
 The launcher starts every plugin with only the control socket and a fixed

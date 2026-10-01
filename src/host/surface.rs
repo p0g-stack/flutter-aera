@@ -4,6 +4,11 @@
 //! `stride * height` bytes. The plugin writes a free slot, sends `PRESENT`,
 //! and may not touch that slot again until the host answers `FRAME_DONE`
 //! for it (AERA keeps the frame on screen until a newer one replaces it).
+//!
+//! A later `SURFACE` (AERA rotated) reshapes the slots within the same
+//! memfd and starts a new generation: every slot is ours again, and
+//! `PRESENT` carries the generation its frame was drawn for in `flags`, so
+//! AERA hands back a frame of the old shape unshown.
 
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -97,15 +102,25 @@ enum SlotState {
 }
 
 struct State {
+    geometry: Geometry,
+    generation: u32,
     slots: Vec<SlotState>,
     next_sequence: u32,
     closed: bool,
 }
 
+/// A slot the renderer holds, with the shape it was taken for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    pub index: usize,
+    pub geometry: Geometry,
+    generation: u32,
+}
+
 /// The mapped memfd and who owns each slot.
 pub struct Slots {
-    geometry: Geometry,
     base: *mut u8,
+    len: usize,
     _fd: OwnedFd,
     state: Mutex<State>,
     freed: Condvar,
@@ -126,14 +141,16 @@ impl Slots {
         if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        if (stat.st_size as usize) < geometry.total_bytes() {
+        let len = stat.st_size as usize;
+        if len < geometry.total_bytes() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "surface memfd is smaller than SURFACE says"));
         }
-        // SAFETY: a fresh shared mapping of a file at least this large.
+        // All of it: AERA sizes it for every shape a later SURFACE may give.
+        // SAFETY: a fresh shared mapping of a file this large.
         let base = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                geometry.total_bytes(),
+                len,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
                 fd.as_raw_fd(),
@@ -144,10 +161,12 @@ impl Slots {
             return Err(io::Error::last_os_error());
         }
         Ok(Slots {
-            geometry,
             base: base.cast(),
+            len,
             _fd: fd,
             state: Mutex::new(State {
+                geometry,
+                generation: 0,
                 slots: vec![SlotState::Free; geometry.slots as usize],
                 next_sequence: 1,
                 closed: false,
@@ -157,7 +176,27 @@ impl Slots {
     }
 
     pub fn geometry(&self) -> Geometry {
-        self.geometry
+        self.state.lock().unwrap().geometry
+    }
+
+    /// A later `SURFACE`: the new shape within the same memory, a new
+    /// generation, and every slot ours again (a frame still being written
+    /// is presented as the old generation, which AERA hands straight back).
+    /// False when the shape does not fit the memfd or changes the slot count.
+    pub fn reshape(&self, geometry: Geometry) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if geometry.total_bytes() > self.len || geometry.slots != state.geometry.slots {
+            return false;
+        }
+        state.geometry = geometry;
+        state.generation = state.generation.wrapping_add(1);
+        for slot in state.slots.iter_mut() {
+            if matches!(slot, SlotState::Presented(_)) {
+                *slot = SlotState::Free;
+            }
+        }
+        self.freed.notify_all();
+        true
     }
 
     /// Whether a slot is free right now (vsync is only granted then).
@@ -166,7 +205,7 @@ impl Slots {
     }
 
     /// Waits up to `timeout` for a free slot and takes it.
-    pub fn acquire(&self, timeout: Duration) -> Option<usize> {
+    pub fn acquire(&self, timeout: Duration) -> Option<Frame> {
         let state = self.state.lock().unwrap();
         let (mut state, _) = self
             .freed
@@ -177,33 +216,39 @@ impl Slots {
         }
         let index = state.slots.iter().position(|s| *s == SlotState::Free)?;
         state.slots[index] = SlotState::Writing;
-        Some(index)
+        Some(Frame { index, geometry: state.geometry, generation: state.generation })
     }
 
-    /// The bytes of a slot the caller holds in `Writing`.
+    /// The bytes of a slot the caller holds, laid out as when it was taken.
     ///
     /// # Safety
-    /// `index` must have come from [`Slots::acquire`] and not been presented
-    /// or released since, so no one else touches these bytes.
-    pub unsafe fn slot_mut(&self, index: usize) -> &mut [u8] {
-        let size = self.geometry.frame_bytes();
-        std::slice::from_raw_parts_mut(self.base.add(index * size), size)
+    /// `frame` must have come from [`Slots::acquire`] and not been presented
+    /// or released since. Only the one renderer thread writes slots, so no
+    /// one else touches these bytes (after a reshape, slots of the two
+    /// shapes may overlap, but the renderer writes one frame at a time and
+    /// AERA reads only frames of the current shape).
+    #[allow(clippy::mut_from_ref)] // the slot is shared memory, owned per the contract above
+    pub unsafe fn slot_mut(&self, frame: &Frame) -> &mut [u8] {
+        let size = frame.geometry.frame_bytes();
+        debug_assert!((frame.index + 1) * size <= self.len);
+        std::slice::from_raw_parts_mut(self.base.add(frame.index * size), size)
     }
 
-    /// Marks a written slot as presented and returns the `PRESENT` message.
-    pub fn present(&self, index: usize) -> Message {
+    /// Marks a written slot as presented and returns the `PRESENT` message,
+    /// carrying the generation the frame was drawn for.
+    pub fn present(&self, frame: &Frame) -> Message {
         let mut state = self.state.lock().unwrap();
-        debug_assert_eq!(state.slots[index], SlotState::Writing);
+        debug_assert_eq!(state.slots[frame.index], SlotState::Writing);
         let sequence = state.next_sequence;
         state.next_sequence = state.next_sequence.wrapping_add(1).max(1);
-        state.slots[index] = SlotState::Presented(sequence);
-        Message::with(kind::PRESENT, sequence, index as u32, 0)
+        state.slots[frame.index] = SlotState::Presented(sequence);
+        Message::with(kind::PRESENT, sequence, frame.index as u32, frame.generation)
     }
 
     /// Gives back a slot that was acquired but not presented.
-    pub fn release(&self, index: usize) {
+    pub fn release(&self, frame: &Frame) {
         let mut state = self.state.lock().unwrap();
-        state.slots[index] = SlotState::Free;
+        state.slots[frame.index] = SlotState::Free;
         self.freed.notify_all();
     }
 
@@ -228,12 +273,17 @@ impl Slots {
 impl Drop for Slots {
     fn drop(&mut self) {
         // SAFETY: the mapping made in `map`, unmapped once.
-        unsafe { libc::munmap(self.base.cast(), self.geometry.total_bytes()) };
+        unsafe { libc::munmap(self.base.cast(), self.len) };
     }
 }
 
 /// Creates a sealed memfd big enough for `geometry`, as the host does.
 pub fn create_memfd(geometry: &Geometry) -> io::Result<OwnedFd> {
+    create_memfd_of(geometry.total_bytes())
+}
+
+/// Creates a sealed memfd of `len` bytes.
+pub fn create_memfd_of(len: usize) -> io::Result<OwnedFd> {
     use std::os::fd::FromRawFd;
     // SAFETY: a NUL-terminated name and valid flags.
     let fd = unsafe { libc::memfd_create(c"aera-surface".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
@@ -244,7 +294,7 @@ pub fn create_memfd(geometry: &Geometry) -> io::Result<OwnedFd> {
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     // SAFETY: fd is a valid memfd.
     unsafe {
-        if libc::ftruncate(fd.as_raw_fd(), geometry.total_bytes() as i64) != 0
+        if libc::ftruncate(fd.as_raw_fd(), len as i64) != 0
             || libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL) != 0
         {
             return Err(io::Error::last_os_error());
@@ -280,16 +330,41 @@ mod tests {
         let short = Duration::from_millis(1);
         let mut sent = vec![];
         for _ in 0..3 {
-            let i = slots.acquire(short).unwrap();
-            unsafe { slots.slot_mut(i).fill(i as u8) };
-            sent.push(slots.present(i));
+            let f = slots.acquire(short).unwrap();
+            unsafe { slots.slot_mut(&f).fill(f.index as u8) };
+            sent.push(slots.present(&f));
         }
         assert!(!slots.has_free());
         assert!(slots.acquire(short).is_none());
         assert!(!slots.frame_done(999));
         assert!(slots.frame_done(sent[1].request_id));
-        assert_eq!(slots.acquire(short), Some(sent[1].value as usize));
+        assert_eq!(slots.acquire(short).map(|f| f.index), Some(sent[1].value as usize));
         let sequences: Vec<u32> = sent.iter().map(|m| m.request_id).collect();
         assert_eq!(sequences, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn reshape_starts_a_generation() {
+        let g = Geometry { width: 4, height: 2, stride: 16, slots: 3, scale: 1.0, refresh_hz: 60.0 };
+        // Room for the rotated shape too, as AERA allocates it.
+        let slots = Slots::map(create_memfd_of(4 * 4 * 4 * 3).unwrap(), g).unwrap();
+        let short = Duration::from_millis(1);
+        let shown = slots.acquire(short).unwrap();
+        let first = slots.present(&shown);
+        assert_eq!(first.flags, 0);
+        let writing = slots.acquire(short).unwrap();
+        let rotated = Geometry { width: 2, height: 4, stride: 8, ..g };
+        assert!(slots.reshape(rotated));
+        assert_eq!(slots.geometry(), rotated);
+        // The presented slot is ours again; the one being written stays
+        // taken and goes out as the old generation.
+        assert!(!slots.frame_done(first.request_id));
+        assert_eq!(slots.present(&writing).flags, 0);
+        let next = slots.acquire(short).unwrap();
+        assert_eq!(next.geometry, rotated);
+        assert_eq!(slots.present(&next).flags, 1);
+        // Too big for the memfd, or another slot count.
+        assert!(!slots.reshape(Geometry { width: 64, stride: 256, ..g }));
+        assert!(!slots.reshape(Geometry { slots: 2, ..rotated }));
     }
 }

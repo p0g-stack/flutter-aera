@@ -16,7 +16,7 @@ use libloading::Library;
 
 use crate::ffi::{self, FlutterEngineProcTable, FlutterTask, FLUTTER_ENGINE_VERSION};
 use crate::handlers::{self, Effect, Handlers};
-use crate::host::{kind, lifecycle, Control, Message, Slots};
+use crate::host::{kind, lifecycle, Control, Geometry, Message, Slots};
 use crate::renderer::gl::{self, Gl};
 use crate::renderer::damage::{Damage, Rect};
 use crate::renderer::vk::Vk;
@@ -141,7 +141,7 @@ impl Engine {
         // The engine's switch, as GTK passes it through.
         let impeller = config.engine_args.iter().any(|a| a == "--enable-impeller" || a == "--enable-impeller=true");
         let renderer = if config.vulkan {
-            match Vk::new(geometry.width, geometry.height, geometry.stride as usize) {
+            match Vk::new(geometry.width, geometry.height) {
                 Ok(v) => {
                     eprintln!("aera-flutter: Vulkan on {}", v.name());
                     Renderer::Vk(v)
@@ -448,6 +448,26 @@ impl Shared {
         }
     }
 
+    /// A later `SURFACE`: AERA rotated. The slots take the new shape, the
+    /// renderer follows on its next frame, and Flutter gets new metrics.
+    fn reshape(&self, m: &Message) {
+        let Some(g) = Geometry::from_message(m) else {
+            eprintln!("aera-flutter: ignoring a bad SURFACE");
+            return;
+        };
+        if !self.renderer.resize(g.width, g.height) || !self.slots.reshape(g) {
+            eprintln!("aera-flutter: cannot follow SURFACE {}x{}; keeping {:?}", g.width, g.height, self.slots.geometry());
+            return;
+        }
+        eprintln!("aera-flutter: surface now {}x{}", g.width, g.height);
+        *self.damage.lock().unwrap() = Damage::new(g.width, g.height, g.slots as usize);
+        self.view.lock().unwrap().geometry = g;
+        self.send_metrics();
+        // SAFETY: a live engine.
+        unsafe { (self.procs.ScheduleFrame.unwrap())(self.engine()) };
+        self.runner.wake();
+    }
+
     /// Answers a platform message through its response handle, once.
     fn respond(&self, response: usize, bytes: &[u8]) {
         if response == 0 {
@@ -474,7 +494,7 @@ impl Shared {
                     unsafe { (self.procs.SendPointerEvent.unwrap())(self.engine(), &e, 1) };
                 }
             }
-            kind::SURFACE => eprintln!("aera-flutter: resize is not supported yet; keeping the first SURFACE"),
+            kind::SURFACE => self.reshape(m),
             _ => {
                 let effects = self.handlers.lock().unwrap().on_host(m);
                 self.apply(effects);
@@ -540,7 +560,7 @@ unsafe extern "C" fn cb_fbo(user_data: *mut c_void) -> u32 {
 }
 
 unsafe extern "C" fn cb_transformation(user_data: *mut c_void) -> ffi::FlutterTransformation {
-    gl::flip_vertically(shared(user_data).slots.geometry().height)
+    gl::flip_vertically(shared(user_data).renderer.gl().size().1)
 }
 
 unsafe extern "C" fn cb_proc_resolver(user_data: *mut c_void, name: *const c_char) -> *mut c_void {
@@ -604,21 +624,30 @@ unsafe extern "C" fn cb_vk_present(user_data: *mut c_void, _image: *const ffi::F
 /// Copies a frame into a free slot and tells AERA. `changed` is what
 /// Flutter repainted (`None`: unknown, all of it).
 fn present(s: &Shared, changed: Option<Rect>, read: impl FnOnce(&mut [u8], usize, Rect)) -> bool {
-    let Some(index) = s.slots.acquire(Duration::from_secs(1)) else {
+    let Some(frame) = s.slots.acquire(Duration::from_secs(1)) else {
         // AERA held every slot for a second (or we are shutting down): drop
         // this frame rather than stall the raster thread forever. What it
         // changed is still owed to every slot.
         s.damage.lock().unwrap().skip(changed);
         return true;
     };
-    let stride = s.slots.geometry().stride as usize;
-    let rect = s.damage.lock().unwrap().next(index, changed);
+    let g = frame.geometry;
+    if s.renderer.size() != (g.width, g.height) {
+        // Drawn before a rotation reached the renderer: the next frame has
+        // the new shape.
+        s.slots.release(&frame);
+        // SAFETY: a live engine.
+        unsafe { (s.procs.ScheduleFrame.unwrap())(s.engine()) };
+        return true;
+    }
+    let stride = g.stride as usize;
+    let rect = s.damage.lock().unwrap().next(frame.index, changed);
     let started = std::time::Instant::now();
-    // SAFETY: `index` is ours until `present`.
-    read(unsafe { s.slots.slot_mut(index) }, stride, rect);
+    // SAFETY: `frame` is ours until `present`.
+    read(unsafe { s.slots.slot_mut(&frame) }, stride, rect);
     s.copy_ns.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
     s.copy_px.fetch_add(((rect.x1 - rect.x0) * (rect.y1 - rect.y0)) as u64, Ordering::Relaxed);
-    let message = s.slots.present(index);
+    let message = s.slots.present(&frame);
     s.frames.fetch_add(1, Ordering::Relaxed);
     if let Err(e) = s.control.send(&message) {
         eprintln!("aera-flutter: PRESENT failed: {e}");

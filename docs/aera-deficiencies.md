@@ -53,8 +53,6 @@ and, where they belong in AERA, answered with the next patch number.
 
 ## Not covered yet
 
-- Resize and rotation: a rotated scene restarts the plugin instead of
-  sending a new `SURFACE`.
 - Slots are sealed memfds copied by the CPU; no dma-buf slots, so a GPU
   frame is read back before AERA sees it.
 - No damage rectangles on `PRESENT`: AERA redraws the whole surface even

@@ -10,6 +10,7 @@
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ash::vk::{self, Handle};
 
@@ -86,9 +87,12 @@ pub struct Vk {
     pub format: vk::Format,
     /// The image is RGBA: swap to AERA's BGRA on the CPU.
     swizzle: bool,
-    width: u32,
-    height: u32,
-    stride: usize,
+    /// The frame size (`width << 32 | height`); a later SURFACE changes it.
+    /// The image and readback buffer are allocated square on the longer
+    /// side, so either orientation fits without reallocating.
+    size: AtomicU64,
+    /// That longer side.
+    side: u32,
     image: vk::Image,
     image_memory: vk::DeviceMemory,
     buffer: vk::Buffer,
@@ -110,7 +114,8 @@ fn has(list: &[vk::ExtensionProperties], name: &CStr) -> bool {
 }
 
 impl Vk {
-    pub fn new(width: u32, height: u32, stride: usize) -> Result<Vk, String> {
+    pub fn new(width: u32, height: u32) -> Result<Vk, String> {
+        let side = width.max(height);
         // SAFETY: loading the system (or payload) Vulkan loader and calling it
         // with valid create infos whose pointers outlive each call.
         unsafe {
@@ -231,7 +236,7 @@ impl Vk {
                     &vk::ImageCreateInfo::default()
                         .image_type(vk::ImageType::TYPE_2D)
                         .format(format)
-                        .extent(vk::Extent3D { width, height, depth: 1 })
+                        .extent(vk::Extent3D { width: side, height: side, depth: 1 })
                         .mip_levels(1)
                         .array_layers(1)
                         .samples(vk::SampleCountFlags::TYPE_1)
@@ -255,8 +260,9 @@ impl Vk {
                 .map_err(|e| format!("allocate the frame image: {e}"))?;
             device.bind_image_memory(image, image_memory, 0).map_err(|e| e.to_string())?;
 
-            // Rows of `stride` bytes, as in the slot, so one copy fills it.
-            let size = (stride * height as usize) as u64;
+            // Rows as in the slot (`width * 4` bytes), so one copy fills it;
+            // room for the longer side either way.
+            let size = side as u64 * side as u64 * 4;
             let buffer = device
                 .create_buffer(
                     &vk::BufferCreateInfo::default().size(size).usage(vk::BufferUsageFlags::TRANSFER_DST),
@@ -305,9 +311,8 @@ impl Vk {
                 device_extensions,
                 format,
                 swizzle,
-                width,
-                height,
-                stride,
+                size: AtomicU64::new((width as u64) << 32 | height as u64),
+                side,
                 image,
                 image_memory,
                 buffer,
@@ -361,8 +366,25 @@ impl Vk {
 
     /// Copies the frame Flutter just finished into `out`, top-down BGRA rows
     /// of `stride` bytes. Raster thread, from the present callback.
+    /// Frames from now on are `width` × `height` (AERA rotated); both fit
+    /// the image, which Flutter draws into from its top-left corner.
+    pub fn resize(&self, width: u32, height: u32) -> bool {
+        if width > self.side || height > self.side {
+            return false;
+        }
+        self.size.store((width as u64) << 32 | height as u64, Ordering::Release);
+        true
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        let size = self.size.load(Ordering::Acquire);
+        ((size >> 32) as u32, size as u32)
+    }
+
     pub fn read_frame(&self, out: &mut [u8], stride: usize) {
-        assert!(stride == self.stride && out.len() >= stride * self.height as usize);
+        let (width, height) = self.size();
+        assert!(stride >= width as usize * 4 && stride % 4 == 0 && out.len() >= stride * height as usize);
+        assert!(stride * height as usize <= self.side as usize * self.side as usize * 4);
         let r = self.readback.lock().unwrap();
         let d = &self.device;
         let range = vk::ImageSubresourceRange::default()
@@ -396,9 +418,9 @@ impl Vk {
                 &[to_copy],
             );
             let region = vk::BufferImageCopy::default()
-                .buffer_row_length((self.stride / 4) as u32)
+                .buffer_row_length((stride / 4) as u32)
                 .image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
-                .image_extent(vk::Extent3D { width: self.width, height: self.height, depth: 1 });
+                .image_extent(vk::Extent3D { width, height, depth: 1 });
             d.cmd_copy_image_to_buffer(r.cmd, self.image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, self.buffer, &[region]);
             let back = to_copy
                 .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
@@ -439,11 +461,11 @@ impl Vk {
                     .memory(self.buffer_memory)
                     .size(vk::WHOLE_SIZE)]);
             }
-            let len = stride * self.height as usize;
+            let len = stride * height as usize;
             std::ptr::copy_nonoverlapping(self.mapped, out.as_mut_ptr(), len);
         }
         if self.swizzle {
-            super::rgba_to_bgra(out, self.width as usize, stride, self.height as usize);
+            super::rgba_to_bgra(out, width as usize, stride, height as usize);
         }
     }
 }

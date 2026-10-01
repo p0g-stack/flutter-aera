@@ -7,7 +7,7 @@
 
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint};
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use libloading::Library;
 
@@ -88,10 +88,15 @@ pub struct Gl {
     display: EGLDisplay,
     render: EGLContext,
     resource: EGLContext,
-    width: i32,
-    height: i32,
+    /// The size frames should have (`width << 32 | height`); a later
+    /// SURFACE changes it from the platform thread.
+    wanted: AtomicU64,
+    /// The size the framebuffer's storage has; raster thread only.
+    current: AtomicU64,
     /// Created on the raster thread on first use.
     fbo: AtomicU32,
+    /// Its colour and depth-stencil renderbuffers.
+    renderbuffers: [AtomicU32; 2],
     /// 0 unknown, 1 BGRA readback works, 2 it does not.
     bgra: AtomicU8,
     /// Impeller ignores `surface_transformation`, so its frames arrive
@@ -182,9 +187,10 @@ impl Gl {
                 display,
                 render,
                 resource,
-                width: width as i32,
-                height: height as i32,
+                wanted: AtomicU64::new(pack(width, height)),
+                current: AtomicU64::new(pack(width, height)),
                 fbo: AtomicU32::new(0),
+                renderbuffers: [AtomicU32::new(0), AtomicU32::new(0)],
                 bgra: AtomicU8::new(0),
                 flip_rows: impeller,
             })
@@ -230,23 +236,55 @@ impl Gl {
         }
     }
 
-    /// The framebuffer Flutter draws into. Raster thread, render context
-    /// current.
+    /// Frames from now on are `width` × `height` (AERA rotated). The
+    /// framebuffer follows when the raster thread next asks for it.
+    pub fn resize(&self, width: u32, height: u32) {
+        self.wanted.store(pack(width, height), Ordering::Release);
+    }
+
+    /// The size of the framebuffer as last allocated.
+    pub fn size(&self) -> (u32, u32) {
+        unpack(self.current.load(Ordering::Acquire))
+    }
+
+    fn storage(&self, rb: [u32; 2], width: u32, height: u32) {
+        let g = &self.gles;
+        // SAFETY: GL calls with a current context on our own renderbuffers.
+        unsafe {
+            (g.bind_renderbuffer)(GL_RENDERBUFFER, rb[0]);
+            (g.renderbuffer_storage)(GL_RENDERBUFFER, GL_RGBA8, width as GLsizei, height as GLsizei);
+            (g.bind_renderbuffer)(GL_RENDERBUFFER, rb[1]);
+            (g.renderbuffer_storage)(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width as GLsizei, height as GLsizei);
+        }
+        self.current.store(pack(width, height), Ordering::Release);
+    }
+
+    /// The framebuffer Flutter draws into, at the wanted size. Raster
+    /// thread, render context current.
     pub fn framebuffer(&self) -> u32 {
+        let wanted = self.wanted.load(Ordering::Acquire);
         let existing = self.fbo.load(Ordering::Acquire);
         if existing != 0 {
+            if wanted != self.current.load(Ordering::Acquire) {
+                let rb = [self.renderbuffers[0].load(Ordering::Relaxed), self.renderbuffers[1].load(Ordering::Relaxed)];
+                let (width, height) = unpack(wanted);
+                self.storage(rb, width, height);
+            }
             return existing;
         }
         let g = &self.gles;
         let (mut fbo, mut rb) = (0, [0u32; 2]);
+        let (width, height) = unpack(wanted);
         // SAFETY: GL calls with a current context and valid out pointers.
         unsafe {
             (g.gen_framebuffers)(1, &mut fbo);
             (g.gen_renderbuffers)(2, rb.as_mut_ptr());
-            (g.bind_renderbuffer)(GL_RENDERBUFFER, rb[0]);
-            (g.renderbuffer_storage)(GL_RENDERBUFFER, GL_RGBA8, self.width, self.height);
-            (g.bind_renderbuffer)(GL_RENDERBUFFER, rb[1]);
-            (g.renderbuffer_storage)(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, self.width, self.height);
+        }
+        self.storage(rb, width, height);
+        self.renderbuffers[0].store(rb[0], Ordering::Relaxed);
+        self.renderbuffers[1].store(rb[1], Ordering::Relaxed);
+        // SAFETY: as above.
+        unsafe {
             (g.bind_framebuffer)(GL_FRAMEBUFFER, fbo);
             (g.framebuffer_renderbuffer)(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb[0]);
             (g.framebuffer_renderbuffer)(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb[1]);
@@ -262,12 +300,13 @@ impl Gl {
     /// BGRA rows of `stride` bytes. Raster thread, render context current,
     /// after Flutter drew.
     pub fn read_frame(&self, out: &mut [u8], stride: usize, rect: Rect) {
-        assert!(out.len() >= stride * self.height as usize && stride >= self.width as usize * 4 && stride % 4 == 0);
-        assert!(rect.x1 <= self.width as u32 && rect.y1 <= self.height as u32);
+        let (width, height) = self.size();
+        assert!(out.len() >= stride * height as usize && stride >= width as usize * 4 && stride % 4 == 0);
+        assert!(rect.x1 <= width && rect.y1 <= height);
         if rect.is_empty() {
             return;
         }
-        let full = rect == Rect::full(self.width as u32, self.height as u32);
+        let full = rect == Rect::full(width, height);
         let mut bgra = match self.bgra.load(Ordering::Relaxed) {
             0 => {
                 let ok = self.has_extension("GL_EXT_read_format_bgra");
@@ -308,7 +347,7 @@ impl Gl {
         }
         if self.flip_rows {
             assert!(full, "Impeller frames are copied whole");
-            flip_rows(&mut out[..stride * self.height as usize], stride);
+            flip_rows(&mut out[..stride * height as usize], stride);
         }
     }
 
@@ -320,6 +359,14 @@ impl Gl {
 }
 
 /// Reverses the order of `stride`-byte rows in place.
+fn pack(width: u32, height: u32) -> u64 {
+    (width as u64) << 32 | height as u64
+}
+
+fn unpack(size: u64) -> (u32, u32) {
+    ((size >> 32) as u32, size as u32)
+}
+
 pub fn flip_rows(rows: &mut [u8], stride: usize) {
     let n = rows.len() / stride;
     for i in 0..n / 2 {

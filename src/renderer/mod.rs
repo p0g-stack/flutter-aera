@@ -35,6 +35,26 @@ impl Renderer {
             Renderer::Gl(_) => unreachable!("Vulkan callback on the GL renderer"),
         }
     }
+
+    /// Frames from now on are `width` × `height` (a later SURFACE). False
+    /// if the renderer cannot follow.
+    pub fn resize(&self, width: u32, height: u32) -> bool {
+        match self {
+            Renderer::Gl(g) => {
+                g.resize(width, height);
+                true
+            }
+            Renderer::Vk(v) => v.resize(width, height),
+        }
+    }
+
+    /// The size the renderer currently draws at.
+    pub fn size(&self) -> (u32, u32) {
+        match self {
+            Renderer::Gl(g) => g.size(),
+            Renderer::Vk(v) => v.size(),
+        }
+    }
 }
 
 /// Swaps R and B in place, for drivers that cannot read back BGRA.

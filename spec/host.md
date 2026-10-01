@@ -74,6 +74,14 @@ once the engine runs.
   redraw from it. With 3 slots one is on screen, one waits for the next
   refresh, one is being drawn. The embedder grants Flutter a vsync only
   while a slot is free.
+- Rotation (patch 0020): the memfd is sized at launch for either
+  orientation (`slots × long side² × 4` bytes). When AERA rotates, it sends
+  a new `SURFACE` on the same fd with the new width, height and stride;
+  that starts a new generation (0 for the first), and every slot is the
+  plugin's again. `PRESENT` `flags` carries the generation the frame was
+  drawn for; AERA answers a frame of an older generation with `FRAME_DONE`
+  and does not show it. AERA's rotation toggle no longer leaves a running
+  pixel plugin.
 
 ### Input
 
@@ -120,6 +128,5 @@ pixel plugins: a Flutter app draws its own UI.
 ## Later (not in the patches yet)
 
 dma-buf slots with sync_file fences (zero copy); damage rectangles on
-`PRESENT`; a new `SURFACE` for resize/rotation (today a rotated scene
-restarts the plugin); speaker audio through
+`PRESENT`; speaker audio through
 `aera-audio-bridge` (not the embedder's: no Flutter system channel).

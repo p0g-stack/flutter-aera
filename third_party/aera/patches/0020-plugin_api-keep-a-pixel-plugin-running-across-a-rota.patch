@@ -1,0 +1,525 @@
+From 1971a5f9903a359a134409aae515fa837aec80c3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 21:44:41 +0000
+Subject: [PATCH 20/20] plugin_api: keep a pixel plugin running across a
+ rotation
+
+Rotating from Quick Settings returns AERA to Home, which ends a running
+pixel plugin: its surface had one fixed size, so there was no way to
+give it the new shape.
+
+Size the surface memfd at launch for either orientation (pages are only
+allocated where the plugin draws) and, when the screen's size changes,
+lay the scene out again and send a new SURFACE with the rotated size on
+the same fd. Each SURFACE starts a generation, which PRESENT carries in
+`flags` (0 for the first, so current plugins are unaffected); a frame
+drawn for an earlier generation goes straight back with FRAME_DONE
+instead of being shown at the wrong size. After a new SURFACE every slot
+is the plugin's again, and the scene shows nothing until a frame of the
+new shape arrives. The rotation toggle no longer returns Home while a
+pixel plugin is running.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/core/engine.cpp                       |   2 +-
+ aeraui/features/plugin_api/README.md         |  10 +-
+ aeraui/features/plugin_api/session.cpp       |   5 +
+ aeraui/features/plugin_api/session.hpp       |   2 +
+ aeraui/features/plugin_api/surface.cpp       |  33 ++++-
+ aeraui/features/plugin_api/surface.hpp       |  17 ++-
+ aeraui/scenes/pixel_plugin_scene.cpp         | 129 ++++++++++++++-----
+ aeraui/scenes/scene.hpp                      |   3 +
+ aeraui/tests/plugin_api_pixel_host_check.cpp |   2 +-
+ aeraui/tests/plugin_api_surface_test.cpp     |  46 +++++--
+ 10 files changed, 196 insertions(+), 53 deletions(-)
+
+diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
+index 77bf86a..2c36499 100644
+--- a/aeraui/core/engine.cpp
++++ b/aeraui/core/engine.cpp
+@@ -2270,7 +2270,7 @@ private:
+       __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                           "display orientation changed to %s",
+                           self->landscape_ ? "landscape" : "portrait");
+-      if (action == Action::kToggleRotation)
++      if (action == Action::kToggleRotation && !PixelPluginActive())
+         self->ShowHome();
+       return;
+     }
+diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
+index 1c41f9e..94e4e16 100644
+--- a/aeraui/features/plugin_api/README.md
++++ b/aeraui/features/plugin_api/README.md
+@@ -91,8 +91,16 @@ Host API 2's; `scenes/pixel_plugin_scene.cpp` replaces the declarative page.
+   (`request_id`), title `BGRA8888` and text `slots=N scale=S refresh=HZ`
+   (scale from `ro.sf.lcd_density`). The size is the panel's pixels for the
+   area below the status bar.
++- Rotation: the plugin keeps running. AERA sends a new `SURFACE` with the
++  rotated size on the same fd, which it sized for either orientation at
++  launch. Each `SURFACE` starts a generation (0 for the first): `PRESENT`
++  carries the generation it was drawn for in `flags`, and a frame of an
++  earlier generation is returned with `FRAME_DONE` unshown. After a new
++  `SURFACE` every slot is the plugin's again, and nothing is shown until a
++  frame of the new generation arrives.
+ - Frames: the worker writes a slot it owns and sends `PRESENT` (`request_id`
+-  sequence, never 0 or repeated; `value` slot). `FRAME_DONE` returns a slot:
++  sequence, never 0 or repeated; `value` slot; `flags` the surface
++  generation). `FRAME_DONE` returns a slot:
+   at once when a newer `PRESENT` supersedes a frame never shown, otherwise
+   when a newer frame has replaced it on screen. The frame on screen stays
+   AERA's. `PRESENT` is outside the 128 messages per second limit.
+diff --git a/aeraui/features/plugin_api/session.cpp b/aeraui/features/plugin_api/session.cpp
+index 79819c1..22d0787 100644
+--- a/aeraui/features/plugin_api/session.cpp
++++ b/aeraui/features/plugin_api/session.cpp
+@@ -74,6 +74,11 @@ bool Session::Send(Kind kind, uint32_t request_id, uint32_t value,
+   return Write(message);
+ }
+ 
++bool Session::Send(Message message) {
++  message.version = version_;
++  return Write(message);
++}
++
+ std::vector<Message> Session::Poll() {
+   std::vector<Message> messages;
+   for (unsigned packet = 0; packet < 24 && Connected(); ++packet) {
+diff --git a/aeraui/features/plugin_api/session.hpp b/aeraui/features/plugin_api/session.hpp
+index 090c161..1048f9d 100644
+--- a/aeraui/features/plugin_api/session.hpp
++++ b/aeraui/features/plugin_api/session.hpp
+@@ -21,6 +21,8 @@ class Session final {
+   bool Send(Kind kind, uint32_t request_id = 0, uint32_t value = 0,
+             uint32_t flags = 0, const char *title = nullptr,
+             const char *text = nullptr);
++  // Sends a prepared host message (SURFACE) at the negotiated version.
++  bool Send(Message message);
+   bool Connected() const { return control_ >= 0; }
+   bool Negotiated() const { return negotiated_; }
+   uint32_t Version() const { return version_; }
+diff --git a/aeraui/features/plugin_api/surface.cpp b/aeraui/features/plugin_api/surface.cpp
+index 0ec9af3..3b78795 100644
+--- a/aeraui/features/plugin_api/surface.cpp
++++ b/aeraui/features/plugin_api/surface.cpp
+@@ -1,6 +1,7 @@
+ /* SPDX-License-Identifier: Apache-2.0 */
+ #include "surface.hpp"
+ 
++#include <algorithm>
+ #include <cstdio>
+ #include <fcntl.h>
+ #include <sys/mman.h>
+@@ -15,24 +16,26 @@ bool SurfaceGeometry::Valid() const {
+          refresh_hz >= 1.0 && refresh_hz <= 240.0;
+ }
+ 
+-bool Surface::Create(const SurfaceGeometry &geometry) {
++bool Surface::Create(const SurfaceGeometry &geometry, uint64_t capacity) {
+   Close();
+   if (!geometry.Valid()) return false;
++  capacity = std::max(capacity, geometry.TotalBytes());
+   const int fd = memfd_create("aera-plugin-surface",
+                               MFD_CLOEXEC | MFD_ALLOW_SEALING);
+   if (fd < 0) return false;
+-  if (ftruncate(fd, static_cast<off_t>(geometry.TotalBytes())) != 0 ||
++  if (ftruncate(fd, static_cast<off_t>(capacity)) != 0 ||
+       fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL) != 0) {
+     close(fd);
+     return false;
+   }
+-  void *pixels = mmap(nullptr, geometry.TotalBytes(), PROT_READ, MAP_SHARED,
+-                      fd, 0);
++  void *pixels = mmap(nullptr, capacity, PROT_READ, MAP_SHARED, fd, 0);
+   if (pixels == MAP_FAILED) {
+     close(fd);
+     return false;
+   }
+   geometry_ = geometry;
++  capacity_ = capacity;
++  generation_ = 0;
+   fd_ = fd;
+   pixels_ = static_cast<uint8_t *>(pixels);
+   slots_.assign(geometry.slots, Slot{});
+@@ -41,8 +44,19 @@ bool Surface::Create(const SurfaceGeometry &geometry) {
+   return true;
+ }
+ 
++bool Surface::Reshape(const SurfaceGeometry &geometry) {
++  if (!pixels_ || !geometry.Valid() || geometry.TotalBytes() > capacity_ ||
++      geometry.slots != geometry_.slots)
++    return false;
++  geometry_ = geometry;
++  slots_.assign(geometry.slots, Slot{});
++  pending_ = latched_ = shown_ = -1;
++  ++generation_;
++  return true;
++}
++
+ void Surface::Close() {
+-  if (pixels_) munmap(pixels_, geometry_.TotalBytes());
++  if (pixels_) munmap(pixels_, capacity_);
+   if (fd_ >= 0) close(fd_);
+   pixels_ = nullptr;
+   fd_ = -1;
+@@ -62,11 +76,18 @@ Message Surface::SurfaceMessage() const {
+   return message;
+ }
+ 
+-bool Surface::Present(uint32_t sequence, uint32_t slot,
++bool Surface::Present(uint32_t sequence, uint32_t slot, uint32_t generation,
+                       std::vector<uint32_t> &released) {
+   if (!pixels_ || slot >= slots_.size() || sequence == 0 ||
+       sequence == last_sequence_ || slots_[slot].owner != Owner::kPlugin)
+     return false;
++  if (generation != generation_) {
++    // Drawn for an earlier SURFACE (the plugin had not seen the new one
++    // yet): its pixels do not fit, so it goes straight back.
++    last_sequence_ = sequence;
++    released.push_back(sequence);
++    return true;
++  }
+   if (pending_ >= 0) {
+     // Superseded before it was ever latched: give it straight back.
+     released.push_back(slots_[pending_].sequence);
+diff --git a/aeraui/features/plugin_api/surface.hpp b/aeraui/features/plugin_api/surface.hpp
+index d4351df..76d2e63 100644
+--- a/aeraui/features/plugin_api/surface.hpp
++++ b/aeraui/features/plugin_api/surface.hpp
+@@ -36,7 +36,15 @@ class Surface final {
+   Surface &operator=(const Surface &) = delete;
+ 
+   // Creates and maps the frames. PluginFd() is what the plugin gets on fd 3.
+-  bool Create(const SurfaceGeometry &geometry);
++  // `capacity` (bytes, at least the geometry's) sizes the memfd for every
++  // geometry Reshape() may later switch to.
++  bool Create(const SurfaceGeometry &geometry, uint64_t capacity = 0);
++  // Switches to a new geometry within the capacity, e.g. after a rotation,
++  // and starts a new surface generation: every slot is the plugin's again
++  // and no frame is shown until one of the new generation arrives. Send
++  // SurfaceMessage() after it.
++  bool Reshape(const SurfaceGeometry &geometry);
++  uint32_t Generation() const { return generation_; }
+   void Close();
+   int PluginFd() const { return fd_; }
+   const SurfaceGeometry &Geometry() const { return geometry_; }
+@@ -44,8 +52,9 @@ class Surface final {
+ 
+   // A PRESENT from the plugin. False for a protocol violation (unknown slot,
+   // a slot AERA holds, sequence 0 or reused). `released` receives sequences
+-  // to answer with FRAME_DONE right away (a skipped, never shown frame).
+-  bool Present(uint32_t sequence, uint32_t slot,
++  // to answer with FRAME_DONE right away (a skipped, never shown frame, or
++  // one drawn for an earlier `generation` than the current SURFACE's).
++  bool Present(uint32_t sequence, uint32_t slot, uint32_t generation,
+                std::vector<uint32_t> &released);
+   // The newest presented frame not yet on screen, latched for the next
+   // refresh; nullptr if there is none.
+@@ -65,6 +74,8 @@ class Surface final {
+     return pixels_ + static_cast<uint64_t>(slot) * geometry_.FrameBytes();
+   }
+   SurfaceGeometry geometry_{};
++  uint64_t capacity_ = 0;
++  uint32_t generation_ = 0;
+   int fd_ = -1;
+   uint8_t *pixels_ = nullptr;
+   std::vector<Slot> slots_;
+diff --git a/aeraui/scenes/pixel_plugin_scene.cpp b/aeraui/scenes/pixel_plugin_scene.cpp
+index 529b19f..51dfe1d 100644
+--- a/aeraui/scenes/pixel_plugin_scene.cpp
++++ b/aeraui/scenes/pixel_plugin_scene.cpp
+@@ -340,7 +340,7 @@ void HandleMessage(PixelScene *scene, const plugin_api::Message &message) {
+     case plugin_api::Kind::kPresent: {
+       std::vector<uint32_t> released;
+       if (!scene->surface.Present(message.request_id, message.value,
+-                                  released)) {
++                                  message.flags, released)) {
+         Stop(scene, "Plugin stopped",
+              "The plugin presented a frame it does not own.");
+         return;
+@@ -477,8 +477,89 @@ bool SendTouch(PixelScene *s, plugin_api::Kind kind, int slot, int x, int y) {
+   return s->session.Send(kind, static_cast<uint32_t>(slot),
+                          static_cast<uint32_t>(px), static_cast<uint32_t>(py));
+ }
++
++// The surface for the area below the status bar, in panel pixels.
++plugin_api::SurfaceGeometry ViewGeometry(PixelScene *scene) {
++  plugin_api::SurfaceGeometry geometry;
++  geometry.width = static_cast<uint32_t>(
++      std::lround(scene->view_width * scene->pixels_per_unit));
++  geometry.height = static_cast<uint32_t>(
++      std::lround(scene->view_height * scene->pixels_per_unit));
++  geometry.stride = geometry.width * 4;
++  geometry.slots = 3;
++  geometry.scale = DeviceScale(static_cast<int>(
++      std::min(geometry.width, geometry.height)));
++  geometry.refresh_hz = 60.0;
++  return geometry;
++}
++
++// Places the viewport, image and keyboard for the screen's current
++// orientation and returns the surface geometry that fits it.
++plugin_api::SurfaceGeometry Layout(PixelScene *scene) {
++  lv_obj_t *screen = scene->screen;
++  // Full width below the status bar; the dock is hidden on app surfaces.
++  scene->view_left = 0;
++  scene->view_top = StatusBarHeight();
++  scene->view_width = lv_obj_get_width(screen);
++  scene->view_height = lv_obj_get_height(screen) - scene->view_top;
++  const plugin_api::SurfaceGeometry geometry = ViewGeometry(scene);
++  if (scene->viewport) {
++    lv_obj_set_pos(scene->viewport, scene->view_left, scene->view_top);
++    lv_obj_set_size(scene->viewport, scene->view_width, scene->view_height);
++  }
++  if (scene->image) {
++    lv_image_set_scale_x(scene->image, static_cast<uint32_t>(
++        (scene->view_width * 256 + geometry.width / 2) / geometry.width));
++    lv_image_set_scale_y(scene->image, static_cast<uint32_t>(
++        (scene->view_height * 256 + geometry.height / 2) / geometry.height));
++  }
++  scene->descriptor.header.w = geometry.width;
++  scene->descriptor.header.h = geometry.height;
++  scene->descriptor.header.stride = geometry.stride;
++  scene->descriptor.data_size = static_cast<uint32_t>(geometry.FrameBytes());
++  if (scene->keyboard) {
++    const bool landscape = Landscape(screen);
++    lv_obj_set_size(scene->keyboard, landscape ? 2408 : scene->view_width,
++                    landscape ? 720 : 760);
++    lv_obj_align(scene->keyboard, landscape ? LV_ALIGN_BOTTOM_RIGHT
++                                            : LV_ALIGN_BOTTOM_MID, 0, 0);
++  }
++  return geometry;
++}
++
++// AERA rotated: keep the plugin running and give it a surface of the new
++// shape in the same memory (sized for both orientations at the start).
++void Rotate(PixelScene *scene) {
++  const auto geometry = Layout(scene);
++  if (geometry.width == scene->surface.Geometry().width &&
++      geometry.height == scene->surface.Geometry().height)
++    return;
++  ReleaseTouches(scene);
++  // Nothing of the old shape stays on screen.
++  scene->frame_waiting_for_refresh = false;
++  if (scene->image) lv_image_set_src(scene->image, nullptr);
++  lv_image_cache_drop(&scene->descriptor);
++  if (!scene->surface.Reshape(geometry)) {
++    Stop(scene, "Plugin stopped", "Could not resize the plugin's display surface.");
++    return;
++  }
++  if (scene->showing && scene->viewport) {
++    scene->showing = false;
++    lv_obj_add_flag(scene->viewport, LV_OBJ_FLAG_HIDDEN);
++  }
++  if (scene->session.Negotiated()) {
++    scene->session.Send(scene->surface.SurfaceMessage());
++    scene->keyboard_inset = UINT32_MAX;
++    SendKeyboardInset(scene);
++  }
++}
+ }  // namespace
+ 
++bool PixelPluginActive() {
++  return gPixelScene && !gPixelScene->stopped;
++}
++
++
+ bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed) {
+   auto *s = gPixelScene;
+   if (!s || slot < 0 || slot >= kMaxPointers || !s->showing || s->stopped ||
+@@ -562,33 +643,17 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+   MainBackground(screen);
+   AttachStatusBar(screen, callback, context, StatusBarAction::kNone, true);
+ 
+-  // Full width below the status bar; the dock is hidden on app surfaces.
+-  scene->view_left = 0;
+-  scene->view_top = StatusBarHeight();
+-  scene->view_width = lv_obj_get_width(screen);
+-  scene->view_height = lv_obj_get_height(screen) - scene->view_top;
+   const int logical_long = std::max(lv_display_get_horizontal_resolution(
+       scene->display), lv_display_get_vertical_resolution(scene->display));
+   const int physical_long = std::max(gr_fb_width(), gr_fb_height());
+   scene->pixels_per_unit = logical_long > 0 && physical_long > 0
+       ? std::min(1.0, static_cast<double>(physical_long) / logical_long)
+       : 1.0;
+-
+-  plugin_api::SurfaceGeometry geometry;
+-  geometry.width = static_cast<uint32_t>(
+-      std::lround(scene->view_width * scene->pixels_per_unit));
+-  geometry.height = static_cast<uint32_t>(
+-      std::lround(scene->view_height * scene->pixels_per_unit));
+-  geometry.stride = geometry.width * 4;
+-  geometry.slots = 3;
+-  geometry.scale = DeviceScale(static_cast<int>(
+-      std::min(geometry.width, geometry.height)));
+-  geometry.refresh_hz = 60.0;
++  // The view's size, for the loading panel; widgets are placed below.
++  Layout(scene);
+ 
+   scene->viewport = lv_obj_create(screen);
+   Clear(scene->viewport);
+-  lv_obj_set_pos(scene->viewport, scene->view_left, scene->view_top);
+-  lv_obj_set_size(scene->viewport, scene->view_width, scene->view_height);
+   lv_obj_remove_flag(scene->viewport, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_flag(scene->viewport, LV_OBJ_FLAG_HIDDEN);
+   lv_obj_add_event_cb(scene->viewport, [](lv_event_t *event) {
+@@ -600,10 +665,6 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+   }, LV_EVENT_CANCEL, scene);
+   scene->image = lv_image_create(scene->viewport);
+   lv_image_set_pivot(scene->image, 0, 0);
+-  lv_image_set_scale_x(scene->image, static_cast<uint32_t>(
+-      (scene->view_width * 256 + geometry.width / 2) / geometry.width));
+-  lv_image_set_scale_y(scene->image, static_cast<uint32_t>(
+-      (scene->view_height * 256 + geometry.height / 2) / geometry.height));
+   lv_obj_remove_flag(scene->image, LV_OBJ_FLAG_CLICKABLE);
+   scene->descriptor.header.magic = LV_IMAGE_HEADER_MAGIC;
+   // BGRA bytes are LVGL's ARGB8888. USER1 selects the OpenGL renderer's
+@@ -611,10 +672,6 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+   scene->descriptor.header.cf = LV_COLOR_FORMAT_ARGB8888;
+   scene->descriptor.header.flags =
+       LV_IMAGE_FLAGS_MODIFIABLE | LV_IMAGE_FLAGS_USER1;
+-  scene->descriptor.header.w = geometry.width;
+-  scene->descriptor.header.h = geometry.height;
+-  scene->descriptor.header.stride = geometry.stride;
+-  scene->descriptor.data_size = static_cast<uint32_t>(geometry.FrameBytes());
+ 
+   scene->loading = lv_obj_create(screen);
+   Panel(scene->loading, 44, kMainPanel);
+@@ -643,11 +700,6 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+   scene->keyboard = lv_keyboard_create(screen);
+   lv_obj_set_user_data(scene->keyboard, &kPersistentModalMarker);
+   phone_keyboard::Apply(scene->keyboard);
+-  const bool landscape = Landscape(screen);
+-  lv_obj_set_size(scene->keyboard, landscape ? 2408 : scene->view_width,
+-                  landscape ? 720 : 760);
+-  lv_obj_align(scene->keyboard, landscape ? LV_ALIGN_BOTTOM_RIGHT
+-                                          : LV_ALIGN_BOTTOM_MID, 0, 0);
+   lv_obj_add_flag(scene->keyboard, LV_OBJ_FLAG_HIDDEN);
+   lv_obj_add_event_cb(scene->keyboard, [](lv_event_t *event) {
+     auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
+@@ -671,13 +723,24 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+     }
+   }, LV_EVENT_ALL, scene);
+ 
+-  if (!scene->surface.Create(geometry)) {
++  const plugin_api::SurfaceGeometry geometry = Layout(scene);
++  // Room for the surface in either orientation, so a rotation keeps the
++  // plugin and its memory (pages are only allocated as they are drawn).
++  const uint64_t long_side = static_cast<uint64_t>(std::lround(
++      std::max(lv_obj_get_width(screen), lv_obj_get_height(screen)) *
++      scene->pixels_per_unit));
++  if (!scene->surface.Create(geometry,
++                             long_side * long_side * 4 * geometry.slots)) {
+     Stop(scene, "Plugin unavailable",
+          "Could not create the plugin's display surface.");
+     return;
+   }
+   lv_display_add_event_cb(scene->display, PixelRefreshReady,
+                           LV_EVENT_REFR_READY, scene);
++  lv_obj_add_event_cb(screen, [](lv_event_t *event) {
++    auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
++    if (!scene->stopped) Rotate(scene);
++  }, LV_EVENT_SIZE_CHANGED, scene);
+   scene->worker = std::thread([scene] {
+     web::PreparePluginRuntime(scene->preparation, scene->plugin.id.c_str(),
+                               scene->plugin.type.c_str(),
+diff --git a/aeraui/scenes/scene.hpp b/aeraui/scenes/scene.hpp
+index 4fdb093..873473f 100644
+--- a/aeraui/scenes/scene.hpp
++++ b/aeraui/scenes/scene.hpp
+@@ -153,6 +153,9 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+ // Consumes touch slots that start on a pixel plugin's surface and forwards
+ // them as Host API 3 touches; edges stay AERA's gestures.
+ bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed);
++// A pixel plugin is running; it follows a rotation in place instead of AERA
++// returning Home.
++bool PixelPluginActive();
+ void BuildRootManagerScene(lv_obj_t *screen, ActionCallback callback,
+                            void *context);
+ void BuildAboutScene(lv_obj_t *screen, ActionCallback callback, void *context);
+diff --git a/aeraui/tests/plugin_api_pixel_host_check.cpp b/aeraui/tests/plugin_api_pixel_host_check.cpp
+index 8c1abba..164bfca 100644
+--- a/aeraui/tests/plugin_api_pixel_host_check.cpp
++++ b/aeraui/tests/plugin_api_pixel_host_check.cpp
+@@ -66,7 +66,7 @@ struct Host {
+     for (const auto &message : session.Poll()) {
+       if (message.kind == Kind::kPresent) {
+         std::vector<uint32_t> released;
+-        assert(surface.Present(message.request_id, message.value, released));
++        assert(surface.Present(message.request_id, message.value, message.flags, released));
+         for (uint32_t sequence : released)
+           session.Send(Kind::kFrameDone, sequence);
+         ++presents;
+diff --git a/aeraui/tests/plugin_api_surface_test.cpp b/aeraui/tests/plugin_api_surface_test.cpp
+index f5bd91c..924bd2b 100644
+--- a/aeraui/tests/plugin_api_surface_test.cpp
++++ b/aeraui/tests/plugin_api_surface_test.cpp
+@@ -27,27 +27,57 @@ int main() {
+          !strcmp(m.text, "slots=3 scale=3.5 refresh=60"));
+ 
+   std::vector<uint32_t> released;
+-  assert(!surface.Present(0, 0, released));   // sequence 0
+-  assert(!surface.Present(1, 3, released));   // no such slot
++  assert(!surface.Present(0, 0, 0, released));   // sequence 0
++  assert(!surface.Present(1, 3, 0, released));   // no such slot
+   memset(plugin, 0x11, g.FrameBytes());
+-  assert(surface.Present(1, 0, released) && released.empty());
+-  assert(!surface.Present(2, 0, released));   // slot 0 is AERA's now
+-  assert(!surface.Present(1, 1, released));   // sequence reused
++  assert(surface.Present(1, 0, 0, released) && released.empty());
++  assert(!surface.Present(2, 0, 0, released));   // slot 0 is AERA's now
++  assert(!surface.Present(1, 1, 0, released));   // sequence reused
+   const uint8_t *frame = surface.LatchNext();
+   assert(frame && frame[0] == 0x11 && !surface.LatchNext());
+   surface.RefreshDone(released);
+   assert(released.empty() && surface.HasFrame());  // first frame replaces none
+ 
+   // Two frames before a refresh: the older one is skipped and returned.
+-  assert(surface.Present(2, 1, released) && released.empty());
+-  assert(surface.Present(3, 2, released));
++  assert(surface.Present(2, 1, 0, released) && released.empty());
++  assert(surface.Present(3, 2, 0, released));
+   assert(released == std::vector<uint32_t>{2});
+   released.clear();
+-  assert(surface.Present(4, 1, released));     // slot 1 was given back
++  assert(surface.Present(4, 1, 0, released));     // slot 1 was given back
+   assert(released == std::vector<uint32_t>{3});
+   released.clear();
+   assert(surface.LatchNext() != nullptr);
+   surface.RefreshDone(released);
+   assert(released == std::vector<uint32_t>{1});  // frame 1 left the screen
++  released.clear();
++
++  // Rotation: a new geometry within the capacity starts generation 1. Every
++  // slot is the plugin's again and nothing is shown until a new frame.
++  SurfaceGeometry rotated = g;
++  rotated.width = 2; rotated.height = 4; rotated.stride = 8;
++  assert(surface.Reshape(rotated) && surface.Generation() == 1);
++  assert(!surface.HasFrame() && !surface.LatchNext());
++  const Message r = surface.SurfaceMessage();
++  assert(r.value == 2 && r.flags == 4 && r.request_id == 8);
++  // A frame drawn for the old SURFACE goes straight back, unshown.
++  assert(surface.Present(5, 0, 0, released));
++  assert(released == std::vector<uint32_t>{5} && !surface.LatchNext());
++  released.clear();
++  assert(surface.Present(6, 0, 1, released) && released.empty());
++  assert(surface.LatchNext() != nullptr);
++  // Larger than the memfd, or another slot count: refused.
++  SurfaceGeometry big = g;
++  big.width = 64; big.stride = 256;
++  assert(!surface.Reshape(big));
++  SurfaceGeometry fewer = rotated;
++  fewer.slots = 2;
++  assert(!surface.Reshape(fewer));
++
++  // A capacity sized for both orientations.
++  Surface roomy;
++  SurfaceGeometry tall = g;
++  tall.width = 2; tall.height = 6; tall.stride = 8;
++  assert(roomy.Create(g, 6 * 6 * 4 * 3));
++  assert(roomy.Reshape(tall));
+   return 0;
+ }
+-- 
+2.43.0
+

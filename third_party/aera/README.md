@@ -37,6 +37,7 @@ Cuttlefish image.
 | 0017 | `aera_remote/input.cpp`, `aera_remote.cpp`: create the virtual input device when Remote starts, so the first touch's press is not lost before recovery's input reader opens it (devicelab D7) |
 | 0018 | `aeraui/components/file_picker`: a shared file picker (one file, several, a folder, save as) that browses like Files; Telegram's attach picker becomes a caller, confined to its roots as before |
 | 0019 | `plugin_api`, pixel plugin scene: `REQUEST_OPERATION` `kPickFiles` opens that picker for a pixel plugin (`kFeatureFilePicker`); paths come back as `OPERATION_RESULT`s |
+| 0020 | `plugin_api`, pixel plugin scene, engine: a rotation sends a new `SURFACE` on the same memfd (sized at launch for either orientation) instead of restarting the plugin; `PRESENT` `flags` carry the surface generation and stale frames are released |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as
@@ -48,8 +49,7 @@ Checked by `ci/aera-host-check.sh` (session and surface unit tests, then the
 counter through AERA's launcher, session and surface). The LVGL scene is not
 run in CI: it builds only inside the AERA tree.
 
-Not yet: resize or rotation (a rotated scene restarts the plugin), dma-buf
-slots, damage rectangles, audio. Every known AERA gap, fixed or worked
+Not yet: dma-buf slots, damage rectangles, audio. Every known AERA gap, fixed or worked
 around, is in `docs/aera-deficiencies.md`.
 
 Licence: the patches are AERA's code and stay under its Apache-2.0.
