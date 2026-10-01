@@ -1,0 +1,58 @@
+From 4bac0c3831289965f9804ce7afd62439728d6f80 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 15:44:05 +0000
+Subject: [PATCH 12/12] recovery_utils: bound the wait for a declared health
+ HAL
+
+GetBatteryInfo() asks servicemanager for IHealth/default with
+AServiceManager_waitForService() whenever the service is declared in the
+VINTF manifest. Declared does not mean running: a health HAL that crashes
+at start, or one built against a newer platform than the recovery's
+libraries, never registers, and the wait never returns. Recovery then
+stalls before drawing, with servicemanager logging the lookup once a
+second and adb offline, because twrp.cpp, recovery.cpp and minadbd all
+read the battery on their way up.
+
+Poll with AServiceManager_checkService() for up to five seconds instead,
+as events.cpp already does for the vibrator, and fall through to the HIDL
+lookup and then the existing defaults (charging, capacity 100), which
+recovery already uses when no health HAL is declared at all.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ recovery_utils/battery_utils.cpp | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/recovery_utils/battery_utils.cpp b/recovery_utils/battery_utils.cpp
+index 6b126bd..63c48c6 100644
+--- a/recovery_utils/battery_utils.cpp
++++ b/recovery_utils/battery_utils.cpp
+@@ -36,8 +36,22 @@ BatteryInfo GetBatteryInfo() {
+   auto service_name = IHealth::descriptor + "/default"s;
+   std::shared_ptr<IHealth> health;
+   if (AServiceManager_isDeclared(service_name.c_str())) {
+-    ndk::SpAIBinder binder(AServiceManager_waitForService(service_name.c_str()));
+-    health = IHealth::fromBinder(binder);
++    // Declared is not running: a health HAL that crashes or does not match the
++    // recovery's libraries never registers, and waitForService() would then
++    // block recovery forever. Poll for a bounded time and fall back to HIDL or
++    // the defaults below.
++    constexpr int HEALTH_SERVICE_TIMEOUT_IN_MS = 5000;
++    constexpr int HEALTH_SERVICE_POLL_IN_MS = 100;
++    for (int waited = 0; health == nullptr && waited < HEALTH_SERVICE_TIMEOUT_IN_MS;
++         waited += HEALTH_SERVICE_POLL_IN_MS) {
++      ndk::SpAIBinder binder(AServiceManager_checkService(service_name.c_str()));
++      health = IHealth::fromBinder(binder);
++      if (health == nullptr) usleep(HEALTH_SERVICE_POLL_IN_MS * 1000);
++    }
++    if (health == nullptr) {
++      LOG(WARNING) << service_name << " is declared but did not start within "
++                   << HEALTH_SERVICE_TIMEOUT_IN_MS << " ms";
++    }
+   }
+   if (health == nullptr) {
+     LOG(INFO) << "Unable to get AIDL health service, trying HIDL...";
+-- 
+2.43.0
+
