@@ -1,7 +1,7 @@
 From 3261fd1c330da98c3e66904d983d08f7206c5979 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:27:24 +0000
-Subject: [PATCH 07/22] plugin_api: Host API 3 tests and documentation
+Subject: [PATCH 07/23] plugin_api: Host API 3 tests and documentation
 
 Session tests for the version 3 handshake and message order, surface slot
 ownership tests, and a host check that runs a plugin through the real

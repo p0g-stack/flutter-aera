@@ -19,4 +19,5 @@
 0019-plugin_api-let-pixel-plugins-pick-files-through-AERA.patch
 0020-plugin_api-keep-a-pixel-plugin-running-across-a-rota.patch
 0021-plugin_api-pause-a-pixel-plugin-when-its-scene-is-le.patch
-0022-aeraui-act-on-the-Home-and-Menu-keys.patch
+0022-plugin_api-tell-a-pixel-plugin-when-its-data-directo.patch
+0023-aeraui-act-on-the-Home-and-Menu-keys.patch

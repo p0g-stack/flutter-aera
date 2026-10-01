@@ -1,0 +1,107 @@
+From a66b1a18c6544aaf598d42eed42f8baebb386814 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 22:08:57 +0000
+Subject: [PATCH 22/23] plugin_api: tell a pixel plugin when its data directory
+ is in RAM
+
+AERA_PLUGIN_DATA falls back to RAM when storage is not mounted, and a
+plugin had no way to know that what it saves will not survive a reboot.
+Export AERA_PLUGIN_DATA_VOLATILE=1 in that case, so an app can say so.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/features/plugin_api/README.md       | 3 ++-
+ aeraui/features/plugin_api/launcher.cpp    | 2 ++
+ aeraui/features/plugin_api/launcher.hpp    | 4 ++++
+ aeraui/features/plugins/plugin_manager.cpp | 5 +++++
+ aeraui/features/plugins/plugin_manager.hpp | 2 ++
+ aeraui/scenes/pixel_plugin_scene.cpp       | 1 +
+ 6 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
+index 276b603..f7b012c 100644
+--- a/aeraui/features/plugin_api/README.md
++++ b/aeraui/features/plugin_api/README.md
+@@ -79,7 +79,8 @@ Host API 2's; `scenes/pixel_plugin_scene.cpp` replaces the declarative page.
+ - Launch: `--aera-host-api=3`, `AERA_HOST_API=3`, `AERA_SURFACE_FD=3`,
+   `AERA_APPEARANCE` (`light` or `dark`, AERA's surface mode) and
+   `AERA_PLUGIN_DATA`, a private directory that survives updates
+-  (`/sdcard/AERA/plugin-data/<id>`, or RAM when storage is not mounted).
++  (`/sdcard/AERA/plugin-data/<id>`, or RAM when storage is not mounted, and
++  then `AERA_PLUGIN_DATA_VOLATILE=1`: nothing saved survives a reboot).
+ - Handshake: the worker's `HELLO` must offer version 3 (`value` 3, `flags`
+   3); AERA answers `HELLO_ACK` with `value` 3 and `flags`
+   `kFeatureBackNavigation | kFeaturePixelSurface | kFeatureKeyboardInset |
+diff --git a/aeraui/features/plugin_api/launcher.cpp b/aeraui/features/plugin_api/launcher.cpp
+index 27df210..de7f8b1 100644
+--- a/aeraui/features/plugin_api/launcher.cpp
++++ b/aeraui/features/plugin_api/launcher.cpp
+@@ -127,6 +127,8 @@ bool Process::Start(const std::string &runtime, int &control_fd,
+         v3 ? const_cast<char *>(appearance_env) : nullptr,
+         v3 && !options.data_dir.empty()
+             ? const_cast<char *>(data_env.c_str()) : nullptr,
++        options.data_volatile
++            ? const_cast<char *>("AERA_PLUGIN_DATA_VOLATILE=1") : nullptr,
+         nullptr};
+     // Most API 2 plugins are intentionally static, keeping their package small
+     // and self-contained. Execute those directly. A dynamic plugin whose ELF
+diff --git a/aeraui/features/plugin_api/launcher.hpp b/aeraui/features/plugin_api/launcher.hpp
+index 1f0d2cf..180479a 100644
+--- a/aeraui/features/plugin_api/launcher.hpp
++++ b/aeraui/features/plugin_api/launcher.hpp
+@@ -14,6 +14,10 @@ struct LaunchOptions {
+   int surface_fd = -1;
+   // A persistent private directory, exported as AERA_PLUGIN_DATA.
+   std::string data_dir;
++  // data_dir is in RAM (storage was not mounted): exported as
++  // AERA_PLUGIN_DATA_VOLATILE=1, so an app can warn that nothing it saves
++  // survives a reboot.
++  bool data_volatile = false;
+ };
+ 
+ class Process final {
+diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
+index 4667e7a..ac391ce 100644
+--- a/aeraui/features/plugins/plugin_manager.cpp
++++ b/aeraui/features/plugins/plugin_manager.cpp
+@@ -1094,6 +1094,11 @@ std::string DataDirectory(const Plugin &plugin) {
+   return path;
+ }
+ 
++bool DataDirectoryVolatile(const std::string &path) {
++  const std::string root = std::string(kMemoryDataRoot) + "/";
++  return path.compare(0, root.size(), root) == 0;
++}
++
+ bool HasPermission(const Plugin &plugin, const std::string &permission) {
+   return std::find(plugin.permissions.begin(), plugin.permissions.end(),
+                    permission) != plugin.permissions.end();
+diff --git a/aeraui/features/plugins/plugin_manager.hpp b/aeraui/features/plugins/plugin_manager.hpp
+index ade4a79..66a5a69 100644
+--- a/aeraui/features/plugins/plugin_manager.hpp
++++ b/aeraui/features/plugins/plugin_manager.hpp
+@@ -107,6 +107,8 @@ bool IsPixel(const Plugin &plugin);
+ // but not Remove, on internal storage when it is mounted and in RAM
+ // otherwise. Created on demand; empty when it cannot be.
+ std::string DataDirectory(const Plugin &plugin);
++// Whether a DataDirectory() path is the RAM one, lost at reboot.
++bool DataDirectoryVolatile(const std::string &path);
+ bool HasPermission(const Plugin &plugin, const std::string &permission);
+ 
+ const char *LocationLabel(Location location);
+diff --git a/aeraui/scenes/pixel_plugin_scene.cpp b/aeraui/scenes/pixel_plugin_scene.cpp
+index 4cccf3d..eec6228 100644
+--- a/aeraui/scenes/pixel_plugin_scene.cpp
++++ b/aeraui/scenes/pixel_plugin_scene.cpp
+@@ -437,6 +437,7 @@ bool Launch(PixelScene *scene) {
+   options.host_api = plugin_api::kProtocolVersion3;
+   options.surface_fd = scene->surface.PluginFd();
+   options.data_dir = plugins::DataDirectory(scene->plugin);
++  options.data_volatile = plugins::DataDirectoryVolatile(options.data_dir);
+   int control = -1;
+   std::string error;
+   if (!scene->process.Start(scene->preparation.directory, control, error,
+-- 
+2.43.0
+
