@@ -18,3 +18,4 @@
 0018-aeraui-a-shared-file-picker-with-Telegram-as-its-fir.patch
 0019-plugin_api-let-pixel-plugins-pick-files-through-AERA.patch
 0020-plugin_api-keep-a-pixel-plugin-running-across-a-rota.patch
+0021-plugin_api-pause-a-pixel-plugin-when-its-scene-is-le.patch

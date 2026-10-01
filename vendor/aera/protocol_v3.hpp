@@ -67,7 +67,11 @@ constexpr char kSurfaceFormat[] = "BGRA8888";
 constexpr int kSurfaceFd = 3;
 constexpr uint32_t kMaxSurfaceSlots = 4;
 
-enum class Lifecycle : uint32_t { kResume = 1, kPause, kStop };
+// Host API 3 adds kInactive (visible, but a shade, sheet or picker takes the
+// input) and pauses a plugin whose scene is left instead of stopping it:
+// after kPause the host sends only a new SURFACE then kResume, kStop or
+// kClose. A plugin that ignores kInactive still behaves correctly.
+enum class Lifecycle : uint32_t { kResume = 1, kPause, kStop, kInactive };
 // Operation numbers are part of the public Host API 2 wire contract. Never
 // renumber an existing entry: independently released plugins send these raw
 // values over the socket.

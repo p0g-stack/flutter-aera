@@ -1,0 +1,426 @@
+From e96151724a09f2f5c1d5a85fa3359746afc09771 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 22:06:14 +0000
+Subject: [PATCH 21/21] plugin_api: pause a pixel plugin when its scene is
+ left, resume it on return
+
+A pixel plugin was stopped whenever its scene was left, so going Home or
+through Recents and back cold-started the app. Browser instead keeps its
+runtime between scenes. Do the same for pixel plugins: leaving the scene
+sends LIFECYCLE/PAUSE and withholds FRAME_DONE, so the plugin stops
+drawing; opening it again (from Recents or the plugin list) sends a new
+SURFACE, which gives every slot back in the current orientation, and
+LIFECYCLE/RESUME. A plugin stops when it sends CLOSE, when Recents is
+cleared or drops it, when an update replaces it, or on failure.
+
+Add Lifecycle kInactive (4) for a plugin still on screen while the status
+shade, a sheet or the file picker takes the input. It is appended, so
+released plugins see no renumbering, and a plugin that ignores it still
+behaves correctly.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/core/engine.cpp                  |   8 +-
+ aeraui/features/plugin_api/README.md    |  14 ++
+ aeraui/features/plugin_api/protocol.hpp |   6 +-
+ aeraui/scenes/pixel_plugin_scene.cpp    | 176 ++++++++++++++++++++++--
+ aeraui/scenes/scene.hpp                 |   4 +
+ 5 files changed, 191 insertions(+), 17 deletions(-)
+
+diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
+index 2c36499..add795e 100644
+--- a/aeraui/core/engine.cpp
++++ b/aeraui/core/engine.cpp
+@@ -380,6 +380,7 @@ public:
+     if (update_thread_.joinable())
+       update_thread_.join();
+     ShutdownWebRuntime();
++    ShutdownPixelPlugins();
+     CancelEdgeSwipe();
+     lv_anim_delete(this, SetRecentLaunchProgress);
+     recent_launch_active_ = false;
+@@ -1243,6 +1244,10 @@ private:
+                        }),
+         recent_apps_.end());
+     recent_apps_.insert(recent_apps_.begin(), std::move(app));
++    // A pixel plugin that drops out of Recents stops.
++    for (size_t index = 7; index < recent_apps_.size(); ++index)
++      if (recent_apps_[index].action == Action::kPluginApp)
++        ShutdownPixelPlugin(recent_apps_[index].plugin_id);
+     if (recent_apps_.size() > 7) recent_apps_.resize(7);
+   }
+ 
+@@ -1598,10 +1603,11 @@ private:
+       auto *clear = widgets::Button(actions, LV_SYMBOL_TRASH "  Clear all",
+                                     [this] {
+         recent_apps_.clear();
+-        // Browser is the one app runtime intentionally kept alive between
++        // Browser and pixel plugins are the app runtimes kept alive between
+         // scenes. Other app workers are owned by their scene and stop when
+         // ShowHome replaces that scene.
+         ShutdownWebRuntime();
++        ShutdownPixelPlugins();
+         ShowHome();
+       });
+       lv_obj_set_size(clear, action_width, action_height);
+diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
+index 94e4e16..276b603 100644
+--- a/aeraui/features/plugin_api/README.md
++++ b/aeraui/features/plugin_api/README.md
+@@ -98,6 +98,20 @@ Host API 2's; `scenes/pixel_plugin_scene.cpp` replaces the declarative page.
+   earlier generation is returned with `FRAME_DONE` unshown. After a new
+   `SURFACE` every slot is the plugin's again, and nothing is shown until a
+   frame of the new generation arrives.
++- Lifecycle: like Browser, a running plugin outlives its scene. `LIFECYCLE`
++  `value` 1 resume (on screen, taking input), 4 inactive (on screen, but
++  the status shade, a sheet or the file picker takes the input; resume
++  follows), 2 pause (its scene was left for Home, Recents or another app;
++  nothing is shown and no `FRAME_DONE` comes, so drawing stalls) and 3 stop
++  (it is ending; the process group is then terminated). After a pause AERA
++  sends only `SURFACE` then `RESUME` when the plugin is opened again (every
++  slot is the plugin's again, in the current orientation), or `STOP` and
++  `CLOSE` when it ends: when it sends `CLOSE` itself, when Recents is
++  cleared or drops it, or when an update replaces it. A plugin that ignores
++  inactive still behaves correctly. These map to Qt's ApplicationActive,
++  ApplicationInactive, ApplicationHidden then ApplicationSuspended and
++  aboutToQuit, to Flutter's resumed, inactive, hidden then paused and
++  detached, and to SDL's background events.
+ - Frames: the worker writes a slot it owns and sends `PRESENT` (`request_id`
+   sequence, never 0 or repeated; `value` slot; `flags` the surface
+   generation). `FRAME_DONE` returns a slot:
+diff --git a/aeraui/features/plugin_api/protocol.hpp b/aeraui/features/plugin_api/protocol.hpp
+index 738736c..fa28bd0 100644
+--- a/aeraui/features/plugin_api/protocol.hpp
++++ b/aeraui/features/plugin_api/protocol.hpp
+@@ -67,7 +67,11 @@ constexpr char kSurfaceFormat[] = "BGRA8888";
+ constexpr int kSurfaceFd = 3;
+ constexpr uint32_t kMaxSurfaceSlots = 4;
+ 
+-enum class Lifecycle : uint32_t { kResume = 1, kPause, kStop };
++// Host API 3 adds kInactive (visible, but a shade, sheet or picker takes the
++// input) and pauses a plugin whose scene is left instead of stopping it:
++// after kPause the host sends only a new SURFACE then kResume, kStop or
++// kClose. A plugin that ignores kInactive still behaves correctly.
++enum class Lifecycle : uint32_t { kResume = 1, kPause, kStop, kInactive };
+ // Operation numbers are part of the public Host API 2 wire contract. Never
+ // renumber an existing entry: independently released plugins send these raw
+ // values over the socket.
+diff --git a/aeraui/scenes/pixel_plugin_scene.cpp b/aeraui/scenes/pixel_plugin_scene.cpp
+index 51dfe1d..4cccf3d 100644
+--- a/aeraui/scenes/pixel_plugin_scene.cpp
++++ b/aeraui/scenes/pixel_plugin_scene.cpp
+@@ -3,6 +3,11 @@
+ // AERA forwarding touch, its keyboard and Back. Everything else (runtime
+ // verification, process isolation, the bounded control channel) is Host API
+ // 2's, unchanged.
++//
++// Like Browser, a running plugin outlives its scene: leaving it (Home,
++// Recents, another app) pauses the plugin and opening it again resumes it
++// where it was. It stops when it closes itself, when Recents is cleared or
++// drops it, or when it fails.
+ #include "scene.hpp"
+ 
+ #include "browser/runtime.hpp"
+@@ -25,6 +30,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <deque>
++#include <map>
+ #include <string>
+ #include <sys/system_properties.h>
+ #include <thread>
+@@ -88,17 +94,29 @@ struct PixelScene {
+   bool launched = false;
+   bool stopped = false;
+   bool leaving = false;
++  // LIFECYCLE sent last: paused while no scene shows the plugin, inactive
++  // while a shade, sheet or the picker covers it.
++  bool paused = false;
++  bool inactive = false;
++  // Stop instead of pausing when the scene is left (Recents cleared).
++  bool discard = false;
+   uint64_t launched_ms = 0;
+ 
+   ~PixelScene();
+ };
+ 
++// The scene on screen, if it is a pixel plugin's.
+ PixelScene *gPixelScene = nullptr;
++// Every running plugin by id, on screen or paused.
++std::map<std::string, PixelScene *> gRunning;
+ 
+ void PixelRefreshReady(lv_event_t *event);
+ 
+ PixelScene::~PixelScene() {
+   if (gPixelScene == this) gPixelScene = nullptr;
++  const auto running = gRunning.find(plugin.id);
++  if (running != gRunning.end() && running->second == this)
++    gRunning.erase(running);
+   if (timer) lv_timer_delete(timer);
+   if (display)
+     lv_display_remove_event_cb_with_user_data(display, PixelRefreshReady,
+@@ -258,7 +276,17 @@ void ClosePicker(PixelScene *scene) {
+ }
+ 
+ void Stop(PixelScene *scene, const char *title, const std::string &detail) {
++  if (scene->stopped) return;
+   scene->stopped = true;
++  const auto running = gRunning.find(scene->plugin.id);
++  if (running != gRunning.end() && running->second == scene)
++    gRunning.erase(running);
++  // A paused plugin has no scene to report to.
++  if (!scene->screen) {
++    lv_async_call([](void *data) { delete static_cast<PixelScene *>(data); },
++                  scene);
++    return;
++  }
+   ClosePicker(scene);
+   scene->session.Close();
+   scene->process.Stop();
+@@ -279,6 +307,7 @@ void StartPick(PixelScene *scene, const plugin_api::Message &message) {
+                         message.request_id, 0, 0, nullptr, reason);
+   };
+   if (message.request_id == 0) return refuse("Unsupported host operation.");
++  if (!scene->screen) return refuse("The plugin is not on screen.");
+   if (scene->picker || !scene->picked.empty())
+     return refuse("A file picker is already open.");
+   if (message.flags > static_cast<uint32_t>(plugin_api::PickMode::kSave))
+@@ -345,7 +374,9 @@ void HandleMessage(PixelScene *scene, const plugin_api::Message &message) {
+              "The plugin presented a frame it does not own.");
+         return;
+       }
+-      SendFrameDone(scene, released);
++      // While paused the plugin's frames wait for the next SURFACE, which
++      // gives every slot back.
++      if (!scene->paused) SendFrameDone(scene, released);
+       break;
+     }
+     case plugin_api::Kind::kKeyboardShow:
+@@ -360,10 +391,12 @@ void HandleMessage(PixelScene *scene, const plugin_api::Message &message) {
+       if (!scene->showing && scene->detail)
+         i18n::BindLabel(scene->detail, message.text);
+       break;
+-    case plugin_api::Kind::kClose:
++    case plugin_api::Kind::kClose: {
++      const bool on_screen = scene->screen != nullptr;
+       Stop(scene, "Plugin closed", "");
+-      Leave(scene);
++      if (on_screen) Leave(scene);
+       break;
++    }
+     case plugin_api::Kind::kRequestOperation:
+       if (message.value ==
+           static_cast<uint32_t>(plugin_api::Operation::kPickFiles)) {
+@@ -384,7 +417,7 @@ void HandleMessage(PixelScene *scene, const plugin_api::Message &message) {
+ }
+ 
+ void ShowNextFrame(PixelScene *scene) {
+-  if (scene->frame_waiting_for_refresh) return;
++  if (!scene->image || scene->frame_waiting_for_refresh) return;
+   const uint8_t *pixels = scene->surface.LatchNext();
+   if (!pixels) return;
+   scene->descriptor.data = pixels;
+@@ -423,8 +456,9 @@ void Tick(lv_timer_t *timer) {
+   auto *scene = static_cast<PixelScene *>(lv_timer_get_user_data(timer));
+   if (scene->stopped) return;
+   if (!scene->preparation.done.load(std::memory_order_acquire)) {
+-    lv_bar_set_value(scene->progress, scene->preparation.progress.load(),
+-                     LV_ANIM_OFF);
++    if (scene->progress)
++      lv_bar_set_value(scene->progress, scene->preparation.progress.load(),
++                       LV_ANIM_OFF);
+     return;
+   }
+   if (!scene->preparation.verified) {
+@@ -460,6 +494,18 @@ void Tick(lv_timer_t *timer) {
+   }
+   SendPicked(scene);
+   ShowNextFrame(scene);
++  // Still visible but not taking input: a plugin that ignores INACTIVE
++  // keeps working, it just gets no touches meanwhile.
++  if (scene->screen && scene->session.Negotiated() && !scene->paused) {
++    const bool covered = scene->picker || StatusBarShadeOpen() ||
++                         SheetVisible(scene->screen);
++    if (covered != scene->inactive) {
++      scene->inactive = covered;
++      scene->session.Send(plugin_api::Kind::kLifecycle, 0,
++          static_cast<uint32_t>(covered ? plugin_api::Lifecycle::kInactive
++                                        : plugin_api::Lifecycle::kResume));
++    }
++  }
+   if (!scene->process.Running()) {
+     Stop(scene, "Plugin stopped",
+          "Plugin process exited; its resources were reclaimed");
+@@ -553,8 +599,87 @@ void Rotate(PixelScene *scene) {
+     SendKeyboardInset(scene);
+   }
+ }
++
++// The scene is going away. A running plugin is paused and kept, as Browser
++// is; one that is stopped, still starting or being discarded goes with it.
++void Detach(PixelScene *scene) {
++  if (gPixelScene == scene) gPixelScene = nullptr;
++  if (scene->display)
++    lv_display_remove_event_cb_with_user_data(scene->display,
++                                              PixelRefreshReady, scene);
++  const auto running = gRunning.find(scene->plugin.id);
++  const bool keep = !scene->stopped && !scene->leaving && !scene->discard &&
++                    scene->session.Connected() && scene->session.Negotiated() &&
++                    running != gRunning.end() && running->second == scene;
++  if (keep) {
++    // Settle what the plugin is waiting for before it is paused: a closed
++    // picker, the paths already chosen, its touches.
++    if (scene->picker) {
++      file_picker::Forget(scene->picker);
++      scene->picker = nullptr;
++      scene->session.Send(plugin_api::Kind::kOperationResult,
++                          scene->pick_request, 0, 0);
++    }
++    while (!scene->picked.empty()) SendPicked(scene);
++    ReleaseTouches(scene);
++  }
++  if (scene->image) lv_image_set_src(scene->image, nullptr);
++  lv_image_cache_drop(&scene->descriptor);
++  scene->screen = nullptr;
++  scene->display = nullptr;
++  scene->loading = scene->title = scene->detail = scene->progress = nullptr;
++  scene->viewport = scene->image = scene->keyboard = nullptr;
++  scene->frame_waiting_for_refresh = false;
++  scene->showing = false;
++  if (!keep) {
++    delete scene;
++    return;
++  }
++  // From here AERA sends only RESUME (with a new SURFACE first), STOP or
++  // CLOSE, and no FRAME_DONE: the plugin's rendering stalls by itself.
++  scene->keyboard_inset = UINT32_MAX;
++  scene->inactive = false;
++  scene->paused = true;
++  scene->session.Send(plugin_api::Kind::kLifecycle, 0,
++                      static_cast<uint32_t>(plugin_api::Lifecycle::kPause));
++}
++
++// Opens a paused plugin's scene again: a new SURFACE (every slot is the
++// plugin's again, in the current orientation), its keyboard inset, RESUME.
++void Resume(PixelScene *scene) {
++  const auto geometry = Layout(scene);
++  if (!scene->surface.Reshape(geometry)) {
++    Stop(scene, "Plugin stopped",
++         "Could not resize the plugin's display surface.");
++    return;
++  }
++  scene->paused = false;
++  lv_bar_set_value(scene->progress, 100, LV_ANIM_OFF);
++  i18n::BindLabel(scene->detail, "");
++  // Back belongs to the plugin, as on Android.
++  lv_obj_set_user_data(scene->viewport, &kPersistentModalMarker);
++  scene->session.Send(scene->surface.SurfaceMessage());
++  SendKeyboardInset(scene);
++  scene->session.Send(plugin_api::Kind::kLifecycle, 0,
++                      static_cast<uint32_t>(plugin_api::Lifecycle::kResume));
++}
+ }  // namespace
+ 
++void ShutdownPixelPlugin(const std::string &id) {
++  const auto running = gRunning.find(id);
++  if (running == gRunning.end()) return;
++  PixelScene *scene = running->second;
++  // The one on screen stops when its scene is left; a paused one now.
++  if (scene->screen) scene->discard = true;
++  else delete scene;
++}
++
++void ShutdownPixelPlugins() {
++  std::vector<std::string> ids;
++  for (const auto &running : gRunning) ids.push_back(running.first);
++  for (const auto &id : ids) ShutdownPixelPlugin(id);
++}
++
+ bool PixelPluginActive() {
+   return gPixelScene && !gPixelScene->stopped;
+ }
+@@ -630,15 +755,31 @@ bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed) {
+ 
+ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+                            ActionCallback callback, void *context) {
+-  auto *scene = new PixelScene;
++  // The same plugin still running and paused resumes; an updated one starts
++  // afresh.
++  PixelScene *scene = nullptr;
++  const auto running = gRunning.find(plugin.id);
++  if (running != gRunning.end()) {
++    if (!running->second->screen && !running->second->stopped &&
++        running->second->plugin.payload_sha256 == plugin.payload_sha256)
++      scene = running->second;
++    else if (!running->second->screen)
++      delete running->second;
++  }
++  const bool resume = scene != nullptr;
++  if (!scene) {
++    scene = new PixelScene;
++    scene->plugin = plugin;
++    gRunning[plugin.id] = scene;
++  }
+   gPixelScene = scene;
+   scene->screen = screen;
+   scene->display = lv_obj_get_display(screen);
+   scene->callback = callback;
+   scene->context = context;
+-  scene->plugin = plugin;
++  scene->leaving = false;
+   lv_obj_add_event_cb(screen, [](lv_event_t *event) {
+-    delete static_cast<PixelScene *>(lv_event_get_user_data(event));
++    Detach(static_cast<PixelScene *>(lv_event_get_user_data(event)));
+   }, LV_EVENT_DELETE, scene);
+   MainBackground(screen);
+   AttachStatusBar(screen, callback, context, StatusBarAction::kNone, true);
+@@ -723,6 +864,17 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+     }
+   }, LV_EVENT_ALL, scene);
+ 
++  lv_display_add_event_cb(scene->display, PixelRefreshReady,
++                          LV_EVENT_REFR_READY, scene);
++  lv_obj_add_event_cb(screen, [](lv_event_t *event) {
++    auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
++    if (!scene->stopped) Rotate(scene);
++  }, LV_EVENT_SIZE_CHANGED, scene);
++  if (resume) {
++    Resume(scene);
++    return;
++  }
++
+   const plugin_api::SurfaceGeometry geometry = Layout(scene);
+   // Room for the surface in either orientation, so a rotation keeps the
+   // plugin and its memory (pages are only allocated as they are drawn).
+@@ -735,12 +887,6 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+          "Could not create the plugin's display surface.");
+     return;
+   }
+-  lv_display_add_event_cb(scene->display, PixelRefreshReady,
+-                          LV_EVENT_REFR_READY, scene);
+-  lv_obj_add_event_cb(screen, [](lv_event_t *event) {
+-    auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
+-    if (!scene->stopped) Rotate(scene);
+-  }, LV_EVENT_SIZE_CHANGED, scene);
+   scene->worker = std::thread([scene] {
+     web::PreparePluginRuntime(scene->preparation, scene->plugin.id.c_str(),
+                               scene->plugin.type.c_str(),
+diff --git a/aeraui/scenes/scene.hpp b/aeraui/scenes/scene.hpp
+index 873473f..8dac254 100644
+--- a/aeraui/scenes/scene.hpp
++++ b/aeraui/scenes/scene.hpp
+@@ -156,6 +156,10 @@ bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed);
+ // A pixel plugin is running; it follows a rotation in place instead of AERA
+ // returning Home.
+ bool PixelPluginActive();
++// Stops a running (possibly paused) pixel plugin, or all of them; the one on
++// screen stops when its scene is left.
++void ShutdownPixelPlugin(const std::string &id);
++void ShutdownPixelPlugins();
+ void BuildRootManagerScene(lv_obj_t *screen, ActionCallback callback,
+                            void *context);
+ void BuildAboutScene(lv_obj_t *screen, ActionCallback callback, void *context);
+-- 
+2.43.0
+

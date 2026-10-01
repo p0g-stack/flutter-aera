@@ -15,7 +15,7 @@ and that `protocol_v3.hpp` is what the patches produce.
 | File | From | sha256 |
 | --- | --- | --- |
 | `vendor/aera/protocol.hpp` | AERA-Recovery/android_bootable_recovery@abf3316 `aeraui/features/plugin_api/protocol.hpp`, verbatim | `82d7b8df63bed0e68773931e955be119bce76ebda04efeeac03077a28ae56822` |
-| `vendor/aera/protocol_v3.hpp` | the same file after `third_party/aera/patches` | `d3b95b320e8626d92b2805cc7c397819f03d65519261f0488cd614a3b2c6c73f` |
+| `vendor/aera/protocol_v3.hpp` | the same file after `third_party/aera/patches` | `dd8a97407be6643c5a321860ebfa9442df22ea90e7b212185a8ea0b11e1930fc` |
 
 Manifest and payload rules: `aeraui/features/plugins/plugin_manager.cpp`
 (patch 0005); see `spec/aerap.md`.
@@ -104,6 +104,24 @@ Host API 2: `LIFECYCLE` (66) `value` 1 resume, 2 pause, 3 stop; plugin
 `CLOSE` (7) to leave, after which AERA navigates back. The embedder sends
 `CLOSE` when the app pops its last route (`SystemNavigator.pop`) and exits
 on stop or when the socket closes.
+
+Host API 3 (patch 0021) keeps a running pixel plugin when its scene is
+left, as AERA keeps Browser:
+
+| `value` | When | Qt | Flutter |
+| --- | --- | --- | --- |
+| 1 resume | on screen and taking input | ApplicationActive | `resumed` |
+| 4 inactive | on screen, but the status shade, a sheet or AERA's picker takes the input; resume follows | ApplicationInactive | `inactive` |
+| 2 pause | its scene was left (Home, Recents, another app): not shown, no `FRAME_DONE`, so drawing stalls | ApplicationHidden, then ApplicationSuspended | `hidden`, then `paused` |
+| 3 stop | ending; the process group is terminated next | aboutToQuit | `detached` |
+
+After a pause AERA sends nothing until the plugin is opened again (from
+Recents or the plugin list), then a new `SURFACE` (every slot is the
+plugin's again, in the current orientation) and resume; or stop and
+`CLOSE` when it ends: the plugin's own `CLOSE`, Recents cleared or dropping
+it, or an update replacing it. A plugin that ignores inactive still
+behaves correctly. Inactive is appended to the enum, so no released value
+moves.
 
 ### Files
 

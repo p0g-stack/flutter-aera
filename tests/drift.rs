@@ -96,6 +96,8 @@ fn host_api_3_numbers() {
     assert_eq!(value(&h, "kFeaturePixelSurface"), feature::PIXEL_SURFACE);
     assert_eq!(value(&h, "kFeatureKeyboardInset"), feature::KEYBOARD_INSET);
     assert_eq!(value(&h, "kFeatureFilePicker"), feature::FILE_PICKER);
+    assert!(h.contains("enum class Lifecycle : uint32_t { kResume = 1, kPause, kStop, kInactive };"));
+    assert_eq!((lifecycle::PAUSE, lifecycle::STOP, lifecycle::INACTIVE), (2, 3, 4));
     assert_eq!(value(&h, "kPickFiles"), host::operation::PICK_FILES);
     assert_eq!(assigned(&h, "kFile"), host::pick_mode::FILE);
     assert!(h.contains("enum class PickMode : uint32_t { kFile = 0, kFiles, kFolder, kSave };"));

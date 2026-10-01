@@ -121,6 +121,8 @@ pub mod lifecycle {
     pub const RESUME: u32 = 1;
     pub const PAUSE: u32 = 2;
     pub const STOP: u32 = 3;
+    /// Host API 3: on screen, but a shade, sheet or picker takes the input.
+    pub const INACTIVE: u32 = 4;
 }
 
 /// Host API 3: keyboard input purposes, as AERA Browser's keyboard has them.

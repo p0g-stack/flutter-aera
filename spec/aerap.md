@@ -123,10 +123,14 @@ that is gone at reboot; its data on storage is untouched and back at the
 next launch with storage mounted. Removing the plugin deletes both data
 directories (a locked storage one stays behind). Updates keep them.
 
-Lifecycle: AERA starts the plugin when its scene opens (`RESUME`, so
-`resumed`) and, when the scene is left, sends `STOP` (`detached`, the
-embedder exits) and ends the process group: SIGTERM, half a second, then
-SIGKILL. Nothing runs in the background and nothing pauses it: a blanked
+Lifecycle (patch 0021, `spec/host.md` Lifecycle): AERA starts the plugin
+when it is first opened (`resumed`). Leaving its scene for Home, Recents or
+another app pauses it (`paused`): the process stays, drawing stalls, and
+opening it again resumes it where it was. A shade, sheet or AERA's picker
+over it makes it `inactive`. It ends (`detached`, then SIGTERM, half a
+second, SIGKILL for the process group) when the app pops its last route,
+when Recents is cleared or drops it, or when an update replaces it.
+Nothing runs beyond that, and nothing pauses it otherwise: a blanked
 screen does not, and recovery never suspends. Rotation keeps it running
 (patch 0020).
 

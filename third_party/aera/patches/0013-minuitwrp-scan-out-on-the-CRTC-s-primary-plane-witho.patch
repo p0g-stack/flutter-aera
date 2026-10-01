@@ -1,7 +1,7 @@
 From 71b6cc0e5d9bcccfedcc5ac9cb91dcb9f3cf704b Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 17:20:22 +0000
-Subject: [PATCH 13/20] minuitwrp: scan out on the CRTC's primary plane without
+Subject: [PATCH 13/21] minuitwrp: scan out on the CRTC's primary plane without
  an SDE topology
 
 The DRM backend assumes Qualcomm's SDE driver: it splits the screen across
