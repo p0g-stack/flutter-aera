@@ -9,7 +9,8 @@ pin: abf33169b27dee17123c3c436a7299427821b329
 Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (`bootable/recovery` in AERA's manifest). The patches touch `aeraui/`, `aera_rpc/`
 (0008) `prebuilt/` (0010, 0014), `recovery_utils/` (0012), `minuitwrp/`
-(0013), `aera_remote/` (0017) and the top-level `Android.mk` (0014).
+(0013), `aera_remote/` (0017) and the top-level
+`Android.mk` (0014).
 
 Apply with `git am $(cat patches/series)` on a checkout of the pin. Devicelab
 copies `patches/*.patch` to `aera/build/patches/bootable/recovery/` for the
@@ -34,6 +35,8 @@ Cuttlefish image.
 | 0015 | pixel plugin scene: a contact in the side-edge zone is Back only once it swipes inward; taps there reach the plugin (devicelab D5) |
 | 0016 | `aeraui/core/engine.cpp`: take an RPC request whose writer already hung up (POLLHUP), so a request is never left waiting for the next client (devicelab D6) |
 | 0017 | `aera_remote/input.cpp`, `aera_remote.cpp`: create the virtual input device when Remote starts, so the first touch's press is not lost before recovery's input reader opens it (devicelab D7) |
+| 0018 | `aeraui/components/file_picker`: a shared file picker (one file, several, a folder, save as) that browses like Files; Telegram's attach picker becomes a caller, confined to its roots as before |
+| 0019 | `plugin_api`, pixel plugin scene: `REQUEST_OPERATION` `kPickFiles` opens that picker for a pixel plugin (`kFeatureFilePicker`); paths come back as `OPERATION_RESULT`s |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as

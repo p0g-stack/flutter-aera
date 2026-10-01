@@ -70,6 +70,7 @@ fn run() -> Result<i32, String> {
     let mut config = Config::from_root(&root);
     config.engine_args = engine_args;
     config.vulkan = vulkan;
+    config.host_features = session.features;
     let engine = Engine::start(config, control, slots)?;
     engine.replay(early);
     Ok(engine.run())

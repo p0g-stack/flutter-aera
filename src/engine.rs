@@ -36,6 +36,8 @@ pub struct Config {
     pub engine_args: Vec<String>,
     /// Render with Vulkan instead of GL (`--vulkan`).
     pub vulkan: bool,
+    /// AERA's `HELLO_ACK` features.
+    pub host_features: u32,
 }
 
 impl Config {
@@ -48,6 +50,7 @@ impl Config {
             aot_library: root.join("usr/lib/libapp.so"),
             engine_args: vec![],
             vulkan: false,
+            host_features: 0,
         }
     }
 }
@@ -160,7 +163,7 @@ impl Engine {
             damage: Mutex::new(Damage::new(geometry.width, geometry.height, geometry.slots as usize)),
             runner: TaskRunner::new().map_err(|e| e.to_string())?,
             view: Mutex::new(View::new(geometry)),
-            handlers: Mutex::new(Handlers { settings: crate::aera_settings::Settings::load(), ..Handlers::default() }),
+            handlers: Mutex::new(Handlers { settings: crate::aera_settings::Settings::load(), features: config.host_features, ..Handlers::default() }),
             vsync: Mutex::new(Vsync { baton: None, last_ns: 0 }),
             exit: AtomicBool::new(false),
             frames: Default::default(),
@@ -432,6 +435,7 @@ impl Shared {
                     }
                 }
                 Effect::Send { channel, bytes } => self.send(channel, &bytes),
+                Effect::Respond { response, bytes } => self.respond(response, &bytes),
                 Effect::BottomInset(px) => {
                     self.view.lock().unwrap().bottom_inset = px;
                     self.send_metrics();
@@ -441,6 +445,18 @@ impl Shared {
                     self.exit.store(true, Ordering::Release);
                 }
             }
+        }
+    }
+
+    /// Answers a platform message through its response handle, once.
+    fn respond(&self, response: usize, bytes: &[u8]) {
+        if response == 0 {
+            return;
+        }
+        // SAFETY: a handle the engine gave us with a platform message and
+        // that no earlier response used; on the platform thread.
+        unsafe {
+            (self.procs.SendPlatformMessageResponse.unwrap())(self.engine(), response as *const ffi::FlutterPlatformMessageResponseHandle, bytes.as_ptr(), bytes.len());
         }
     }
 
@@ -629,9 +645,9 @@ unsafe extern "C" fn cb_platform_message(message: *const ffi::FlutterPlatformMes
     let m = &*message;
     let channel = CStr::from_ptr(m.channel).to_string_lossy();
     let bytes = if m.message.is_null() { &[][..] } else { std::slice::from_raw_parts(m.message, m.message_size) };
-    let (reply, effects) = s.handlers.lock().unwrap().on_message(&channel, bytes);
-    if !m.response_handle.is_null() {
-        (s.procs.SendPlatformMessageResponse.unwrap())(s.engine(), m.response_handle, reply.as_ptr(), reply.len());
+    let (reply, effects) = s.handlers.lock().unwrap().on_message(&channel, bytes, m.response_handle as usize);
+    if let Some(reply) = reply {
+        s.respond(m.response_handle as usize, &reply);
     }
     s.apply(effects);
 }

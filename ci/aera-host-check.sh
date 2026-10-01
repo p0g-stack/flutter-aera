@@ -30,8 +30,10 @@ $cxx "$ui/tests/plugin_api_session_test.cpp" "$ui/features/plugin_api/session.cp
 $cxx "$ui/tests/plugin_api_surface_test.cpp" "$ui/features/plugin_api/surface.cpp" -o "$work/surface_test"
 $cxx "$ui/tests/plugin_api_pixel_host_check.cpp" "$ui/features/plugin_api/"{launcher,session,surface}.cpp \
   -o "$work/pixel_host_check"
+$cxx -I$ui/components "$ui/tests/file_picker_test.cpp" "$ui/components/file_picker_list.cpp" -o "$work/file_picker_test"
 "$work/session_test"
 "$work/surface_test"
+"$work/file_picker_test"
 
 # The published kit with this commit's embedder and the counter's assets.
 tree=$work/runtime

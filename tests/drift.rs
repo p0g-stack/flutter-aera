@@ -95,12 +95,18 @@ fn host_api_3_numbers() {
     assert_eq!(value(&h, "kSurfaceFd") as i32, host::SURFACE_FD);
     assert_eq!(value(&h, "kFeaturePixelSurface"), feature::PIXEL_SURFACE);
     assert_eq!(value(&h, "kFeatureKeyboardInset"), feature::KEYBOARD_INSET);
+    assert_eq!(value(&h, "kFeatureFilePicker"), feature::FILE_PICKER);
+    assert_eq!(value(&h, "kPickFiles"), host::operation::PICK_FILES);
+    assert_eq!(assigned(&h, "kFile"), host::pick_mode::FILE);
+    assert!(h.contains("enum class PickMode : uint32_t { kFile = 0, kFiles, kFolder, kSave };"));
+    assert_eq!((host::pick_mode::FILES, host::pick_mode::FOLDER, host::pick_mode::SAVE), (1, 2, 3));
     assert_eq!(assigned(&h, "kText"), host::purpose::TEXT);
     assert_eq!(assigned(&h, "kDigits"), host::purpose::DIGITS);
     let all = kinds(&h);
     let of = |name: &str| all.iter().find(|(n, _)| n == name).unwrap_or_else(|| panic!("{name}")).1;
     for (name, n) in [
         ("kHello", kind::HELLO),
+        ("kRequestOperation", kind::REQUEST_OPERATION),
         ("kSetBackAction", kind::SET_BACK_ACTION),
         ("kPresent", kind::PRESENT),
         ("kKeyboardShow", kind::KEYBOARD_SHOW),

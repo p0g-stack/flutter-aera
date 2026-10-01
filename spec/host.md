@@ -15,7 +15,7 @@ and that `protocol_v3.hpp` is what the patches produce.
 | File | From | sha256 |
 | --- | --- | --- |
 | `vendor/aera/protocol.hpp` | AERA-Recovery/android_bootable_recovery@abf3316 `aeraui/features/plugin_api/protocol.hpp`, verbatim | `82d7b8df63bed0e68773931e955be119bce76ebda04efeeac03077a28ae56822` |
-| `vendor/aera/protocol_v3.hpp` | the same file after `third_party/aera/patches` | `5a8b22837fabb8afca2964c778cbb8a0e6272e38e1fe4a8a881384ddf577980c` |
+| `vendor/aera/protocol_v3.hpp` | the same file after `third_party/aera/patches` | `d3b95b320e8626d92b2805cc7c397819f03d65519261f0488cd614a3b2c6c73f` |
 
 Manifest and payload rules: `aeraui/features/plugins/plugin_manager.cpp`
 (patch 0005); see `spec/aerap.md`.
@@ -50,7 +50,8 @@ Host API 3 packets carry `version` 3.
    (3, 3). A pixel scene accepts only a range that includes 3.
 2. Host → `HELLO_ACK` (64), `value` = 3, `flags` = features:
    `BACK_NAVIGATION` (1 << 1), `PIXEL_SURFACE` (1 << 2), `KEYBOARD_INSET`
-   (1 << 3). The embedder refuses a host without `PIXEL_SURFACE`.
+   (1 << 3), `FILE_PICKER` (1 << 4). The embedder refuses a host without
+   `PIXEL_SURFACE`.
 3. Host → `SURFACE` (68): `value` width, `flags` height, `request_id`
    stride (bytes), `title` `BGRA8888`, `text` `slots=N scale=S refresh=HZ`
    (unknown keys ignored; defaults 3, 1.0, 60). AERA sizes it to the panel
@@ -96,11 +97,25 @@ Host API 2: `LIFECYCLE` (66) `value` 1 resume, 2 pause, 3 stop; plugin
 `CLOSE` when the app pops its last route (`SystemNavigator.pop`) and exits
 on stop or when the socket closes.
 
+### Files
+
+`FILE_PICKER` (patch 0019): plugin → `REQUEST_OPERATION` (6) with a
+non-zero `request_id` and `value` 8 (`kPickFiles`) opens AERA's file picker
+(patch 0018, the same browsing as AERA's Files) over the surface. `flags`
+is the mode (0 one file, 1 several, 2 a folder, 3 a name to save as),
+`title` the folder to start in (empty: the current storage), `text` the
+extensions to show (`zip,img`; empty: all) or, to save, the suggested name.
+Host → `OPERATION_RESULT` (67) per chosen path: `value` 1, `text` the
+absolute path, `flags` 1 while more follow. A closed picker answers `value`
+0 with empty `text`; a refusal (one picker at a time) `value` 0 with the
+reason. No permission or prompt: the pick is the user's consent. The
+embedder answers the stock `file_selector` plugin's Linux channel with it.
+
 ## Not used
 
 Host API 2's declarative UI (`BEGIN_PAGE` … `SET_BACK_ACTION`), which ends
-a pixel session, and mediated operations, which AERA refuses to pixel
-plugins: a Flutter app draws its own UI.
+a pixel session, and the other mediated operations, which AERA refuses to
+pixel plugins: a Flutter app draws its own UI.
 
 ## Later (not in the patches yet)
 

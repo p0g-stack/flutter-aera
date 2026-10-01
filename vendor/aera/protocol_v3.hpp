@@ -25,6 +25,8 @@ enum Features : uint32_t {
   // Host API 3: KEYBOARD_INSET whenever AERA's keyboard shows, hides or
   // resizes over the surface.
   kFeatureKeyboardInset = 1U << 3,
+  // Host API 3: REQUEST_OPERATION kPickFiles opens AERA's file picker.
+  kFeatureFilePicker = 1U << 4,
 };
 
 enum class Kind : uint32_t {
@@ -77,7 +79,17 @@ enum class Operation : uint32_t {
   kStartMirror = 5,
   kStopMirror = 6,
   kStartWifiMirror = 7,
+  // Host API 3 (kFeatureFilePicker): the user picks files, a folder or a
+  // place to save in AERA's picker. `flags` is a PickMode, `title` the
+  // folder to start in (empty: the current storage), `text` the file
+  // extensions to show ("zip,img"; empty: all), or in kSave the suggested
+  // name. Each chosen path comes back as its own OPERATION_RESULT (`value`
+  // 1, `text` the absolute path, `flags` 1 while more follow); a closed
+  // picker answers `value` 0 with empty `text`, a refusal `value` 0 with
+  // the reason.
+  kPickFiles = 8,
 };
+enum class PickMode : uint32_t { kFile = 0, kFiles, kFolder, kSave };
 enum Flags : uint32_t {
   kPrimary = 1U << 0,
   kDestructive = 1U << 1,

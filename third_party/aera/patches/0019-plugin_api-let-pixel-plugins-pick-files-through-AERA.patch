@@ -1,0 +1,332 @@
+From 6d6bb39ffdb5f801461182af29eb3703676296e7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 21:37:10 +0000
+Subject: [PATCH 19/19] plugin_api: let pixel plugins pick files through AERA's
+ picker
+
+A Host API 3 plugin draws its own pixels, so it has no way to show the
+user a file dialog that fits AERA, and recovery has none of the desktop
+services a toolkit's dialog relies on (portals, GTK). Picking a file is
+basic to most apps; give pixel plugins AERA's picker.
+
+REQUEST_OPERATION with value 8 (kPickFiles) opens components/file_picker
+over the surface, advertised as kFeatureFilePicker in HELLO_ACK. flags is
+the mode (one file, several, a folder, a name to save as), title the
+folder to start in, text the extensions to show or the name to suggest.
+Each chosen path comes back as its own OPERATION_RESULT, flags 1 while
+more follow, paced a few per tick so a large selection never fills the
+control socket; closing the picker answers value 0 with empty text.
+
+The pick needs no permission or prompt: choosing the file is the user's
+consent, as with a desktop file dialog, and the plugin is root already.
+The other host operations stay with Host API 2's declarative pages.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/features/plugin_api/README.md      | 17 +++-
+ aeraui/features/plugin_api/operations.cpp |  7 ++
+ aeraui/features/plugin_api/protocol.hpp   | 12 +++
+ aeraui/features/plugin_api/session.cpp    |  2 +-
+ aeraui/scenes/pixel_plugin_scene.cpp      | 95 ++++++++++++++++++++++-
+ aeraui/tests/plugin_api_session_test.cpp  |  2 +
+ 6 files changed, 130 insertions(+), 5 deletions(-)
+
+diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
+index 201fdf4..1c41f9e 100644
+--- a/aeraui/features/plugin_api/README.md
++++ b/aeraui/features/plugin_api/README.md
+@@ -82,7 +82,8 @@ Host API 2's; `scenes/pixel_plugin_scene.cpp` replaces the declarative page.
+   (`/sdcard/AERA/plugin-data/<id>`, or RAM when storage is not mounted).
+ - Handshake: the worker's `HELLO` must offer version 3 (`value` 3, `flags`
+   3); AERA answers `HELLO_ACK` with `value` 3 and `flags`
+-  `kFeatureBackNavigation | kFeaturePixelSurface | kFeatureKeyboardInset`,
++  `kFeatureBackNavigation | kFeaturePixelSurface | kFeatureKeyboardInset |
++  kFeatureFilePicker`,
+   then `SURFACE`, then `LIFECYCLE/RESUME`. Version 3 packets carry 3 in the
+   header.
+ - Surface: fd 3 is a sealed memfd of `slots` BGRA8888 top-down frames.
+@@ -103,8 +104,18 @@ Host API 2's; `scenes/pixel_plugin_scene.cpp` replaces the declarative page.
+   (`value` code point; 8 backspace, 13 Enter, and OK on a single-line
+   field). `KEYBOARD_INSET` gives the keyboard's height over the surface in
+   pixels on every show, hide and resize.
+-- Host operations are not offered to pixel plugins; Host API 2 page messages
+-  end the session.
++- Files (`kFeatureFilePicker`): `REQUEST_OPERATION` with `value` 8
++  (`kPickFiles`) and a non-zero `request_id` opens AERA's file picker over
++  the surface. `flags` is the mode (0 one file, 1 several, 2 a folder, 3 a
++  name to save as), `title` the folder to start in (empty: the current
++  storage), `text` the extensions to show (`zip,img`; empty: all) or, to
++  save, the suggested name. It browses like Files and needs no permission:
++  the pick is the user's consent, and the plugin is root already. Each
++  chosen path comes back as an `OPERATION_RESULT` (`value` 1, `text` the
++  absolute path, `flags` 1 while more follow). Closing the picker answers
++  `value` 0 with empty `text`; a refusal (one picker at a time) answers
++  `value` 0 with the reason. The other host operations stay with Host API
++  2's declarative pages; Host API 2 page messages end the session.
+ 
+ `tests/plugin_api_pixel_host_check.cpp` runs a real pixel plugin through
+ the launcher, session and surface without LVGL.
+diff --git a/aeraui/features/plugin_api/operations.cpp b/aeraui/features/plugin_api/operations.cpp
+index 123a214..f909114 100644
+--- a/aeraui/features/plugin_api/operations.cpp
++++ b/aeraui/features/plugin_api/operations.cpp
+@@ -440,6 +440,9 @@ bool OperationAllowed(const plugins::Plugin& plugin, Operation operation) {
+     case Operation::kStopMirror:
+     case Operation::kStartWifiMirror:
+       return plugins::HasPermission(plugin, "screen-mirror");
++    case Operation::kPickFiles:
++      // Pixel plugins only, answered by their scene without a prompt.
++      return false;
+   }
+   return false;
+ }
+@@ -546,6 +549,8 @@ const char* OperationTitle(Operation operation) {
+       return "Stop AERA Mirror?";
+     case Operation::kStartWifiMirror:
+       return "Start Wi-Fi Mirror?";
++    case Operation::kPickFiles:
++      break;
+   }
+   return "Run plugin operation?";
+ }
+@@ -574,6 +579,8 @@ const char* OperationPrompt(Operation operation) {
+     case Operation::kStartWifiMirror:
+       return "AERA will share the recovery display and input on the connected Wi-Fi "
+              "network. Enter the phone address shown afterward in any browser.";
++    case Operation::kPickFiles:
++      break;
+   }
+   return "The plugin requested an unknown operation.";
+ }
+diff --git a/aeraui/features/plugin_api/protocol.hpp b/aeraui/features/plugin_api/protocol.hpp
+index 80fb81d..738736c 100644
+--- a/aeraui/features/plugin_api/protocol.hpp
++++ b/aeraui/features/plugin_api/protocol.hpp
+@@ -25,6 +25,8 @@ enum Features : uint32_t {
+   // Host API 3: KEYBOARD_INSET whenever AERA's keyboard shows, hides or
+   // resizes over the surface.
+   kFeatureKeyboardInset = 1U << 3,
++  // Host API 3: REQUEST_OPERATION kPickFiles opens AERA's file picker.
++  kFeatureFilePicker = 1U << 4,
+ };
+ 
+ enum class Kind : uint32_t {
+@@ -77,7 +79,17 @@ enum class Operation : uint32_t {
+   kStartMirror = 5,
+   kStopMirror = 6,
+   kStartWifiMirror = 7,
++  // Host API 3 (kFeatureFilePicker): the user picks files, a folder or a
++  // place to save in AERA's picker. `flags` is a PickMode, `title` the
++  // folder to start in (empty: the current storage), `text` the file
++  // extensions to show ("zip,img"; empty: all), or in kSave the suggested
++  // name. Each chosen path comes back as its own OPERATION_RESULT (`value`
++  // 1, `text` the absolute path, `flags` 1 while more follow); a closed
++  // picker answers `value` 0 with empty `text`, a refusal `value` 0 with
++  // the reason.
++  kPickFiles = 8,
+ };
++enum class PickMode : uint32_t { kFile = 0, kFiles, kFolder, kSave };
+ enum Flags : uint32_t {
+   kPrimary = 1U << 0,
+   kDestructive = 1U << 1,
+diff --git a/aeraui/features/plugin_api/session.cpp b/aeraui/features/plugin_api/session.cpp
+index 8df0e37..79819c1 100644
+--- a/aeraui/features/plugin_api/session.cpp
++++ b/aeraui/features/plugin_api/session.cpp
+@@ -121,7 +121,7 @@ std::vector<Message> Session::Poll() {
+       status_ = "Plugin connected";
+       const uint32_t features = version_ >= kProtocolVersion3
+           ? kFeatureBackNavigation | kFeaturePixelSurface |
+-                kFeatureKeyboardInset
++                kFeatureKeyboardInset | kFeatureFilePicker
+           : kFeatureMetrics | kFeatureBackNavigation;
+       bool sent = Send(Kind::kHelloAck, 0, version_, features);
+       for (auto &extra : after_ack_) {
+diff --git a/aeraui/scenes/pixel_plugin_scene.cpp b/aeraui/scenes/pixel_plugin_scene.cpp
+index 77d1c0d..529b19f 100644
+--- a/aeraui/scenes/pixel_plugin_scene.cpp
++++ b/aeraui/scenes/pixel_plugin_scene.cpp
+@@ -6,6 +6,7 @@
+ #include "scene.hpp"
+ 
+ #include "browser/runtime.hpp"
++#include "file_picker.hpp"
+ #include "phone_keyboard.hpp"
+ #include "plugin_api/launcher.hpp"
+ #include "plugin_api/protocol.hpp"
+@@ -23,6 +24,7 @@
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
++#include <deque>
+ #include <string>
+ #include <sys/system_properties.h>
+ #include <thread>
+@@ -35,6 +37,11 @@ using namespace design;
+ using namespace widgets;
+ 
+ constexpr int kMaxPointers = 10;
++// OPERATION_RESULTs sent per tick while a pick's paths go out, so a large
++// selection never fills the control socket.
++constexpr int kPickResultsPerTick = 8;
++// A selection is at most this many files.
++constexpr size_t kMaxPickedFiles = 256;
+ 
+ uint64_t NowMs() {
+   timespec now{};
+@@ -70,6 +77,11 @@ struct PixelScene {
+   int edge_x = 0;
+   int edge_y = 0;
+   bool keyboard_multiline = false;
++  // The open kPickFiles picker and its request, and chosen paths not yet
++  // sent.
++  lv_obj_t *picker = nullptr;
++  uint32_t pick_request = 0;
++  std::deque<std::string> picked;
+   uint32_t keyboard_inset = 0;
+   bool frame_waiting_for_refresh = false;
+   bool showing = false;
+@@ -91,6 +103,8 @@ PixelScene::~PixelScene() {
+   if (display)
+     lv_display_remove_event_cb_with_user_data(display, PixelRefreshReady,
+                                               this);
++  // The picker overlay outlives the scene until its screen is deleted.
++  if (picker) file_picker::Forget(picker);
+   preparation.cancel.store(true);
+   if (worker.joinable()) worker.join();
+   if (session.Connected()) {
+@@ -235,8 +249,17 @@ void Leave(PixelScene *scene) {
+   }, new std::pair<ActionCallback, void *>(callback, context));
+ }
+ 
++void ClosePicker(PixelScene *scene) {
++  if (!scene->picker) return;
++  file_picker::Forget(scene->picker);
++  file_picker::Dismiss(scene->picker);
++  scene->picker = nullptr;
++  scene->picked.clear();
++}
++
+ void Stop(PixelScene *scene, const char *title, const std::string &detail) {
+   scene->stopped = true;
++  ClosePicker(scene);
+   scene->session.Close();
+   scene->process.Stop();
+   if (scene->viewport) {
+@@ -248,6 +271,70 @@ void Stop(PixelScene *scene, const char *title, const std::string &detail) {
+   SetStatus(scene, title, detail);
+ }
+ 
++// kPickFiles: the pick itself is the user's consent, so no permission or
++// prompt is involved, as with a file dialog on a desktop.
++void StartPick(PixelScene *scene, const plugin_api::Message &message) {
++  auto refuse = [&](const char *reason) {
++    scene->session.Send(plugin_api::Kind::kOperationResult,
++                        message.request_id, 0, 0, nullptr, reason);
++  };
++  if (message.request_id == 0) return refuse("Unsupported host operation.");
++  if (scene->picker || !scene->picked.empty())
++    return refuse("A file picker is already open.");
++  if (message.flags > static_cast<uint32_t>(plugin_api::PickMode::kSave))
++    return refuse("Unknown file picker mode.");
++  const auto mode = static_cast<plugin_api::PickMode>(message.flags);
++  file_picker::Request request;
++  request.mode = mode == plugin_api::PickMode::kFiles ? file_picker::Mode::kFiles
++      : mode == plugin_api::PickMode::kFolder ? file_picker::Mode::kFolder
++      : mode == plugin_api::PickMode::kSave ? file_picker::Mode::kSave
++                                            : file_picker::Mode::kFile;
++  request.start = message.title;
++  request.max_path = sizeof(message.text);
++  request.max_count = kMaxPickedFiles;
++  if (mode == plugin_api::PickMode::kSave) {
++    request.suggested_name = message.text;
++  } else {
++    std::string extension;
++    for (const char *c = message.text;; ++c) {
++      if (*c == ',' || *c == ' ' || *c == '\0') {
++        if (!extension.empty()) request.extensions.push_back(extension);
++        extension.clear();
++        if (*c == '\0') break;
++      } else if (*c != '.' || !extension.empty()) {
++        extension += static_cast<char>(tolower(static_cast<unsigned char>(*c)));
++      }
++    }
++  }
++  ReleaseTouches(scene);
++  HideKeyboard(scene);
++  scene->pick_request = message.request_id;
++  scene->picker = file_picker::Show(scene->screen, std::move(request),
++      [scene](std::vector<std::string> paths) {
++        scene->picker = nullptr;
++        scene->picked.assign(paths.begin(), paths.end());
++      },
++      [scene] {
++        scene->picker = nullptr;
++        if (scene->session.Negotiated())
++          scene->session.Send(plugin_api::Kind::kOperationResult,
++                              scene->pick_request, 0, 0);
++      });
++}
++
++void SendPicked(PixelScene *scene) {
++  for (int sent = 0; sent < kPickResultsPerTick && !scene->picked.empty();
++       ++sent) {
++    const std::string path = std::move(scene->picked.front());
++    scene->picked.pop_front();
++    if (!scene->session.Send(plugin_api::Kind::kOperationResult,
++                             scene->pick_request, 1,
++                             scene->picked.empty() ? 0 : 1, nullptr,
++                             path.c_str()))
++      return;
++  }
++}
++
+ void HandleMessage(PixelScene *scene, const plugin_api::Message &message) {
+   switch (message.kind) {
+     case plugin_api::Kind::kPresent: {
+@@ -278,7 +365,12 @@ void HandleMessage(PixelScene *scene, const plugin_api::Message &message) {
+       Leave(scene);
+       break;
+     case plugin_api::Kind::kRequestOperation:
+-      // Host operations stay with the declarative API.
++      if (message.value ==
++          static_cast<uint32_t>(plugin_api::Operation::kPickFiles)) {
++        StartPick(scene, message);
++        break;
++      }
++      // The other host operations stay with the declarative API.
+       scene->session.Send(plugin_api::Kind::kOperationResult,
+                           message.request_id, 0, 0, nullptr,
+                           "Unsupported host operation.");
+@@ -366,6 +458,7 @@ void Tick(lv_timer_t *timer) {
+     Stop(scene, "Plugin unavailable", "Plugin handshake timed out");
+     return;
+   }
++  SendPicked(scene);
+   ShowNextFrame(scene);
+   if (!scene->process.Running()) {
+     Stop(scene, "Plugin stopped",
+diff --git a/aeraui/tests/plugin_api_session_test.cpp b/aeraui/tests/plugin_api_session_test.cpp
+index ce62ec1..b191f42 100644
+--- a/aeraui/tests/plugin_api_session_test.cpp
++++ b/aeraui/tests/plugin_api_session_test.cpp
+@@ -51,6 +51,7 @@ int main() {
+   assert(hello.value == kProtocolVersion);
+   assert((hello.flags & kFeatureMetrics) != 0);
+   assert((hello.flags & kFeatureBackNavigation) != 0);
++  assert((hello.flags & kFeatureFilePicker) == 0);
+   const Message resume = ReceiveHost(pair[1]);
+   assert(resume.kind == Kind::kLifecycle);
+   assert(resume.value == static_cast<uint32_t>(Lifecycle::kResume));
+@@ -104,6 +105,7 @@ int main() {
+   assert(ack3.kind == Kind::kHelloAck && ack3.value == kProtocolVersion3);
+   assert((ack3.flags & kFeaturePixelSurface) != 0);
+   assert((ack3.flags & kFeatureKeyboardInset) != 0);
++  assert((ack3.flags & kFeatureFilePicker) != 0);
+   const Message surface3 = ReceiveHost(pair[1], kProtocolVersion3);
+   assert(surface3.kind == Kind::kSurface && surface3.value == 1080);
+   assert(ReceiveHost(pair[1], kProtocolVersion3).kind == Kind::kLifecycle);
+-- 
+2.43.0
+

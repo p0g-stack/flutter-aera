@@ -43,6 +43,25 @@ pub mod feature {
     pub const PIXEL_SURFACE: u32 = 1 << 2;
     /// Host API 3.
     pub const KEYBOARD_INSET: u32 = 1 << 3;
+    /// Host API 3: `REQUEST_OPERATION` [`super::operation::PICK_FILES`].
+    pub const FILE_PICKER: u32 = 1 << 4;
+}
+
+/// Host operations (`REQUEST_OPERATION` `value`) this embedder uses.
+pub mod operation {
+    /// Host API 3: AERA's file picker. `flags` a [`super::pick_mode`],
+    /// `title` the start folder, `text` extensions (`zip,img`) or, to save,
+    /// the suggested name. One `OPERATION_RESULT` per path (`value` 1,
+    /// `flags` 1 while more follow); `value` 0 with empty `text` when closed.
+    pub const PICK_FILES: u32 = 8;
+}
+
+/// Host API 3: `PickMode`.
+pub mod pick_mode {
+    pub const FILE: u32 = 0;
+    pub const FILES: u32 = 1;
+    pub const FOLDER: u32 = 2;
+    pub const SAVE: u32 = 3;
 }
 
 /// Message kinds. Host API 2 numbers are unchanged; Host API 3 kinds are
@@ -51,6 +70,9 @@ pub mod kind {
     // Plugin to host, Host API 2.
     pub const HELLO: u32 = 1;
     pub const SET_STATUS: u32 = 5;
+    /// Ask AERA for a host operation: `request_id` (non-zero) is echoed in
+    /// its `OPERATION_RESULT`s, `value` the [`super::operation`].
+    pub const REQUEST_OPERATION: u32 = 6;
     pub const CLOSE: u32 = 7;
     /// Host API 2's last plugin kind.
     pub const SET_BACK_ACTION: u32 = 11;
