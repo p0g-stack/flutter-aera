@@ -160,7 +160,7 @@ impl Engine {
             damage: Mutex::new(Damage::new(geometry.width, geometry.height, geometry.slots as usize)),
             runner: TaskRunner::new().map_err(|e| e.to_string())?,
             view: Mutex::new(View::new(geometry)),
-            handlers: Mutex::new(Handlers::default()),
+            handlers: Mutex::new(Handlers { settings: crate::aera_settings::Settings::load(), ..Handlers::default() }),
             vsync: Mutex::new(Vsync { baton: None, last_ns: 0 }),
             exit: AtomicBool::new(false),
             frames: Default::default(),
@@ -292,7 +292,8 @@ impl Engine {
         }
         me.send_locales();
         me.shared.send_metrics();
-        me.shared.apply(vec![handlers::settings::initial(), handlers::lifecycle::message("resumed")]);
+        let settings = handlers::settings::initial(&me.shared.handlers.lock().unwrap().settings);
+        me.shared.apply(vec![settings, handlers::lifecycle::message("resumed")]);
         Ok(me)
     }
 

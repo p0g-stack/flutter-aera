@@ -1,7 +1,7 @@
 //! `flutter/settings`, sent once at start. GTK reads the desktop's colour
 //! scheme; here it is AERA's light or dark surface (`AERA_APPEARANCE`, Host
-//! API 3), light if unset. Recovery's clock is 24-hour and its text is not
-//! scaled for apps.
+//! API 3), light if unset. The clock format is AERA's saved
+//! `tw_military_time` ([`crate::aera_settings`]); text is not scaled for apps.
 
 use serde_json::json;
 
@@ -13,13 +13,13 @@ pub fn brightness(appearance: Option<&str>) -> &'static str {
     if appearance == Some("dark") { "dark" } else { "light" }
 }
 
-pub fn initial() -> Effect {
+pub fn initial(settings: &crate::aera_settings::Settings) -> Effect {
     let appearance = std::env::var("AERA_APPEARANCE").ok();
     Effect::Send {
         channel: CHANNEL,
         bytes: codec::message(&json!({
             "textScaleFactor": 1.0,
-            "alwaysUse24HourFormat": true,
+            "alwaysUse24HourFormat": settings.clock_24h(),
             "platformBrightness": brightness(appearance.as_deref()),
         })),
     }

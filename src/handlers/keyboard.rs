@@ -8,7 +8,7 @@ use super::codec;
 pub const CHANNEL: &str = "flutter/keyboard";
 
 /// The method name of a StandardMethodCodec call (a short UTF-8 string).
-fn method(bytes: &[u8]) -> Option<&str> {
+pub(super) fn method(bytes: &[u8]) -> Option<&str> {
     match bytes {
         [7, len, rest @ ..] if (*len as usize) < 254 && rest.len() >= *len as usize => {
             std::str::from_utf8(&rest[..*len as usize]).ok()

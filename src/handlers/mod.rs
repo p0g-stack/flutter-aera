@@ -14,15 +14,17 @@
 //! | `flutter/mousecursor` | standard method | [`mousecursor`]: no-op (touch only) | GDK cursors | DRM cursor |
 //! | `flutter/navigation` | JSON method | [`navigation`]: AERA Back → `popRoute` | not used | not used |
 //! | `flutter/lifecycle` | string | [`lifecycle`]: AERA `LIFECYCLE` | window focus/visibility | always resumed |
-//! | `flutter/settings` | JSON message | [`settings`]: sent once at start; brightness from `AERA_APPEARANCE`, text scale 1.0, 24-hour clock | GSettings | sent once, light |
+//! | `flutter/settings` | JSON message | [`settings`]: sent once at start; brightness from `AERA_APPEARANCE`, text scale 1.0, clock from AERA's saved `tw_military_time` | GSettings | sent once, light |
 //! | `flutter/keyboard` | standard method | [`keyboard`]: `getKeyboardState` → no keys down (no hardware keyboard) | pressed keys from GDK | not handled |
 //! | locales | embedder API | `LANG` (AERA sets it from its locale), else `en-US` | GLib languages | `LANG` |
 //! | `flutter/accessibility` | standard message | not-implemented; semantics never enabled (AERA has no screen reader) | ATK | not handled |
 //! | `flutter/keyevent` | JSON message | not sent: AERA's keyboard commits text, as an IME | GDK key events | evdev keys |
+//! | `io.material.plugins/dynamic_color` | standard method | [`dynamic_color`]: `getAccentColor` = AERA's saved accent; in place of the stock plugin's GTK half | GTK plugin: portal or theme accent | not handled |
 //! | `flutter/restoration` | standard method | not-implemented (as GTK) | not-implemented | not-implemented |
 //! | anything else | | not-implemented | | |
 
 pub mod codec;
+pub mod dynamic_color;
 pub mod keyboard;
 pub mod lifecycle;
 pub mod mousecursor;
@@ -52,6 +54,8 @@ pub enum Effect {
 pub struct Handlers {
     pub ime: Ime,
     pub platform: platform::Platform,
+    /// AERA's saved settings, read once at start.
+    pub settings: crate::aera_settings::Settings,
 }
 
 impl Handlers {
@@ -64,6 +68,7 @@ impl Handlers {
             textinput::CHANNEL => textinput::handle(&mut self.ime, bytes, &mut effects),
             mousecursor::CHANNEL => mousecursor::handle(bytes),
             keyboard::CHANNEL => keyboard::handle(bytes),
+            dynamic_color::CHANNEL => dynamic_color::handle(bytes, self.settings.accent()),
             _ => codec::not_implemented(),
         };
         (reply, effects)
