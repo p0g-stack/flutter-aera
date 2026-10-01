@@ -468,6 +468,71 @@ impl Drop for Vk {
     }
 }
 
+/// What the Vulkan driver offers, for `aera-flutter --vulkan-info`: per
+/// device its version, extensions and features, the things Zink checks
+/// before it agrees to run on a device (and does not name in a release
+/// build). A small `vulkaninfo`.
+pub fn info() -> Result<String, String> {
+    use std::fmt::Write;
+    let mut out = String::new();
+    // SAFETY: as in `Vk::new`; every struct passed outlives its call.
+    unsafe {
+        let entry = ash::Entry::load().map_err(|e| format!("load libvulkan.so.1: {e}"))?;
+        let version = entry.try_enumerate_instance_version().ok().flatten().unwrap_or(vk::API_VERSION_1_0);
+        let v = |n: u32| format!("{}.{}.{}", vk::api_version_major(n), vk::api_version_minor(n), vk::api_version_patch(n));
+        let _ = writeln!(out, "instance version {}", v(version));
+        for e in entry.enumerate_instance_extension_properties(None).map_err(|e| e.to_string())? {
+            let _ = writeln!(out, "instance extension {:?}", e.extension_name_as_c_str().unwrap_or_default());
+        }
+        let app = vk::ApplicationInfo::default().api_version(version.min(vk::API_VERSION_1_3));
+        let instance =
+            entry.create_instance(&vk::InstanceCreateInfo::default().application_info(&app), None).map_err(|e| format!("vkCreateInstance: {e}"))?;
+        for physical in instance.enumerate_physical_devices().map_err(|e| e.to_string())? {
+            let p = instance.get_physical_device_properties(physical);
+            let _ = writeln!(
+                out,
+                "\ndevice {:?} type {:?} api {} driver {:#x} vendor {:#x} id {:#x}",
+                p.device_name_as_c_str().unwrap_or_default(),
+                p.device_type,
+                v(p.api_version),
+                p.driver_version,
+                p.vendor_id,
+                p.device_id
+            );
+            for e in instance.enumerate_device_extension_properties(physical).map_err(|e| e.to_string())? {
+                let _ = writeln!(out, "device extension {:?}", e.extension_name_as_c_str().unwrap_or_default());
+            }
+            for (i, q) in instance.get_physical_device_queue_family_properties(physical).iter().enumerate() {
+                let _ = writeln!(out, "queue family {i}: {:?} x{}", q.queue_flags, q.queue_count);
+            }
+            let _ = writeln!(out, "features {:#?}", instance.get_physical_device_features(physical));
+            if p.api_version >= vk::API_VERSION_1_1 {
+                let mut f11 = vk::PhysicalDeviceVulkan11Features::default();
+                let mut f12 = vk::PhysicalDeviceVulkan12Features::default();
+                let mut f13 = vk::PhysicalDeviceVulkan13Features::default();
+                let mut f2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut f11);
+                if p.api_version >= vk::API_VERSION_1_2 {
+                    f2 = f2.push_next(&mut f12);
+                }
+                if p.api_version >= vk::API_VERSION_1_3 {
+                    f2 = f2.push_next(&mut f13);
+                }
+                instance.get_physical_device_features2(physical, &mut f2);
+                let _ = writeln!(out, "vulkan 1.1 features {f11:#?}");
+                if p.api_version >= vk::API_VERSION_1_2 {
+                    let _ = writeln!(out, "vulkan 1.2 features {f12:#?}");
+                }
+                if p.api_version >= vk::API_VERSION_1_3 {
+                    let _ = writeln!(out, "vulkan 1.3 features {f13:#?}");
+                }
+            }
+            let _ = writeln!(out, "limits {:#?}", p.limits);
+        }
+        instance.destroy_instance(None);
+    }
+    Ok(out)
+}
+
 /// Forces GL, over a `--vulkan` the launcher chose for the device.
 pub const GL_SWITCH: &str = "--gl";
 

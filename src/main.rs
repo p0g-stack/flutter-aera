@@ -1,7 +1,8 @@
 //! `aera-flutter`: started by `aera-plugin` (launcher/) with AERA's control
 //! socket on fd 4 and the frame memfd on fd 3.
 //!
-//! Usage: `aera-flutter [--root DIR] [--vulkan | --gl] [--engine-arg ARG]...`. The payload
+//! Usage: `aera-flutter [--root DIR] [--vulkan | --gl] [--engine-arg ARG]...`,
+//! or `aera-flutter --vulkan-info` to print what the Vulkan driver offers. The payload
 //! root defaults to `AERA_PLUGIN_ROOT`, else two levels above this binary.
 //! Developer engine switches also come from the environment and the plugin
 //! data directory (`debug.rs`).
@@ -33,6 +34,11 @@ fn run() -> Result<i32, String> {
             "--root" => root = args.next().map(PathBuf::from),
             "--engine-arg" => engine_args.extend(args.next()),
             "--vulkan" | "--gl" => engine_args.push(a),
+            // Diagnostics: what the Vulkan driver offers, then exit.
+            "--vulkan-info" => {
+                print!("{}", flutter_aera::renderer::vk::info()?);
+                return Ok(0);
+            }
             // Host API 2 passes --aera-host-api=N; the handshake decides.
             a if a.starts_with("--aera-host-api") => {}
             other => return Err(format!("unknown argument {other}")),

@@ -88,6 +88,12 @@ forces GL back. To see why Zink fails, put Mesa's debug variables in
 adb shell 'printf "EGL_LOG_LEVEL=debug\nMESA_DEBUG=1\nMESA_LOG_LEVEL=debug\n" > /sdcard/AERA/plugin-data/ID/environment'
 ```
 
+`usr/bin/aera-plugin --vulkan-info` (from `adb shell`, in the plugin's
+directory) prints what the Vulkan driver offers through the payload's own
+loader and ICDs: versions, extensions, features and limits per device, as
+`vulkaninfo` would. Zink checks these before it runs on a device and does
+not say which one failed in a release build.
+
 GL is the default elsewhere. `--vulkan` in `$AERA_PLUGIN_DATA/engine-switches` (one
 switch per line, `docs/debugging.md`) renders with Vulkan instead: Turnip
 on a Qualcomm phone, gfxstream on x64 Cuttlefish; where Vulkan cannot start

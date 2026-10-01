@@ -24,7 +24,7 @@ name = "aera-flutter"
 path = "src/main.rs"
 
 [dependencies]
-ash = { version = "0.38", default-features = false, features = ["loaded", "std"] }
+ash = { version = "0.38", default-features = false, features = ["loaded", "std", "debug"] }
 libc = "0.2"
 libloading = "0.8"
 serde_json = "1"
