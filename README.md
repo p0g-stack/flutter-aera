@@ -1,53 +1,51 @@
 # flutter-aera
 
 The Flutter embedder for AERA Recovery, in Rust. What `shell/platform/linux`
-is to GTK, this is to AERA: it hosts `libflutter_engine.so`, renders through
-GL (Zink) or Vulkan, hands frames to AERA over the bridge, and answers
-Flutter's standard platform channels from AERA's inputs.
+is to GTK, this is to AERA: it hosts `libflutter_engine.so`, renders through GL
+(Zink), Vulkan or Impeller, hands frames to AERA, and answers Flutter's standard
+platform channels from AERA's input. A stock app runs unmodified.
 
-There is no Dart package. Because this embedder speaks the standard channels,
-plain Flutter works unmodified: `WidgetsBindingObserver` for lifecycle,
-`MediaQuery` for insets, `PopScope` for back, `Clipboard`, `platformBrightness`.
+It targets AERA's **generic pixel + GPU plugin host** (Host API 3). That host
+is not published yet, so we build against an assumed interface
+([aera-flutter-demo#1](https://github.com/1vivy/aera-flutter-demo/issues/1));
+every assumption is marked `ASSUMED` until AERA publishes. Plugins run as root
+in recovery's namespaces, so apps get root in-process; there is no helper.
+
+## Parity reference
+
+AERA is a Linux process in recovery, so its peers are Linux GTK and
+flutter-pi, not Android. Recovery has fewer things to reach parity with; what
+AERA can't do is answered as not-implemented on the standard channel, never a
+custom channel.
 
 ## Scope
 
-In: engine hosting, renderers, the AERA bridge codec and its spec, the
-standard-channel handlers, the host simulator, engine and runtime-kit builds,
-`.aerap` packaging.
+In: engine hosting, renderers, the AERA host transport and its spec, the
+standard-channel handlers, the static launcher, the host simulator, engine /
+Mesa / runtime-kit builds (CI), an example `.aerap`.
 
-Out: anything an app links (`surfaces`), custom channels for things Flutter
-already has a channel for.
+Out: anything an app links, the app-developer tool (`flutterp0g_tool`, which
+builds, packs and runs `.aerap`s and adds the `aera/` platform folder), app code.
 
-## Proposed nest (mirrors the GTK embedder)
+## Nest (proposed)
 
 ```
-spec/
-  bridge.md           transcribed from AERA's protocol.hpp; drift-tested against the vendored header
-  engine-pin.md       Flutter release, engine revision, header provenance, runtime-mode files
-src/
-  engine.rs           dlopen, proc table, project args, run   ≈ fl_engine
-  view.rs             window metrics, pointer, frame slots    ≈ fl_view
-  task_runner.rs      platform task runner, vsync             ≈ fl_task_runner
-  renderer/           RenderBackend trait; gl.rs, vk.rs       ≈ fl_compositor_*
-  bridge.rs           AERA fd3/fd4 packet transport           ≈ fl_wayland_display
-  handlers/           flutter/platform, settings, textinput, keyboard, lifecycle, navigation
-  ime.rs              text-input state machine                ≈ common/text_input_model
-  bin/host_sim.rs     AERA stand-in for CI and desk testing
-vendor/               protocol.hpp and flutter_embedder.h, fetched by hash, revisions recorded
-tools/                build_engine.sh, build_mesa.sh, assemble_runtime.py, make_aerap.py
-third_party/mesa/     zink-kgsl-surfaceless patch
+spec/host.md          Host API 3 messages we rely on, ASSUMED items marked
+spec/engine-pin.md    Flutter release, engine revision, header provenance
+src/engine.rs         dlopen, proc table, project args, run          ≈ fl_engine
+src/view.rs           window metrics, pointer, frame slots           ≈ fl_view
+src/task_runner.rs    platform task runner, vsync from FRAME_DONE
+src/renderer/         gl.rs (Zink), vk.rs, impeller; readback now, dma-buf later
+src/host/             socket + memfd slots, SURFACE, input, lifecycle, keyboard inset
+src/handlers/         one per standard channel
+src/ime.rs            text-input model
+launcher/             static aera-plugin: private mount ns, font + CA binds, exec via payload ld-linux
+sim/                  aera-host-sim: AERA's side on a PC
+vendor/               AERA protocol.hpp + flutter_embedder.h, fetched by hash
+third_party/mesa/     Zink-on-KGSL surfaceless patch
+ci/                   engine + gen_snapshot, Mesa, runtime-kit build scripts
+example/              the counter app as an .aerap
 ```
-
-## Rules
-
-- Standard channels only. A custom channel needs a written reason that no
-  standard channel or window-metrics field covers the feature.
-- AERA owns the bridge format. `vendor/protocol.hpp` is pinned by hash with
-  the AERA commit recorded; a build-time test asserts `bridge.rs` against it.
-- Readback offsets are aligned or the frame falls back to a full copy; never a
-  silent skip.
-- Every `unsafe` block states the invariant it relies on and who upholds it.
-- CI runs the worker under the simulator on every PR and round-trips an `.aerap`.
 
 ## License
 
