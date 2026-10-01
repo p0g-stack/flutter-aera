@@ -108,7 +108,10 @@ launch: `/sdcard/AERA/plugin-data/<id>` when `/sdcard/AERA` exists
 otherwise `/tmp/aera/plugin-data/<id>` in RAM, and then AERA also sets
 `AERA_PLUGIN_DATA_VOLATILE=1` (patch 0022) so the app can warn that nothing
 it saves survives a reboot (`Platform.environment`). The embedder (`src/env.rs`)
-and the payload's `xdg-user-dir` map the stock APIs onto it:
+and the payload's `xdg-user-dir` map the stock APIs onto it. The engine is
+Flutter's Linux embedder engine, so Dart reports `linux` and the stock
+`*_linux` implementations (`path_provider_linux`, which
+`shared_preferences_linux` uses) are the ones in play:
 
 | Flutter API (stock) | AERA path | Lifetime |
 | --- | --- | --- |
