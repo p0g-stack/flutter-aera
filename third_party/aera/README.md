@@ -37,6 +37,7 @@ counter through AERA's launcher, session and surface). The LVGL scene is not
 run in CI: it builds only inside the AERA tree.
 
 Not yet: resize or rotation (a rotated scene restarts the plugin), dma-buf
-slots, damage rectangles, audio.
+slots, damage rectangles, audio. Every known AERA gap, fixed or worked
+around, is in `docs/aera-deficiencies.md`.
 
 Licence: the patches are AERA's code and stay under its Apache-2.0.

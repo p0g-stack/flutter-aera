@@ -1,8 +1,15 @@
-From c0ba59c54eed2616e6f96b2533ea534e3c3d34ca Mon Sep 17 00:00:00 2001
+From 2fe3b18a7806a31326c9b2e9f38a351f384d1574 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:27:24 +0000
-Subject: [PATCH 6/7] scenes: pixel plugin scene for Host API 3 (surface,
+Subject: [PATCH 6/9] scenes: pixel plugin scene for Host API 3 (surface,
  touch, keyboard, Back)
+
+Show a pixel plugin full screen below the status bar: size the surface to
+the physical pixels, show presented frames as an ARGB8888 image refreshed
+with the display, and release slots on REFR_READY. Route up to ten touch
+points (edge gestures stay AERA's), Back and CLOSE, and offer AERA's own
+keyboard on KEYBOARD_SHOW, sending typed text as KEY and its height as
+KEYBOARD_INSET so the plugin can keep its focused field visible.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz

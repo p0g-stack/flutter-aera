@@ -65,6 +65,9 @@ published (`spec/aerap.md`). Checked in CI under the simulator:
 - Text input through AERA's keyboard, with its height as the bottom inset
   (`ci/text-input-check.sh`).
 
+What AERA itself lacks, and which patch or workaround answers it:
+`docs/aera-deficiencies.md`.
+
 Not yet: a run inside an AERA image (devicelab's Cuttlefish build), a device
 run, `example/` .aerap. `spec/aerap.md` is the
 package layout `flutter_p0g` packs.

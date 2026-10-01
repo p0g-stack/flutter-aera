@@ -1,7 +1,11 @@
-From 185a883e54665f3191348a207527799dd72e5de9 Mon Sep 17 00:00:00 2001
+From c83bfeb909f1b53c9cd23e2aaa4f243e1d170210 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:27:24 +0000
-Subject: [PATCH 7/7] plugin_api: Host API 3 tests and documentation
+Subject: [PATCH 7/9] plugin_api: Host API 3 tests and documentation
+
+Session tests for the version 3 handshake and message order, surface slot
+ownership tests, and a host check that runs a plugin through the real
+launcher, session and surface. Document Host API 3 in plugin_api/README.md.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz

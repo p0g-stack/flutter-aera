@@ -1,9 +1,20 @@
-From 2528594fa8525f5c777785fec82e0d769658d759 Mon Sep 17 00:00:00 2001
+From c5d7dd815d7f94c577936ea6d5b9287ee984afde Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:15:00 +0000
-Subject: [PATCH 2/7] plugin_api: negotiate Host API 3 per scene; SURFACE
+Subject: [PATCH 2/9] plugin_api: negotiate Host API 3 per scene; SURFACE
  before RESUME; PRESENT outside the rate limit
 
+The session negotiates one protocol version for every plugin, and rate
+limits all plugin messages to 128 per second. A pixel plugin presents up to
+once per display refresh and must know its surface before it is resumed.
+
+Negotiate the version per scene from the plugin's HELLO range, answer
+HELLO_ACK with the version in value and the features in flags (as version 2
+does), send SURFACE before LIFECYCLE RESUME to a version 3 plugin, and
+exempt PRESENT from the rate limit: it is paced by FRAME_DONE instead.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
 ---
  aeraui/features/plugin_api/session.cpp | 72 +++++++++++++++++++-------
  aeraui/features/plugin_api/session.hpp | 10 +++-

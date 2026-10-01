@@ -1,9 +1,23 @@
-From fbb54b443609103745f48a208731f80809a32551 Mon Sep 17 00:00:00 2001
+From 820d1e034f7097d7beb6eabf8f57ba205bb8bf80 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:14:19 +0000
-Subject: [PATCH 1/7] plugin_api: Host API 3 wire additions (pixel surface,
+Subject: [PATCH 1/9] plugin_api: Host API 3 wire additions (pixel surface,
  input, keyboard)
 
+Host API 2 lets a plugin describe a declarative UI that AERA draws, or run
+a page in the jailed browser. A plugin with its own renderer (a Flutter
+app, a game, a terminal) has no way to put pixels on screen or to receive
+raw touch and key input, so it cannot be built on AERA at all.
+
+Add the wire for a pixel plugin: protocol version 3, the PIXEL_SURFACE and
+KEYBOARD_INSET features, plugin messages PRESENT, KEYBOARD_SHOW and
+KEYBOARD_HIDE (12-14), host messages SURFACE, FRAME_DONE, TOUCH_DOWN/MOVE/UP,
+KEY, BACK and KEYBOARD_INSET (68-75), and the surface constants. Version 2
+messages and their numbers are unchanged; a version 2 plugin sees nothing
+new.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
 ---
  aeraui/features/plugin_api/protocol.hpp | 52 +++++++++++++++++++++----
  1 file changed, 45 insertions(+), 7 deletions(-)

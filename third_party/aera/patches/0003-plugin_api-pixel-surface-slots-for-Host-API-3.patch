@@ -1,7 +1,18 @@
-From f39e9983bdde9b6c1d3468b7cc79e44afbf4401f Mon Sep 17 00:00:00 2001
+From 81e937c8d9f144dfed645abc83604301ee8faa6d Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:16:35 +0000
-Subject: [PATCH 3/7] plugin_api: pixel surface slots for Host API 3
+Subject: [PATCH 3/9] plugin_api: pixel surface slots for Host API 3
+
+A pixel plugin needs memory it can draw into and AERA can show without a
+copy over the control socket.
+
+Add plugin_api/surface: a sealed memfd holding N frame slots of
+stride x height ARGB8888, shared with the plugin, and the bookkeeping of
+who owns each slot. A presented slot is pending, then latched for the next
+refresh, then shown. A pending slot superseded by a newer PRESENT is
+released at once; a shown slot is released only when a newer frame
+replaces it on screen, so the plugin never draws into a slot being scanned
+out.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
