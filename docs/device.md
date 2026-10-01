@@ -68,7 +68,7 @@ which isolates GPU problems from everything else.
 | Device | Node | Mesa driver | Set by |
 | --- | --- | --- | --- |
 | Qualcomm phone | `/dev/kgsl-3d0` | Zink on Turnip | `aera-plugin` (`MESA_LOADER_DRIVER_OVERRIDE=zink`, `VK_DRIVER_FILES`) |
-| Cuttlefish gfxstream modes (x86_64) | `/dev/dri/renderD128`, gfxstream Vulkan capset, no virgl | Zink on gfxstream Vulkan | `aera-plugin` (capset probe, then as on a phone) |
+| Cuttlefish gfxstream modes (x86_64) | `/dev/dri/renderD128`, gfxstream Vulkan capset, no virgl | Vulkan renderer on gfxstream (`--vulkan`); GL through Zink does not start yet and falls back to softpipe | `aera-plugin` (capset probe) |
 | Cuttlefish `--gpu_mode=drm_virgl` | `/dev/dri/renderD128` | virgl | Mesa's own probe |
 | Cuttlefish `guest_swiftshader`, or none | — | softpipe | Mesa's fallback |
 
@@ -77,7 +77,18 @@ render node. On devicelab's Cuttlefish the gfxstream modes offer capsets 3
 (gfxstream Vulkan), 9 (composer) and, in plain gfxstream, 8 (GLES), and
 `drm_virgl` does not boot, so gfxstream is the GPU route there.
 
-GL is the default. `--vulkan` in `$AERA_PLUGIN_DATA/engine-switches` (one
+Proven on devicelab's Cuttlefish (run 36833432698): `--vulkan`, with Skia
+and with Impeller, on "Virtio-GPU GFXStream (SwiftShader Device)". GL
+there tried Zink and got "egl: failed to create dri2 screen", so the
+launcher now passes `--vulkan` on that GPU; `--gl` in `engine-switches`
+forces GL back. To see why Zink fails, put Mesa's debug variables in
+`$AERA_PLUGIN_DATA/environment`, one `KEY=VALUE` per line:
+
+```sh
+adb shell 'printf "EGL_LOG_LEVEL=debug\nMESA_DEBUG=1\nMESA_LOG_LEVEL=debug\n" > /sdcard/AERA/plugin-data/ID/environment'
+```
+
+GL is the default elsewhere. `--vulkan` in `$AERA_PLUGIN_DATA/engine-switches` (one
 switch per line, `docs/debugging.md`) renders with Vulkan instead: Turnip
 on a Qualcomm phone, gfxstream on x64 Cuttlefish; where Vulkan cannot start
 it falls back to GL and logs why. `--enable-impeller` switches either to Impeller.

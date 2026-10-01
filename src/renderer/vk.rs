@@ -468,11 +468,16 @@ impl Drop for Vk {
     }
 }
 
-/// Removes the embedder's own switch; true if it was there.
+/// Forces GL, over a `--vulkan` the launcher chose for the device.
+pub const GL_SWITCH: &str = "--gl";
+
+/// Removes the embedder's own switches; true if Vulkan was asked for and
+/// `--gl` was not.
 pub fn take_switch(switches: &mut Vec<String>) -> bool {
-    let before = switches.len();
-    switches.retain(|s| s != SWITCH);
-    switches.len() != before
+    let vulkan = switches.iter().any(|s| s == SWITCH);
+    let gl = switches.iter().any(|s| s == GL_SWITCH);
+    switches.retain(|s| s != SWITCH && s != GL_SWITCH);
+    vulkan && !gl
 }
 
 #[cfg(test)]
@@ -483,5 +488,8 @@ mod tests {
         assert!(super::take_switch(&mut s));
         assert_eq!(s, ["--enable-impeller"]);
         assert!(!super::take_switch(&mut s));
+        let mut s = vec!["--vulkan".to_owned(), "--gl".to_owned()];
+        assert!(!super::take_switch(&mut s));
+        assert!(s.is_empty());
     }
 }

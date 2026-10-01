@@ -16,6 +16,11 @@
 //!    that offers gfxstream or Venus Vulkan but no virgl (Cuttlefish's
 //!    gfxstream modes). Elsewhere Mesa probes the render node itself; the
 //!    simulator may force `GALLIUM_DRIVER=softpipe`.
+//!    On that virtio-gpu the embedder is also started with `--vulkan`, since
+//!    Zink on gfxstream does not start yet (EGL falls back to softpipe);
+//!    `--gl` in the plugin's `engine-switches` overrides it.
+//!    Developers can add variables (`MESA_DEBUG=1`, `EGL_LOG_LEVEL=debug`)
+//!    one `KEY=VALUE` per line in `$AERA_PLUGIN_DATA/environment`.
 //! 4. exec `usr/bin/aera-flutter` through the payload's own
 //!    `ld-linux-*.so` with `--library-path usr/lib`, passing our arguments.
 //!
@@ -81,6 +86,10 @@ fn virtio_capsets() -> Option<u32> {
     }
 }
 
+fn kgsl_present() -> bool {
+    Path::new("/dev/kgsl-3d0").exists()
+}
+
 /// Whether EGL should go through Zink: the GPU is only reachable through
 /// Vulkan.
 fn wants_zink(kgsl: bool, capsets: Option<u32>) -> bool {
@@ -97,6 +106,16 @@ fn payload_icds(root: &Path) -> Option<std::ffi::OsString> {
     icds.sort();
     let joined = std::env::join_paths(icds).ok()?;
     (!joined.is_empty()).then_some(joined)
+}
+
+/// `KEY=VALUE` lines; blank lines and `#` comments are skipped.
+fn parse_environment(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('=').map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned())))
+        .filter(|(k, _)| !k.is_empty())
+        .collect()
 }
 
 fn root() -> PathBuf {
@@ -139,12 +158,20 @@ fn main() {
     }
 
     let set = |k: &str| std::env::var_os(k).is_some();
+    let capsets = virtio_capsets();
     // SAFETY (set_var): single-threaded, before exec.
     unsafe {
-        let kgsl = Path::new("/dev/kgsl-3d0").exists();
-        let capsets = virtio_capsets();
+        let kgsl = kgsl_present();
         if let Some(m) = capsets {
             eprintln!("aera-plugin: virtio-gpu capsets {m:#x}");
+        }
+        if let Some(data) = std::env::var_os("AERA_PLUGIN_DATA") {
+            if let Ok(text) = std::fs::read_to_string(Path::new(&data).join("environment")) {
+                for (k, v) in parse_environment(&text) {
+                    eprintln!("aera-plugin: {k}={v}");
+                    std::env::set_var(k, v);
+                }
+            }
         }
         if wants_zink(kgsl, capsets) && !set("MESA_LOADER_DRIVER_OVERRIDE") && !set("GALLIUM_DRIVER") {
             std::env::set_var("MESA_LOADER_DRIVER_OVERRIDE", "zink");
@@ -161,6 +188,9 @@ fn main() {
         c(&root.join("usr/lib")),
         c(&root.join("usr/bin/aera-flutter")),
     ];
+    if !kgsl_present() && wants_zink(false, capsets) {
+        argv.push(CString::new("--vulkan").unwrap());
+    }
     argv.extend(std::env::args_os().skip(1).map(|a| CString::new(a.as_bytes()).unwrap()));
     let mut pointers: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
     pointers.push(std::ptr::null());
@@ -186,5 +216,11 @@ mod tests {
         // Virgl beside Venus: Mesa's virgl stays.
         assert!(!wants_zink(false, Some(1 << 2 | 1 << 4)));
         assert!(!wants_zink(false, Some(0)));
+    }
+
+    #[test]
+    fn environment_file() {
+        let env = parse_environment("# debug\nMESA_DEBUG=1\n\n EGL_LOG_LEVEL = debug \nnot a pair\n=x\n");
+        assert_eq!(env, [("MESA_DEBUG".into(), "1".into()), ("EGL_LOG_LEVEL".into(), "debug".into())]);
     }
 }
