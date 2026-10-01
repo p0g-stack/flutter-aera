@@ -1,0 +1,205 @@
+From 979918dddd05b39ab5333f969d5bf82b36af390b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 07:02:12 +0000
+Subject: [PATCH 8/8] rpc: open an installed generic plugin (op plugin, action
+ open)
+
+Lets a developer start a Host API 2 or 3 plugin over adb exactly as the
+launcher does, e.g. for flutter attach and hot reload.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aera_rpc/aera_engine.cpp         | 21 +++++++++++++++++++++
+ aeraui/core/engine.cpp           | 11 +++++++++++
+ aeraui/core/runner.cpp           | 26 ++++++++++++++++++++++++++
+ aeraui/include/aeraui/engine.hpp |  4 ++++
+ aeraui/include/aeraui/runner.hpp | 12 ++++++++++++
+ 5 files changed, 74 insertions(+)
+
+diff --git a/aera_rpc/aera_engine.cpp b/aera_rpc/aera_engine.cpp
+index 905c7c5..1a827e9 100644
+--- a/aera_rpc/aera_engine.cpp
++++ b/aera_rpc/aera_engine.cpp
+@@ -289,6 +289,26 @@ int Transition(const Request &request, EventSink &events) {
+   return Fail(events, "transition_failed", "Could not queue the transition");
+ }
+ 
++int Plugin(const Request &request, EventSink &events) {
++  const std::string action = Text(request.arguments, "action", "open");
++  const std::string id = Text(request.arguments, "id");
++  if (action != "open")
++    return Fail(events, "invalid_plugin_action", "Unknown plugin action: " + action, 2);
++  if (id.empty()) return Fail(events, "missing_plugin", "plugin open requires an id", 2);
++  switch (aeraui::RequestPluginLaunch(id)) {
++    case aeraui::PluginLaunchRequestResult::kAccepted:
++      events.Log("Opening " + id + "\n");
++      return 0;
++    case aeraui::PluginLaunchRequestResult::kNotInstalled:
++      return Fail(events, "plugin_not_installed",
++                  id + " is not an installed Host API 2 or 3 plugin");
++    case aeraui::PluginLaunchRequestResult::kUnavailable:
++      return Fail(events, "plugin_unavailable",
++                  "The native AERA recovery interface is not ready");
++  }
++  return Fail(events, "plugin_failed", "Could not queue the plugin");
++}
++
+ int Log(EventSink &events) {
+   std::ifstream input("/tmp/recovery.log");
+   if (!input) return Fail(events, "log_unavailable", "The recovery log is not available");
+@@ -372,6 +392,7 @@ int Execute(const Request &request, EventSink &events) {
+   if (op == "reboot") return Reboot(request, events);
+   if (op == "transition") return Transition(request, events);
+   if (op == "log") return Log(events);
++  if (op == "plugin") return Plugin(request, events);
+   if (op == "mirror") return Mirror(request, events);
+   return Fail(events, "unsupported_operation",
+               "This AERA RPC build does not support operation: " + op, 2);
+diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
+index 07db3c6..a82290d 100644
+--- a/aeraui/core/engine.cpp
++++ b/aeraui/core/engine.cpp
+@@ -903,6 +903,16 @@ public:
+     lock_overlay_ = BuildLockScene(lv_layer_top(), HandleSceneAction, this);
+   }
+ 
++  void OpenPlugin(const std::string &id) {
++    if (lock_overlay_ != nullptr || !backend_ready_ || decryption_active_ ||
++        operation_running_ || nas_running_ || plugin_running_ ||
++        fastboot_mode_)
++      return;
++    if (recents_overlay_ != nullptr) DismissRecents();
++    SetSelectedPluginId(id);
++    HandleSceneAction(Action::kPluginApp, this);
++  }
++
+   void ShowPowerMenu() {
+     if (!initialized_ || power_overlay_ != nullptr || suspended_) return;
+     CancelEdgeSwipe();
+@@ -3401,6 +3411,7 @@ void Engine::SetPointer(const PointerEvent &event) { impl_->SetPointer(event); }
+ void Engine::SetSuspended(bool suspended) { impl_->SetSuspended(suspended); }
+ void Engine::ShowLockScreen() { impl_->ShowLockScreen(); }
+ void Engine::ShowPowerMenu() { impl_->ShowPowerMenu(); }
++void Engine::OpenPlugin(const std::string &id) { impl_->OpenPlugin(id); }
+ void Engine::ShowVolume(int percent) { impl_->ShowVolume(percent); }
+ void Engine::ShowScreenshotResult(bool success) {
+   impl_->ShowScreenshotResult(success);
+diff --git a/aeraui/core/runner.cpp b/aeraui/core/runner.cpp
+index 593db9f..b79928e 100644
+--- a/aeraui/core/runner.cpp
++++ b/aeraui/core/runner.cpp
+@@ -29,6 +29,7 @@
+ #include "aeraui/platform/aera_screen_timer.hpp"
+ #include "aeraui/status_bar.hpp"
+ #include "../components/power_transition.hpp"
++#include "../features/plugins/plugin_manager.hpp"
+ 
+ namespace aeraui {
+ namespace {
+@@ -184,6 +185,8 @@ std::atomic<bool> gFileBasedEncryption{false};
+ std::atomic<int> gUiMode{0};
+ std::atomic<int> gModeTransitionRequest{0};
+ std::atomic<bool> gModeTransitionBusy{false};
++std::mutex gPluginLaunchMutex;
++std::string gPluginLaunch;
+ std::mutex gEarlyMutex;
+ std::mutex gDecryptMutex;
+ std::condition_variable gDecryptCondition;
+@@ -392,6 +395,18 @@ ModeTransitionRequestResult RequestModeTransition(bool toward_fastboot) {
+     return ModeTransitionRequestResult::kAccepted;
+ }
+ 
++PluginLaunchRequestResult RequestPluginLaunch(const std::string& id) {
++    if (gUiMode.load(std::memory_order_acquire) != 1 ||
++        !gBackendReady.load(std::memory_order_acquire))
++        return PluginLaunchRequestResult::kUnavailable;
++    plugins::Plugin plugin;
++    if (!plugins::FindInstalled(id, plugin) || !plugins::IsGeneric(plugin))
++        return PluginLaunchRequestResult::kNotInstalled;
++    std::lock_guard<std::mutex> lock(gPluginLaunchMutex);
++    gPluginLaunch = id;
++    return PluginLaunchRequestResult::kAccepted;
++}
++
+ RunResult RunLoop(bool fastboot_mode = false,
+                   const DisplayMetrics& metrics = {},
+                   bool resume_recovery = false) {
+@@ -485,6 +500,17 @@ RunResult RunLoop(bool fastboot_mode = false,
+                                     toward_fastboot ? "fastboot" : "recovery");
+             }
+         }
++        std::string plugin_launch;
++        {
++            std::lock_guard<std::mutex> lock(gPluginLaunchMutex);
++            plugin_launch.swap(gPluginLaunch);
++        }
++        if (!plugin_launch.empty() && !fastboot_mode) {
++            engine.OpenPlugin(plugin_launch);
++            performance.BoostFor(3000);
++            __android_log_print(ANDROID_LOG_INFO, kLogTag,
++                                "CLI requested plugin %s", plugin_launch.c_str());
++        }
+         const int wait_ms = static_cast<int>(engine.RunFrame());
+         // The display backend may still own/import the current GPU buffer
+         // while an input event is being dispatched. Capture only here, after
+diff --git a/aeraui/include/aeraui/engine.hpp b/aeraui/include/aeraui/engine.hpp
+index cf256f8..bd6bac4 100644
+--- a/aeraui/include/aeraui/engine.hpp
++++ b/aeraui/include/aeraui/engine.hpp
+@@ -5,6 +5,7 @@
+ #pragma once
+ 
+ #include <cstdint>
++#include <string>
+ #include <memory>
+ 
+ namespace aeraui {
+@@ -142,6 +143,9 @@ class Engine final {
+     void SetSuspended(bool suspended);
+     void ShowLockScreen();
+     void ShowPowerMenu();
++
++    // Opens an installed generic plugin as the launcher does.
++    void OpenPlugin(const std::string& id);
+     void ShowVolume(int percent);
+     void ShowScreenshotResult(bool success);
+ 
+diff --git a/aeraui/include/aeraui/runner.hpp b/aeraui/include/aeraui/runner.hpp
+index 67610c5..d666252 100644
+--- a/aeraui/include/aeraui/runner.hpp
++++ b/aeraui/include/aeraui/runner.hpp
+@@ -5,6 +5,7 @@
+ #pragma once
+ 
+ #include <cstdint>
++#include <string>
+ 
+ namespace aeraui {
+ 
+@@ -24,6 +25,12 @@ enum class DecryptionResult {
+     kSkipped = 1,
+ };
+ 
++enum class PluginLaunchRequestResult {
++    kAccepted = 0,
++    kNotInstalled,
++    kUnavailable,
++};
++
+ enum class ModeTransitionRequestResult {
+     kAccepted = 0,
+     kAlreadyActive,
+@@ -79,4 +86,9 @@ RunResult RunAeraUiFastboot(const DisplayMetrics& metrics = {});
+ // the transition backend directly.
+ ModeTransitionRequestResult RequestModeTransition(bool toward_fastboot);
+ 
++// Queues opening an installed Host API 2 or 3 plugin on the native UI thread,
++// as tapping it in the launcher does. For developers over adb (AERA RPC
++// "plugin"); the plugin runs exactly as when started from the UI.
++PluginLaunchRequestResult RequestPluginLaunch(const std::string& id);
++
+ }  // namespace aeraui
+-- 
+2.43.0
+

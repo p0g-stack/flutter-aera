@@ -505,7 +505,9 @@ unsafe extern "C" fn cb_platform_message(message: *const ffi::FlutterPlatformMes
 
 unsafe extern "C" fn cb_log(tag: *const c_char, message: *const c_char, _user_data: *mut c_void) {
     let tag = if tag.is_null() { "flutter".into() } else { CStr::from_ptr(tag).to_string_lossy() };
-    eprintln!("{tag}: {}", CStr::from_ptr(message).to_string_lossy());
+    let message = CStr::from_ptr(message).to_string_lossy();
+    eprintln!("{tag}: {message}");
+    crate::debug::on_log(&message);
 }
 
 unsafe extern "C" fn cb_resolve_locale(supported: *mut *const ffi::FlutterLocale, count: usize) -> *const ffi::FlutterLocale {

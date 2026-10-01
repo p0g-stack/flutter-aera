@@ -7,6 +7,7 @@ pub mod ffi {
     include!(concat!(env!("OUT_DIR"), "/flutter_embedder.rs"));
 }
 
+pub mod debug;
 pub mod engine;
 pub mod env;
 pub mod handlers;

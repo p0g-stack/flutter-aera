@@ -3,6 +3,8 @@
 //!
 //! Usage: `aera-flutter [--root DIR] [--engine-arg ARG]...`. The payload
 //! root defaults to `AERA_PLUGIN_ROOT`, else two levels above this binary.
+//! Developer engine switches also come from the environment and the plugin
+//! data directory (`debug.rs`).
 
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::PathBuf;
@@ -43,6 +45,11 @@ fn run() -> Result<i32, String> {
         }
     };
     flutter_aera::env::apply();
+    flutter_aera::debug::clear_url();
+    engine_args.extend(flutter_aera::debug::switches());
+    if !engine_args.is_empty() {
+        eprintln!("aera-flutter: engine switches {engine_args:?}");
+    }
 
     // SAFETY: AERA hands us these descriptors open; we take sole ownership.
     let control = Control::plugin(unsafe { OwnedFd::from_raw_fd(fd_from_env(host::CONTROL_FD_ENV, host::CONTROL_FD)) });

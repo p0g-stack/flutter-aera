@@ -1,6 +1,9 @@
 //! `usr/bin/aera-plugin`: what AERA execs. Built static (no loader needed),
 //! it prepares the process and execs the glibc embedder.
 //!
+//! 0. stdout and stderr to `$AERA_PLUGIN_DATA/aera-flutter.log`, new each
+//!    launch: AERA leaves them on recovery's own streams, where nobody reads
+//!    them (flutter-pi logs to the journal for the same reason).
 //! 1. A private mount namespace, so nothing below leaks into recovery.
 //! 2. AERA's fonts (`/twres/fonts`) at `/usr/share/fonts`, where the engine
 //!    looks, and the payload's CA bundle at `/etc/ssl/certs`, which Dart
@@ -53,7 +56,24 @@ fn root() -> PathBuf {
     exe.ancestors().nth(3).unwrap_or(Path::new("/")).to_path_buf()
 }
 
+/// Sends stdout and stderr to the plugin's log file.
+fn log_to_data_dir() {
+    let Some(data) = std::env::var_os("AERA_PLUGIN_DATA") else { return };
+    let path = c(&Path::new(&data).join("aera-flutter.log"));
+    // SAFETY: a valid path; the new descriptor replaces 1 and 2 and the
+    // original is closed.
+    unsafe {
+        let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC, 0o600);
+        if fd >= 0 {
+            libc::dup2(fd, 1);
+            libc::dup2(fd, 2);
+            libc::close(fd);
+        }
+    }
+}
+
 fn main() {
+    log_to_data_dir();
     let root = root();
     // SAFETY: plain syscalls with constant arguments.
     let private = unsafe {

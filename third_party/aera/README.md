@@ -7,7 +7,8 @@ upstream.
 pin: abf33169b27dee17123c3c436a7299427821b329
 
 Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
-(`bootable/recovery` in AERA's manifest). The patches only touch `aeraui/`.
+(`bootable/recovery` in AERA's manifest). The patches touch `aeraui/` and,
+for 0008, `aera_rpc/`.
 
 Apply with `git am $(cat patches/series)` on a checkout of the pin. Devicelab
 copies `patches/*.patch` to `aera/build/patches/bootable/recovery/` for the
@@ -22,6 +23,7 @@ Cuttlefish image.
 | 0005 | plugin manager: v3 manifests (`pixel-surface` …), data directory |
 | 0006 | `scenes/pixel_plugin_scene.cpp`, routing, the engine's pointer hook |
 | 0007 | tests and the Host API 3 section of `plugin_api/README.md` |
+| 0008 | AERA RPC `plugin` / `open`: start an installed plugin over adb, for `flutter attach` (docs/debugging.md) |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as

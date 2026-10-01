@@ -13,8 +13,12 @@
 //!               [--snap NAME@MS]...
 //! ```
 //!
-//! Times are milliseconds after the first frame. Positions are surface
-//! pixels. `last.png` is always written at the end.
+//! Times are milliseconds after the first frame; `--until 0` runs until the
+//! app closes. Positions are surface pixels. `last.png` is always written at
+//! the end. `OUT/plugin-data` is the app's `AERA_PLUGIN_DATA`; its
+//! `vm-service-url` is what `flutter attach --debug-url` takes. While it
+//! runs, a file `OUT/snap` holding NAME writes NAME.png and `OUT/stop` ends
+//! the run.
 //!
 //! It also runs on a device as a stand-in for AERA's host (built static, see
 //! docs/device.md): `--gpu` then lets Mesa use the device's GPU instead of
@@ -296,11 +300,24 @@ fn run() -> Result<ExitCode, String> {
                     },
                 }
             }
-            if since >= o.until {
+            if !o.until.is_zero() && since >= o.until {
                 break;
             }
         } else if now - started > Duration::from_secs(60) {
             return Err("no frame within 60 s".into());
+        }
+        // Script hooks for interactive runs (ci/hot-reload-check.sh):
+        // OUT/snap holding NAME writes NAME.png; OUT/stop ends the run.
+        if let Ok(name) = std::fs::read_to_string(o.out.join("snap")) {
+            let _ = std::fs::remove_file(o.out.join("snap"));
+            match &last {
+                Some(f) => write_png(&o.out.join(format!("{}.png", name.trim())), f, &g)?,
+                None => println!("sim: no frame yet for {}", name.trim()),
+            }
+        }
+        if o.out.join("stop").exists() {
+            let _ = std::fs::remove_file(o.out.join("stop"));
+            break;
         }
         if closed {
             break;
