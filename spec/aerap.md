@@ -77,12 +77,23 @@ usr/lib/*.so*                        libflutter_engine.so, Mesa (Zink, Turnip), 
 usr/lib/libapp.so                    the AOT app (profile/release engines only)
 usr/share/flutter/flutter_assets/    the app's assets (+ kernel_blob.bin for debug)
 usr/share/flutter/icudtl.dat         ICU data matching the engine
+usr/share/vulkan/icd.d/freedreno_icd.json  Turnip ICD (relative library_path)
 etc/ssl/certs/ca-certificates.crt    CA bundle for Dart's HttpClient
 ```
 
-The runtime kit (embedder, launcher, engine, loader, glibc, Mesa, CA
-bundle) comes from flutter-aera releases; the app contributes only
-`flutter_assets` and, for AOT builds, `libapp.so`.
+The runtime kit (embedder, launcher, engine, loader, glibc, Mesa, Vulkan
+loader, Turnip ICD, CA bundle) comes from flutter-aera releases; the app
+contributes only `flutter_assets` and, for AOT builds, `libapp.so`.
+
+## Runtime kit
+
+`https://github.com/p0g-stack/flutter-aera/releases/download/kit-<flutter>/flutter-aera-kit-linux-arm64-<mode>-<flutter>.tar.xz`
+with a `.sha256` next to it. Today: `kit-3.47.5`, mode `debug` (JIT; the
+app ships `kernel_blob.bin` in `flutter_assets`). The tarball is the
+expanded payload tree above without the app, plus `kit.json` (pins) at its
+root, which is not packed into `runtime.xz`. To pack: extract the kit, drop
+`kit.json`, add `usr/share/flutter/flutter_assets` (and `usr/lib/libapp.so`
+for AOT), pack.
 
 `aera-plugin` binds AERA's fonts (`/twres/fonts`) at `/usr/share/fonts` and
 the payload's CA bundle at `/etc/ssl/certs` in a private mount namespace,

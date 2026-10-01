@@ -6,7 +6,10 @@
 //!    looks, and the payload's CA bundle at `/etc/ssl/certs`, which Dart
 //!    trusts. A failed bind is logged, not fatal: text or TLS degrade, the
 //!    app still starts.
-//! 3. exec `usr/bin/aera-flutter` through the payload's own
+//! 3. Mesa defaults for the phone, unless already set: EGL through Zink
+//!    (`MESA_LOADER_DRIVER_OVERRIDE=zink`) on the payload's Turnip ICD
+//!    (`VK_DRIVER_FILES`). The simulator sets `GALLIUM_DRIVER` instead.
+//! 4. exec `usr/bin/aera-flutter` through the payload's own
 //!    `ld-linux-*.so` with `--library-path usr/lib`, passing our arguments.
 //!
 //! Like flutter-pi and GTK, the embedder itself never touches mounts; this
@@ -60,6 +63,18 @@ fn main() {
         bind(&root.join("etc/ssl/certs"), Path::new("/etc/ssl/certs"));
     } else {
         eprintln!("aera-plugin: no private mount namespace ({}); fonts and CA bundle not bound", std::io::Error::last_os_error());
+    }
+
+    let set = |k: &str| std::env::var_os(k).is_some();
+    // SAFETY (set_var): single-threaded, before exec.
+    unsafe {
+        if !set("MESA_LOADER_DRIVER_OVERRIDE") && !set("GALLIUM_DRIVER") {
+            std::env::set_var("MESA_LOADER_DRIVER_OVERRIDE", "zink");
+        }
+        let icd = root.join("usr/share/vulkan/icd.d/freedreno_icd.json");
+        if !set("VK_DRIVER_FILES") && icd.exists() {
+            std::env::set_var("VK_DRIVER_FILES", icd);
+        }
     }
 
     let loader = c(&root.join(LOADER));

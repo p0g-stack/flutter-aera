@@ -1,0 +1,112 @@
+name: Kit
+# Builds the arm64 runtime kit (spec/aerap.md minus the app) natively on an
+# arm64 runner, proves it by running the counter app through the kit's own
+# launcher, loader and Mesa in the simulator, and on request publishes it as
+# the kit-<flutter> release that flutter_p0g precache downloads.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish to the kit-<flutter> release
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: [ci/**, launcher/**, src/**, sim/**, third_party/**, .github/workflows/kit.yml]
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: 3.47.5
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Counter app bundle (kernel, architecture independent)
+        run: |
+          curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_$FLUTTER_VERSION-stable.tar.xz | tar -C "$RUNNER_TEMP" -xJ
+          export PATH=$RUNNER_TEMP/flutter/bin:$PATH
+          flutter --disable-analytics >/dev/null
+          flutter create --no-pub --project-name counter counter
+          cd counter && flutter pub get && flutter build bundle --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: counter-bundle
+          path: counter/build/flutter_assets
+
+  kit:
+    needs: bundle
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config flex bison glslang-tools libdrm-dev libexpat1-dev \
+            libzstd-dev zlib1g-dev libelf-dev libclang-dev libvulkan1 libegl1 python3-pip
+          pip3 install --user --break-system-packages 'meson>=1.4' mako pyyaml packaging
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        id: mesa
+        with:
+          path: ${{ runner.temp }}/mesa
+          key: mesa-arm64-${{ hashFiles('ci/build-mesa.sh', 'third_party/mesa/*') }}
+      - name: Mesa
+        if: steps.mesa.outputs.cache-hit != 'true'
+        run: ci/build-mesa.sh "$RUNNER_TEMP/mesa"
+      - name: Embedder, simulator, static launcher
+        run: |
+          cargo build --release -p flutter-aera -p aera-host-sim
+          RUSTFLAGS="-C target-feature=+crt-static" cargo build --release -p aera-plugin --target-dir target/static
+          file target/static/release/aera-plugin | grep -q 'statically linked\|static-pie'
+      - name: Engine
+        run: ci/fetch-engine.sh "$RUNNER_TEMP/engine" arm64
+      - name: Assemble
+        run: |
+          set -euo pipefail
+          name=flutter-aera-kit-linux-arm64-debug-$FLUTTER_VERSION
+          jq -n --arg flutter "$FLUTTER_VERSION" --arg commit "$GITHUB_SHA" \
+            '{kit: 1, arch: "arm64", mode: "debug", flutter: $flutter, engine_revision: "af7e796e161ae0bb1ff0758c71a7105418bd9ded",
+              mesa: "26.2.2", flutter_aera_commit: $commit}' > kit.json
+          ci/assemble-kit.py --out "$RUNNER_TEMP/kit" --embedder target/release/aera-flutter \
+            --launcher target/static/release/aera-plugin --engine "$RUNNER_TEMP/engine/embedder/libflutter_engine.so" \
+            --icu "$RUNNER_TEMP/engine/icudtl.dat" --mesa "$RUNNER_TEMP/mesa" \
+            --sysroot /usr/lib/aarch64-linux-gnu --sysroot /lib/aarch64-linux-gnu \
+            --ca-bundle /etc/ssl/certs/ca-certificates.crt --pins kit.json
+          mkdir -p dist
+          tar -C "$RUNNER_TEMP/kit" -cJf "dist/$name.tar.xz" .
+          (cd dist && sha256sum "$name.tar.xz" > "$name.tar.xz.sha256")
+          ls -la dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: counter-bundle
+          path: ${{ runner.temp }}/flutter_assets
+      - name: Counter through the kit (launcher, payload loader, kit Mesa) in the simulator
+        run: |
+          set -euo pipefail
+          root=$RUNNER_TEMP/payload
+          cp -a "$RUNNER_TEMP/kit" "$root"
+          rm "$root/kit.json"
+          cp -r "$RUNNER_TEMP/flutter_assets" "$root/usr/share/flutter/flutter_assets"
+          target/release/aera-host-sim --root "$root" --embedder "$root/usr/bin/aera-plugin" --out sim --until 6000 \
+            --snap start@2500 --tap 980,2250@2700 --tap 980,2250@3000 --tap 980,2250@3300 --snap after@5000
+          ! cmp -s sim/start.png sim/after.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kit-arm64
+          path: |
+            dist/*
+            sim/*.png
+      - name: Publish
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=kit-$FLUTTER_VERSION
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Runtime kit, Flutter $FLUTTER_VERSION" \
+            --notes "arm64 debug (JIT) runtime kit for flutter_p0g. Layout: spec/aerap.md; pins: kit.json inside." --prerelease
+          gh release upload "$tag" dist/* --clobber
