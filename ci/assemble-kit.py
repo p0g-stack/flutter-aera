@@ -81,7 +81,7 @@ def main():
         if src is None:
             sys.exit(f"missing {name}")
         shutil.copy2(src, lib / name)
-    # The Vulkan ICDs (Turnip on arm64, gfxstream on x64), pointing at the
+    # The Vulkan ICDs (Turnip on arm64, gfxstream_vk on x64), pointing at the
     # library next to them in the payload; the launcher names them in
     # VK_DRIVER_FILES.
     names = []
@@ -94,7 +94,7 @@ def main():
         (out / f"usr/share/vulkan/icd.d/{name}_icd.json").write_text(json.dumps(icd, indent=2) + "\n")
         names.append(name)
     want = {"arm64": "freedreno", "x64": "gfxstream"}[a.arch]
-    if want not in names:
+    if not any(n.startswith(want) for n in names):
         sys.exit(f"{a.arch} kit without the {want} Vulkan driver")
     if (a.mesa / "usr/share/drirc.d").is_dir():
         shutil.copytree(a.mesa / "usr/share/drirc.d", out / "usr/share/drirc.d")
