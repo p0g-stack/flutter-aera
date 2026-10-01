@@ -53,7 +53,14 @@ example/              the counter app as an .aerap
 The counter app renders and counts taps in `sim/` against the assumed host
 (GL renderer, full-frame readback, x64 debug engine). Not yet: the arm64
 runtime kit and a device run, async/damage readback, Vulkan and Impeller,
-`example/` .aerap. `spec/aerap.md` is the package layout `flutter_p0g` packs.
+`example/` .aerap.
+
+Next, in order: the arm64 runtime kit and a phone run; then a debug run for
+`flutter_p0g run aera` hot reload, flutter-pi style: a debug (JIT) engine in
+the kit loading the app's `kernel_blob.bin`, the VM service URL in the log
+(the debug engine already prints it) for port forwarding and
+`flutter attach`, and a way to start a debug plugin from adb and from the
+sim; then faster frame copies, Vulkan, Impeller. `spec/aerap.md` is the package layout `flutter_p0g` packs.
 
 ```sh
 cargo test --workspace
