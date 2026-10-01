@@ -29,6 +29,7 @@ and, where they belong in AERA, answered with the next patch number.
 | Touches that start within 72 px of a side edge never reach a pixel plugin (our 0006 copied Browser's rule), so a FAB near the edge is dead; AERA's own widgets get them (devicelab D5) | 0015, confirmed on Cuttlefish image 29c34fe |
 | An RPC request whose writer closes between two frames sits unread until the next client writes, which then gets the first answer and loses its own (stalled second `plugin open`, AERA Remote not starting) (devicelab D6) | 0016, confirmed on Cuttlefish image 29c34fe |
 | AERA Remote's first touch after start is lost: the uinput device is created on that touch, recovery rescans /dev/input at most every 2 s, so only the release arrives (two quick taps opened Quick Settings) (devicelab D7) | 0017 |
+| AERA Remote's Home and Menu buttons do nothing: they send KEY_HOMEPAGE and KEY_MENU, which recovery never handled (only Power, Volume, Back), so Home and Recents were reachable only by the bottom-edge swipe (devicelab D8, found in source) | 0023 |
 
 ## Worked around in the payload
 

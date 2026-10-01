@@ -40,6 +40,7 @@ Cuttlefish image.
 | 0020 | `plugin_api`, pixel plugin scene, engine: a rotation sends a new `SURFACE` on the same memfd (sized at launch for either orientation) instead of restarting the plugin; `PRESENT` `flags` carry the surface generation and stale frames are released |
 | 0021 | `plugin_api`, pixel plugin scene, engine: leaving the scene pauses the plugin (no `FRAME_DONE`) instead of stopping it; reopening sends a new `SURFACE` and resume; `kInactive` for a shade, sheet or picker over it; stopped by `CLOSE`, Recents or an update |
 | 0022 | `plugin_api`: `AERA_PLUGIN_DATA_VOLATILE=1` when the data directory is the RAM fallback |
+| 0023 | `core/runner.cpp`, engine: the Home and Menu keys (AERA Remote's buttons) show Home and toggle Recents, as the bottom-edge swipe does (devicelab D8) |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as
