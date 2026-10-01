@@ -24,6 +24,8 @@ and, where they belong in AERA, answered with the next patch number.
 | Recovery does not start without FBE: `libandroidfw.so` needs `libincfs.so`, packed only for FBE builds (devicelab D1) | 0010 |
 | No x86_64 build: libwebp is built with NEON sources only, so recovery fails to link | 0011 |
 | The battery monitor re-queries the health HAL every second, so without one it is two failed service manager lookups per second (log spam, wasted binder calls) (devicelab D2) | 0012 |
+| Blank screen on any non-Qualcomm DRM driver: the display code splits the screen across the first two planes, and on virtio-gpu the second is a cursor plane, so every atomic commit fails with EINVAL (devicelab D3) | 0013 |
+| logd aborts every few seconds: `/etc/task_profiles.json` is only required with encryption and never copied into the ramdisk (devicelab D4) | 0014 |
 
 ## Worked around in the payload
 

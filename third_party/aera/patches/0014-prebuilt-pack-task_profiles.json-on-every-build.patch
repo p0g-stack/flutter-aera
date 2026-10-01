@@ -1,0 +1,61 @@
+From 68029730988c2366ce59e19be29bafc39084fa2a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 17:20:22 +0000
+Subject: [PATCH 14/14] prebuilt: pack task_profiles.json on every build
+
+logd sets its background scheduling policy through libprocessgroup, which
+reads /etc/task_profiles.json, and aborts when it cannot. task_profiles.json
+is only a required module under TW_INCLUDE_CRYPTO, and even then nothing
+copies it into the recovery root (the cp is commented out), so logd
+crash-loops every few seconds in the AERA ramdisk:
+
+  logd: libprocessgroup: Failed to read task profiles from /etc/task_profiles.json
+  logd: libprocessgroup: Failed to find SCHED_SP_BACKGROUND task profile
+  logd: failed to set background scheduling policy: No such file or directory
+  init: Service 'logd' (pid 856) received signal 6
+
+Require task_profiles.json on every build and copy it to
+/system/etc/task_profiles.json in the recovery root.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ Android.mk          | 2 +-
+ prebuilt/Android.mk | 1 +
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/Android.mk b/Android.mk
+index b57c2e0..0f321f0 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -556,6 +556,7 @@ endif
+ LOCAL_C_INCLUDES += system/vold \
+ 
+ TWRP_REQUIRED_MODULES += \
++    task_profiles.json \
+     relink_libraries \
+     relink_binaries \
+     relink_vendor_hw_binaries \
+@@ -646,7 +647,6 @@ TWRP_REQUIRED_MODULES += \
+ ifneq ($(TW_INCLUDE_CRYPTO),)
+ TWRP_REQUIRED_MODULES += \
+     vold_prepare_subdirs \
+-    task_profiles.json \
+     fscryptpolicyget.recovery \
+     keystore_auth \
+     keystore2 \
+diff --git a/prebuilt/Android.mk b/prebuilt/Android.mk
+index e54c506..20ac9a0 100644
+--- a/prebuilt/Android.mk
++++ b/prebuilt/Android.mk
+@@ -493,6 +493,7 @@ LOCAL_POST_INSTALL_CMD += \
+     mkdir -p $(TARGET_RECOVERY_ROOT_OUT)/system/etc/selinux/ && \
+     mkdir -p $(TARGET_RECOVERY_ROOT_OUT)/vendor/etc/selinux/ && \
+     mkdir -p $(TARGET_RECOVERY_ROOT_OUT)/system/etc/task_profiles/ && \
++    cp $(TARGET_OUT_ETC)/task_profiles.json $(TARGET_RECOVERY_ROOT_OUT)/system/etc/task_profiles.json && \
+     cp $(TARGET_OUT_ETC)/selinux/plat_service_contexts $(TARGET_RECOVERY_ROOT_OUT)/system/etc/selinux/plat_service_contexts && \
+     cp $(TARGET_OUT_ETC)/selinux/plat_hwservice_contexts $(TARGET_RECOVERY_ROOT_OUT)/system/etc/selinux/plat_hwservice_contexts && \
+     cp $(TARGET_OUT_VENDOR_ETC)/selinux/vndservice_contexts $(TARGET_RECOVERY_ROOT_OUT)/vendor/etc/selinux/vndservice_contexts && \
+-- 
+2.43.0
+

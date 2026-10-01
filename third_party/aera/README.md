@@ -8,7 +8,8 @@ pin: abf33169b27dee17123c3c436a7299427821b329
 
 Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (`bootable/recovery` in AERA's manifest). The patches touch `aeraui/`, `aera_rpc/`
-(0008) `prebuilt/` (0010) and `recovery_utils/` (0012).
+(0008) `prebuilt/` (0010, 0014), `recovery_utils/` (0012), `minuitwrp/`
+(0013) and the top-level `Android.mk` (0014).
 
 Apply with `git am $(cat patches/series)` on a checkout of the pin. Devicelab
 copies `patches/*.patch` to `aera/build/patches/bootable/recovery/` for the
@@ -28,6 +29,8 @@ Cuttlefish image.
 | 0010 | `prebuilt/Android.mk`: pack `libincfs.so` on every build (`libandroidfw.so` needs it), not only with FBE |
 | 0011 | libwebp's SSE2/SSE4.1 sources, so recovery links for x86_64 (Cuttlefish) |
 | 0012 | `recovery_utils/battery_utils.cpp`: look the health HAL up once (again at most once a minute if missing, or after it dies) instead of on every 1 s battery read (devicelab D2) |
+| 0013 | `minuitwrp/graphics_drm.cpp`: without a Qualcomm SDE topology, scan out on the CRTC's own primary plane with one layer mixer (devicelab D3) |
+| 0014 | `task_profiles.json` required and packed on every build, so logd stops aborting (devicelab D4) |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as
