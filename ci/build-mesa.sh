@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the pinned Mesa (spec/engine-pin.md) natively: EGL + GLES through
-# Zink on Turnip (KGSL, arm64 only), virgl for virtio-gpu (Cuttlefish) and
-# softpipe for the simulator. Installs into DEST/usr.
+# Zink on Turnip (KGSL, arm64) or on gfxstream's Vulkan (Cuttlefish's
+# gfxstream modes, x86_64), virgl for virtio-gpu with virgl, and softpipe
+# for the simulator. Installs into DEST/usr.
 #   ci/build-mesa.sh DEST
 set -euo pipefail
 dest=$(realpath -m "${1:?usage: ci/build-mesa.sh DEST}")
@@ -15,7 +16,7 @@ tar -C "$work" -xf "$work/mesa.tar.xz"
 cd "$work/mesa-26.2.2"
 case $(uname -m) in
   aarch64) vulkan=(-Dvulkan-drivers=freedreno -Dfreedreno-kmds=msm,kgsl) ;;
-  *) vulkan=(-Dvulkan-drivers=) ;;
+  *) vulkan=(-Dvulkan-drivers=gfxstream) ;;
 esac
 patch -p1 < "$repo/third_party/mesa/mesa-26.2.2-zink-kgsl-surfaceless.patch"
 meson setup build --wrap-mode=nodownload --prefix=/usr --libdir=lib \

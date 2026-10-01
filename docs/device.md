@@ -68,15 +68,18 @@ which isolates GPU problems from everything else.
 | Device | Node | Mesa driver | Set by |
 | --- | --- | --- | --- |
 | Qualcomm phone | `/dev/kgsl-3d0` | Zink on Turnip | `aera-plugin` (`MESA_LOADER_DRIVER_OVERRIDE=zink`, `VK_DRIVER_FILES`) |
+| Cuttlefish gfxstream modes (x86_64) | `/dev/dri/renderD128`, gfxstream Vulkan capset, no virgl | Zink on gfxstream Vulkan | `aera-plugin` (capset probe, then as on a phone) |
 | Cuttlefish `--gpu_mode=drm_virgl` | `/dev/dri/renderD128` | virgl | Mesa's own probe |
 | Cuttlefish `guest_swiftshader`, or none | — | softpipe | Mesa's fallback |
 
-Cuttlefish's `gfxstream` mode has no Mesa guest driver in the kit; use
-`drm_virgl` for a GPU path, or software.
+`aera-plugin` logs `virtio-gpu capsets 0x…` when there is a virtio-gpu
+render node. On devicelab's Cuttlefish the gfxstream modes offer capsets 3
+(gfxstream Vulkan), 9 (composer) and, in plain gfxstream, 8 (GLES), and
+`drm_virgl` does not boot, so gfxstream is the GPU route there.
 
 GL is the default. `--vulkan` in `$AERA_PLUGIN_DATA/engine-switches` (one
 switch per line, `docs/debugging.md`) renders with Vulkan instead: Turnip
-on a Qualcomm phone; the x64 kit has no Vulkan driver yet, so there it falls
-back to GL and logs why. `--enable-impeller` switches either to Impeller.
+on a Qualcomm phone, gfxstream on x64 Cuttlefish; where Vulkan cannot start
+it falls back to GL and logs why. `--enable-impeller` switches either to Impeller.
 The log names the result: `aera-flutter: GL renderer …` or `Vulkan renderer
 …`, and the engine's `Using the Impeller rendering backend (…)`.

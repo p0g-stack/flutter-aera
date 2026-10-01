@@ -9,18 +9,20 @@
 //!    looks, and the payload's CA bundle at `/etc/ssl/certs`, which Dart
 //!    trusts. A failed bind is logged, not fatal: text or TLS degrade, the
 //!    app still starts.
-//! 3. Mesa defaults, unless already set: on a Qualcomm phone (`/dev/kgsl-3d0`,
-//!    no DRM render node) EGL through Zink (`MESA_LOADER_DRIVER_OVERRIDE=zink`)
-//!    on the payload's Turnip ICD (`VK_DRIVER_FILES`). Elsewhere (virtio-gpu
-//!    on Cuttlefish, a PC) Mesa probes the render node itself; the simulator
-//!    may force `GALLIUM_DRIVER=softpipe`.
+//! 3. Mesa defaults, unless already set: the payload's Vulkan ICDs (Turnip on
+//!    arm64, gfxstream on x64) in `VK_DRIVER_FILES`, and EGL through Zink
+//!    (`MESA_LOADER_DRIVER_OVERRIDE=zink`) where the GPU only speaks Vulkan:
+//!    a Qualcomm phone (`/dev/kgsl-3d0`, no DRM render node) or a virtio-gpu
+//!    that offers gfxstream or Venus Vulkan but no virgl (Cuttlefish's
+//!    gfxstream modes). Elsewhere Mesa probes the render node itself; the
+//!    simulator may force `GALLIUM_DRIVER=softpipe`.
 //! 4. exec `usr/bin/aera-flutter` through the payload's own
 //!    `ld-linux-*.so` with `--library-path usr/lib`, passing our arguments.
 //!
 //! Like flutter-pi and GTK, the embedder itself never touches mounts; this
 //! is only the recovery-specific packaging step (spec/aerap.md).
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -46,6 +48,55 @@ fn bind(from: &Path, to: &Path) {
     if rc != 0 {
         eprintln!("aera-plugin: bind {} -> {}: {}", from.display(), to.display(), std::io::Error::last_os_error());
     }
+}
+
+const RENDER_NODE: &CStr = c"/dev/dri/renderD128";
+// virtgpu_drm.h: DRM_IOCTL_VIRTGPU_GETPARAM, VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs
+// and the capset ids.
+const VIRTGPU_GETPARAM: libc::c_ulong = 0xC010_6443;
+const PARAM_SUPPORTED_CAPSET_IDS: u64 = 7;
+const CAPSET_VIRGL: u32 = 1 << 1 | 1 << 2;
+const CAPSET_VULKAN: u32 = 1 << 3 | 1 << 4; // gfxstream Vulkan, Venus
+
+/// The virtio-gpu capsets the render node offers, as a bit mask; `None` if
+/// there is no virtio-gpu render node.
+fn virtio_capsets() -> Option<u32> {
+    #[repr(C)]
+    struct GetParam {
+        param: u64,
+        value: u64,
+    }
+    let mut mask: u32 = 0;
+    // SAFETY: open/ioctl/close on a device node with a struct of the size
+    // the ioctl number encodes; the kernel writes an int to `value`.
+    unsafe {
+        let fd = libc::open(RENDER_NODE.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+        if fd < 0 {
+            return None;
+        }
+        let mut p = GetParam { param: PARAM_SUPPORTED_CAPSET_IDS, value: &mut mask as *mut u32 as u64 };
+        let rc = libc::ioctl(fd, VIRTGPU_GETPARAM as _, &mut p);
+        libc::close(fd);
+        (rc == 0).then_some(mask)
+    }
+}
+
+/// Whether EGL should go through Zink: the GPU is only reachable through
+/// Vulkan.
+fn wants_zink(kgsl: bool, capsets: Option<u32>) -> bool {
+    kgsl || capsets.is_some_and(|m| m & CAPSET_VIRGL == 0 && m & CAPSET_VULKAN != 0)
+}
+
+/// Every Vulkan ICD in the payload, for `VK_DRIVER_FILES`.
+fn payload_icds(root: &Path) -> Option<std::ffi::OsString> {
+    let mut icds: Vec<PathBuf> = std::fs::read_dir(root.join("usr/share/vulkan/icd.d"))
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    icds.sort();
+    let joined = std::env::join_paths(icds).ok()?;
+    (!joined.is_empty()).then_some(joined)
 }
 
 fn root() -> PathBuf {
@@ -91,12 +142,15 @@ fn main() {
     // SAFETY (set_var): single-threaded, before exec.
     unsafe {
         let kgsl = Path::new("/dev/kgsl-3d0").exists();
-        if kgsl && !set("MESA_LOADER_DRIVER_OVERRIDE") && !set("GALLIUM_DRIVER") {
+        let capsets = virtio_capsets();
+        if let Some(m) = capsets {
+            eprintln!("aera-plugin: virtio-gpu capsets {m:#x}");
+        }
+        if wants_zink(kgsl, capsets) && !set("MESA_LOADER_DRIVER_OVERRIDE") && !set("GALLIUM_DRIVER") {
             std::env::set_var("MESA_LOADER_DRIVER_OVERRIDE", "zink");
         }
-        let icd = root.join("usr/share/vulkan/icd.d/freedreno_icd.json");
-        if !set("VK_DRIVER_FILES") && icd.exists() {
-            std::env::set_var("VK_DRIVER_FILES", icd);
+        if let Some(icds) = payload_icds(&root).filter(|_| !set("VK_DRIVER_FILES")) {
+            std::env::set_var("VK_DRIVER_FILES", icds);
         }
     }
 
@@ -115,4 +169,22 @@ fn main() {
     unsafe { libc::execv(loader.as_ptr(), pointers.as_ptr()) };
     eprintln!("aera-plugin: exec {}: {}", loader.to_string_lossy(), std::io::Error::last_os_error());
     std::process::exit(127);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zink_only_without_a_gl_path() {
+        assert!(wants_zink(true, None));
+        assert!(!wants_zink(false, None));
+        // Cuttlefish gfxstream: Vulkan (3), composer (9), GLES (8).
+        assert!(wants_zink(false, Some(1 << 3 | 1 << 8 | 1 << 9)));
+        // drm_virgl: virgl and virgl2.
+        assert!(!wants_zink(false, Some(1 << 1 | 1 << 2)));
+        // Virgl beside Venus: Mesa's virgl stays.
+        assert!(!wants_zink(false, Some(1 << 2 | 1 << 4)));
+        assert!(!wants_zink(false, Some(0)));
+    }
 }

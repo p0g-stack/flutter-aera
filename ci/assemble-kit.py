@@ -81,16 +81,21 @@ def main():
         if src is None:
             sys.exit(f"missing {name}")
         shutil.copy2(src, lib / name)
-    # Turnip's ICD, pointing at the library next to it in the payload; the
-    # launcher names this file in VK_DRIVER_FILES.
-    icds = list((a.mesa / "usr/share/vulkan/icd.d").glob("freedreno_icd*.json"))
-    if icds:
-        shutil.copy2(mesa_lib / "libvulkan_freedreno.so", lib / "libvulkan_freedreno.so")
-        icd = json.loads(icds[0].read_text())
-        icd["ICD"]["library_path"] = "../../../lib/libvulkan_freedreno.so"
-        (out / "usr/share/vulkan/icd.d/freedreno_icd.json").write_text(json.dumps(icd, indent=2) + "\n")
-    elif a.arch == "arm64":
-        sys.exit("arm64 kit without Turnip")
+    # The Vulkan ICDs (Turnip on arm64, gfxstream on x64), pointing at the
+    # library next to them in the payload; the launcher names them in
+    # VK_DRIVER_FILES.
+    names = []
+    for src in sorted((a.mesa / "usr/share/vulkan/icd.d").glob("*_icd*.json")):
+        icd = json.loads(src.read_text())
+        so = Path(icd["ICD"]["library_path"]).name
+        shutil.copy2(mesa_lib / so, lib / so)
+        icd["ICD"]["library_path"] = f"../../../lib/{so}"
+        name = src.name.split("_icd")[0]
+        (out / f"usr/share/vulkan/icd.d/{name}_icd.json").write_text(json.dumps(icd, indent=2) + "\n")
+        names.append(name)
+    want = {"arm64": "freedreno", "x64": "gfxstream"}[a.arch]
+    if want not in names:
+        sys.exit(f"{a.arch} kit without the {want} Vulkan driver")
     if (a.mesa / "usr/share/drirc.d").is_dir():
         shutil.copytree(a.mesa / "usr/share/drirc.d", out / "usr/share/drirc.d")
 
