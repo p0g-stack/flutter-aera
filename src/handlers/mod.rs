@@ -1,0 +1,93 @@
+//! One handler per standard Flutter channel.
+//!
+//! Each handler is plain logic: it takes a message (from the framework or
+//! from AERA) and returns the reply plus [`Effect`]s, so it is tested without
+//! an engine or a host. `engine.rs` carries the effects out.
+//!
+//! Stub policy (AGENTS.md): what AERA can't do answers not-implemented (the
+//! empty reply) or is a no-op documented here, never a custom channel.
+//!
+//! | Channel | Codec | Here | Linux GTK | flutter-pi |
+//! | --- | --- | --- | --- | --- |
+//! | `flutter/platform` | JSON method | [`platform`] | clipboard, pop, exit, haptics no-op | pop, orientation, overlays no-op |
+//! | `flutter/textinput` | JSON method | [`textinput`] + `ime.rs` | GTK IM context | own model, hardware keys |
+//! | `flutter/mousecursor` | standard method | [`mousecursor`]: no-op (touch only) | GDK cursors | DRM cursor |
+//! | `flutter/navigation` | JSON method | [`navigation`]: AERA Back → `popRoute` | not used | not used |
+//! | `flutter/lifecycle` | string | [`lifecycle`]: AERA `LIFECYCLE` | window focus/visibility | always resumed |
+//! | `flutter/settings` | JSON message | [`settings`]: sent once at start | GSettings | sent once |
+//! | `flutter/keyevent` | JSON message | not sent: AERA's keyboard commits text, as an IME | GDK key events | evdev keys |
+//! | `flutter/restoration` | standard method | not-implemented (as GTK) | not-implemented | not-implemented |
+//! | anything else | | not-implemented | | |
+
+pub mod codec;
+pub mod lifecycle;
+pub mod mousecursor;
+pub mod navigation;
+pub mod platform;
+pub mod settings;
+pub mod textinput;
+
+use crate::host::Message;
+use crate::ime::Ime;
+
+/// Something a handler needs done outside itself.
+#[derive(Debug, PartialEq)]
+pub enum Effect {
+    /// Send this to AERA.
+    Host(Message),
+    /// Send a platform message to the framework.
+    Send { channel: &'static str, bytes: Vec<u8> },
+    /// The bottom inset changed (AERA's keyboard); resend window metrics.
+    BottomInset(u32),
+    /// Leave: tell AERA `CLOSE` and shut the engine down.
+    Exit,
+}
+
+/// State shared by the handlers for one engine.
+#[derive(Default)]
+pub struct Handlers {
+    pub ime: Ime,
+    pub platform: platform::Platform,
+}
+
+impl Handlers {
+    /// A platform message from the framework. Returns the reply bytes
+    /// (empty = not-implemented) and effects.
+    pub fn on_message(&mut self, channel: &str, bytes: &[u8]) -> (Vec<u8>, Vec<Effect>) {
+        let mut effects = vec![];
+        let reply = match channel {
+            platform::CHANNEL => self.platform.handle(bytes, &mut effects),
+            textinput::CHANNEL => textinput::handle(&mut self.ime, bytes, &mut effects),
+            mousecursor::CHANNEL => mousecursor::handle(bytes),
+            _ => codec::not_implemented(),
+        };
+        (reply, effects)
+    }
+
+    /// A message from AERA that a handler owns. Input and frames are the
+    /// view's; everything else lands here.
+    pub fn on_host(&mut self, message: &Message) -> Vec<Effect> {
+        use crate::host::kind;
+        let mut effects = vec![];
+        match message.kind {
+            kind::BACK => effects.push(navigation::pop_route()),
+            kind::KEY => textinput::on_key(&mut self.ime, message.value, &mut effects),
+            kind::KEYBOARD_INSET => effects.push(Effect::BottomInset(message.value)),
+            kind::LIFECYCLE => effects.extend(lifecycle::from_host(message.value)),
+            _ => {}
+        }
+        effects
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_channels_are_not_implemented() {
+        let mut h = Handlers::default();
+        let (reply, effects) = h.on_message("flutter/restoration", b"\x07\x03get");
+        assert!(reply.is_empty() && effects.is_empty());
+    }
+}

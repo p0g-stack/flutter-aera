@@ -1,0 +1,10 @@
+[package]
+name = "aera-plugin"
+version = "0.1.0"
+description = "Static launcher: private mounts for fonts and CA bundle, then exec the glibc embedder through the payload's loader"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libc = "0.2"

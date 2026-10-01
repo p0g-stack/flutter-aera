@@ -27,7 +27,7 @@ Mesa / runtime-kit builds (CI), an example `.aerap`.
 Out: anything an app links, the app-developer tool (`flutter_p0g`, which
 builds, packs and runs `.aerap`s and adds the `aera/` platform folder), app code.
 
-## Nest (proposed)
+## Nest
 
 ```
 spec/host.md          Host API 3 messages we rely on, ASSUMED items marked
@@ -39,12 +39,25 @@ src/renderer/         gl.rs (Zink), vk.rs, impeller; readback now, dma-buf later
 src/host/             socket + memfd slots, SURFACE, input, lifecycle, keyboard inset
 src/handlers/         one per standard channel
 src/ime.rs            text-input model
+src/env.rs            XDG dirs inside AERA_PLUGIN_DATA
 launcher/             static aera-plugin: private mount ns, font + CA binds, exec via payload ld-linux
 sim/                  aera-host-sim: AERA's side on a PC
 vendor/               AERA protocol.hpp + flutter_embedder.h, fetched by hash
 third_party/mesa/     Zink-on-KGSL surfaceless patch
 ci/                   engine + gen_snapshot, Mesa, runtime-kit build scripts
 example/              the counter app as an .aerap
+```
+
+## Status
+
+The counter app renders and counts taps in `sim/` against the assumed host
+(GL renderer, full-frame readback, x64 debug engine). Not yet: the arm64
+runtime kit and a device run, async/damage readback, Vulkan and Impeller,
+`example/` .aerap. `spec/aerap.md` is the package layout `flutter_p0g` packs.
+
+```sh
+cargo test --workspace
+ci/sim-smoke.sh /tmp/smoke      # needs flutter 3.47.5 on PATH; frames in /tmp/smoke/sim
 ```
 
 ## License

@@ -1,0 +1,12 @@
+[package]
+name = "aera-host-sim"
+version = "0.1.0"
+description = "AERA's side of the generic plugin host (Host API 3, assumed), on a PC"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+flutter-aera = { path = ".." }
+libc = "0.2"
+png = "0.17"
