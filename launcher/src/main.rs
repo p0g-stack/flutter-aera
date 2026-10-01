@@ -6,9 +6,11 @@
 //!    looks, and the payload's CA bundle at `/etc/ssl/certs`, which Dart
 //!    trusts. A failed bind is logged, not fatal: text or TLS degrade, the
 //!    app still starts.
-//! 3. Mesa defaults for the phone, unless already set: EGL through Zink
-//!    (`MESA_LOADER_DRIVER_OVERRIDE=zink`) on the payload's Turnip ICD
-//!    (`VK_DRIVER_FILES`). The simulator sets `GALLIUM_DRIVER` instead.
+//! 3. Mesa defaults, unless already set: on a Qualcomm phone (`/dev/kgsl-3d0`,
+//!    no DRM render node) EGL through Zink (`MESA_LOADER_DRIVER_OVERRIDE=zink`)
+//!    on the payload's Turnip ICD (`VK_DRIVER_FILES`). Elsewhere (virtio-gpu
+//!    on Cuttlefish, a PC) Mesa probes the render node itself; the simulator
+//!    may force `GALLIUM_DRIVER=softpipe`.
 //! 4. exec `usr/bin/aera-flutter` through the payload's own
 //!    `ld-linux-*.so` with `--library-path usr/lib`, passing our arguments.
 //!
@@ -68,7 +70,8 @@ fn main() {
     let set = |k: &str| std::env::var_os(k).is_some();
     // SAFETY (set_var): single-threaded, before exec.
     unsafe {
-        if !set("MESA_LOADER_DRIVER_OVERRIDE") && !set("GALLIUM_DRIVER") {
+        let kgsl = Path::new("/dev/kgsl-3d0").exists();
+        if kgsl && !set("MESA_LOADER_DRIVER_OVERRIDE") && !set("GALLIUM_DRIVER") {
             std::env::set_var("MESA_LOADER_DRIVER_OVERRIDE", "zink");
         }
         let icd = root.join("usr/share/vulkan/icd.d/freedreno_icd.json");

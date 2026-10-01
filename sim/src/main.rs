@@ -7,13 +7,17 @@
 //!
 //! ```text
 //! aera-host-sim --root PAYLOAD [--embedder BIN] [--out DIR]
-//!               [--size WxH] [--scale S] [--until MS]
+//!               [--size WxH] [--scale S] [--until MS] [--gpu]
 //!               [--tap X,Y@MS]... [--type TEXT@MS]... [--back@MS]...
 //!               [--snap NAME@MS]...
 //! ```
 //!
 //! Times are milliseconds after the first frame. Positions are surface
 //! pixels. `last.png` is always written at the end.
+//!
+//! It also runs on a device as a stand-in for AERA's host (built static, see
+//! docs/device.md): `--gpu` then lets Mesa use the device's GPU instead of
+//! forcing softpipe.
 
 use std::collections::VecDeque;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -40,6 +44,8 @@ struct Options {
     out: PathBuf,
     geometry: Geometry,
     until: Duration,
+    /// Let Mesa pick the GPU (on a device) instead of forcing softpipe.
+    gpu: bool,
     script: Vec<(Duration, Action)>,
 }
 
@@ -56,6 +62,7 @@ fn parse() -> Result<Options, String> {
         out: PathBuf::from("out/sim"),
         geometry: Geometry::PHONE,
         until: Duration::from_secs(5),
+        gpu: false,
         script: vec![],
     };
     let mut args = std::env::args().skip(1);
@@ -72,6 +79,7 @@ fn parse() -> Result<Options, String> {
                 o.geometry.height = h.parse().map_err(|_| "--size WxH")?;
                 o.geometry.stride = o.geometry.width * 4;
             }
+            "--gpu" => o.gpu = true,
             "--scale" => o.geometry.scale = value()?.parse().map_err(|_| "--scale S")?,
             "--until" => o.until = Duration::from_millis(value()?.parse().map_err(|_| "--until MS")?),
             "--tap" => {
@@ -170,7 +178,8 @@ fn run() -> Result<ExitCode, String> {
         .env("AERA_SURFACE_FD", "3");
     // Mesa 25's llvmpipe crashes (a JIT call through a null pointer) once
     // libflutter_engine.so is loaded; softpipe draws the same frames.
-    if std::env::var_os("GALLIUM_DRIVER").is_none() {
+    // On a device, --gpu leaves the choice to the launcher and Mesa.
+    if !o.gpu && std::env::var_os("GALLIUM_DRIVER").is_none() {
         command.env("GALLIUM_DRIVER", "softpipe");
     }
     // SAFETY: only dup2/fcntl run in the child before exec. The order avoids

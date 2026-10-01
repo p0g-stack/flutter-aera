@@ -18,10 +18,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-LOADER = "ld-linux-aarch64.so.1"
+LOADERS = {"arm64": "ld-linux-aarch64.so.1", "x64": "ld-linux-x86-64.so.2"}
 # dlopen()ed, so no DT_NEEDED names them: the embedder opens libEGL, Zink
-# opens the Vulkan loader, the Vulkan loader opens Turnip.
-DLOPENED = ["libEGL.so.1", "libGLESv2.so.2", "libvulkan.so.1", "libvulkan_freedreno.so"]
+# opens the Vulkan loader, the Vulkan loader opens Turnip (arm64 only).
+DLOPENED = ["libEGL.so.1", "libGLESv2.so.2", "libvulkan.so.1"]
 
 
 def needed(path, readelf):
@@ -54,6 +54,7 @@ def main():
     ap.add_argument("--ca-bundle", type=Path, required=True)
     ap.add_argument("--pins", type=Path, required=True, help="kit.json to place at the kit root")
     ap.add_argument("--readelf", default="readelf")
+    ap.add_argument("--arch", choices=sorted(LOADERS), default="arm64")
     a = ap.parse_args()
 
     out = a.out
@@ -75,16 +76,21 @@ def main():
     search = [mesa_lib] + a.sysroot
     for g in mesa_lib.glob("libgallium-*.so"):
         shutil.copy2(g, lib / g.name)
-    for name in DLOPENED + [LOADER]:
+    for name in DLOPENED + [LOADERS[a.arch]]:
         src = find(name, search)
         if src is None:
             sys.exit(f"missing {name}")
         shutil.copy2(src, lib / name)
     # Turnip's ICD, pointing at the library next to it in the payload; the
     # launcher names this file in VK_DRIVER_FILES.
-    icd = json.loads(next((a.mesa / "usr/share/vulkan/icd.d").glob("freedreno_icd*.json")).read_text())
-    icd["ICD"]["library_path"] = "../../../lib/libvulkan_freedreno.so"
-    (out / "usr/share/vulkan/icd.d/freedreno_icd.json").write_text(json.dumps(icd, indent=2) + "\n")
+    icds = list((a.mesa / "usr/share/vulkan/icd.d").glob("freedreno_icd*.json"))
+    if icds:
+        shutil.copy2(mesa_lib / "libvulkan_freedreno.so", lib / "libvulkan_freedreno.so")
+        icd = json.loads(icds[0].read_text())
+        icd["ICD"]["library_path"] = "../../../lib/libvulkan_freedreno.so"
+        (out / "usr/share/vulkan/icd.d/freedreno_icd.json").write_text(json.dumps(icd, indent=2) + "\n")
+    elif a.arch == "arm64":
+        sys.exit("arm64 kit without Turnip")
     if (a.mesa / "usr/share/drirc.d").is_dir():
         shutil.copytree(a.mesa / "usr/share/drirc.d", out / "usr/share/drirc.d")
 

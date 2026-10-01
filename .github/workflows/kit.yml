@@ -1,8 +1,9 @@
 name: Kit
-# Builds the arm64 runtime kit (spec/aerap.md minus the app) natively on an
-# arm64 runner, proves it by running the counter app through the kit's own
-# launcher, loader and Mesa in the simulator, and on request publishes it as
-# the kit-<flutter> release that flutter_p0g precache downloads.
+# Builds the runtime kits (spec/aerap.md minus the app) natively for arm64
+# (phones, arm64 Cuttlefish) and x64 (x86 Cuttlefish), proves each by running
+# the counter app through the kit's own launcher, loader and Mesa in the
+# simulator, and on request publishes them, with a static aera-host-sim per
+# arch (docs/device.md), as the kit-<flutter> release.
 on:
   workflow_dispatch:
     inputs:
@@ -31,14 +32,29 @@ jobs:
           flutter --disable-analytics >/dev/null
           flutter create --no-pub --project-name counter counter
           cd counter && flutter pub get && flutter build bundle --debug
+          tar -C build -cJf "$GITHUB_WORKSPACE/counter-flutter_assets-$FLUTTER_VERSION.tar.xz" flutter_assets
       - uses: actions/upload-artifact@v4
         with:
           name: counter-bundle
           path: counter/build/flutter_assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: counter-tarball
+          path: counter-flutter_assets-*.tar.xz
 
   kit:
     needs: bundle
-    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            triple: aarch64-linux-gnu
+          - arch: x64
+            runner: ubuntu-24.04
+            triple: x86_64-linux-gnu
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Build dependencies
@@ -53,32 +69,40 @@ jobs:
         id: mesa
         with:
           path: ${{ runner.temp }}/mesa
-          key: mesa-arm64-${{ hashFiles('ci/build-mesa.sh', 'third_party/mesa/*') }}
+          key: mesa-${{ matrix.arch }}-${{ hashFiles('ci/build-mesa.sh', 'third_party/mesa/*') }}
       - name: Mesa
         if: steps.mesa.outputs.cache-hit != 'true'
         run: ci/build-mesa.sh "$RUNNER_TEMP/mesa"
-      - name: Embedder, simulator, static launcher
+      - name: Embedder, simulator, static launcher and static simulator
         run: |
           cargo build --release -p flutter-aera -p aera-host-sim
-          RUSTFLAGS="-C target-feature=+crt-static" cargo build --release -p aera-plugin --target-dir target/static
-          file target/static/release/aera-plugin | grep -q 'statically linked\|static-pie'
+          # An explicit --target keeps crt-static off the build scripts (bindgen dlopens libclang).
+          t=$(rustc -vV | sed -n 's/host: //p')
+          RUSTFLAGS="-C target-feature=+crt-static" cargo build --release -p aera-plugin -p aera-host-sim --target "$t" --target-dir target/static
+          mkdir -p target/static/release
+          for b in aera-plugin aera-host-sim; do
+            cp "target/static/$t/release/$b" target/static/release/
+            file target/static/release/$b | grep -E 'statically linked|static-pie'
+          done
       - name: Engine
-        run: ci/fetch-engine.sh "$RUNNER_TEMP/engine" arm64
+        run: ci/fetch-engine.sh "$RUNNER_TEMP/engine" ${{ matrix.arch }}
       - name: Assemble
         run: |
           set -euo pipefail
-          name=flutter-aera-kit-linux-arm64-debug-$FLUTTER_VERSION
-          jq -n --arg flutter "$FLUTTER_VERSION" --arg commit "$GITHUB_SHA" \
-            '{kit: 1, arch: "arm64", mode: "debug", flutter: $flutter, engine_revision: "af7e796e161ae0bb1ff0758c71a7105418bd9ded",
+          arch=${{ matrix.arch }}
+          name=flutter-aera-kit-linux-$arch-debug-$FLUTTER_VERSION
+          jq -n --arg flutter "$FLUTTER_VERSION" --arg commit "$GITHUB_SHA" --arg arch "$arch" \
+            '{kit: 1, arch: $arch, mode: "debug", flutter: $flutter, engine_revision: "af7e796e161ae0bb1ff0758c71a7105418bd9ded",
               mesa: "26.2.2", flutter_aera_commit: $commit}' > kit.json
-          ci/assemble-kit.py --out "$RUNNER_TEMP/kit" --embedder target/release/aera-flutter \
+          ci/assemble-kit.py --arch "$arch" --out "$RUNNER_TEMP/kit" --embedder target/release/aera-flutter \
             --launcher target/static/release/aera-plugin --engine "$RUNNER_TEMP/engine/embedder/libflutter_engine.so" \
             --icu "$RUNNER_TEMP/engine/icudtl.dat" --mesa "$RUNNER_TEMP/mesa" \
-            --sysroot /usr/lib/aarch64-linux-gnu --sysroot /lib/aarch64-linux-gnu \
+            --sysroot /usr/lib/${{ matrix.triple }} --sysroot /lib/${{ matrix.triple }} \
             --ca-bundle /etc/ssl/certs/ca-certificates.crt --pins kit.json
           mkdir -p dist
           tar -C "$RUNNER_TEMP/kit" -cJf "dist/$name.tar.xz" .
-          (cd dist && sha256sum "$name.tar.xz" > "$name.tar.xz.sha256")
+          cp target/static/release/aera-host-sim "dist/aera-host-sim-linux-$arch"
+          (cd dist && for f in "$name.tar.xz" "aera-host-sim-linux-$arch"; do sha256sum "$f" > "$f.sha256"; done)
           ls -la dist
       - uses: actions/download-artifact@v4
         with:
@@ -91,16 +115,21 @@ jobs:
           cp -a "$RUNNER_TEMP/kit" "$root"
           rm "$root/kit.json"
           cp -r "$RUNNER_TEMP/flutter_assets" "$root/usr/share/flutter/flutter_assets"
-          target/release/aera-host-sim --root "$root" --embedder "$root/usr/bin/aera-plugin" --out sim --until 6000 \
+          target/static/release/aera-host-sim --root "$root" --embedder "$root/usr/bin/aera-plugin" --out sim --until 6000 \
             --snap start@2500 --tap 980,2250@2700 --tap 980,2250@3000 --tap 980,2250@3300 --snap after@5000
           ! cmp -s sim/start.png sim/after.png
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: kit-arm64
+          name: kit-${{ matrix.arch }}
           path: |
             dist/*
             sim/*.png
+      - uses: actions/download-artifact@v4
+        if: inputs.publish && matrix.arch == 'x64'
+        with:
+          name: counter-tarball
+          path: dist
       - name: Publish
         if: inputs.publish
         env:
@@ -108,5 +137,5 @@ jobs:
         run: |
           tag=kit-$FLUTTER_VERSION
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Runtime kit, Flutter $FLUTTER_VERSION" \
-            --notes "arm64 debug (JIT) runtime kit for flutter_p0g. Layout: spec/aerap.md; pins: kit.json inside." --prerelease
+            --notes "Debug (JIT) runtime kits for flutter_p0g (arm64, x64) and static aera-host-sim stand-in hosts. Layout: spec/aerap.md; device runs: docs/device.md; pins: kit.json inside." --prerelease
           gh release upload "$tag" dist/* --clobber
