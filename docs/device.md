@@ -68,7 +68,7 @@ which isolates GPU problems from everything else.
 | Device | Node | Mesa driver | Set by |
 | --- | --- | --- | --- |
 | Qualcomm phone | `/dev/kgsl-3d0` | Zink on Turnip | `aera-plugin` (`MESA_LOADER_DRIVER_OVERRIDE=zink`, `VK_DRIVER_FILES`) |
-| Cuttlefish gfxstream modes (x86_64) | `/dev/dri/renderD128`, gfxstream Vulkan capset, no virgl | Vulkan renderer on gfxstream (`--vulkan`); GL through Zink does not start yet and falls back to softpipe | `aera-plugin` (capset probe) |
+| Cuttlefish gfxstream modes (x86_64) | `/dev/dri/renderD128`, gfxstream Vulkan capset, no virgl | Vulkan renderer on gfxstream (`--vulkan`); GL is software only (softpipe), see below | `aera-plugin` (capset probe) |
 | Cuttlefish `--gpu_mode=drm_virgl` | `/dev/dri/renderD128` | virgl | Mesa's own probe |
 | Cuttlefish `guest_swiftshader`, or none | — | softpipe | Mesa's fallback |
 
@@ -78,10 +78,16 @@ render node. On devicelab's Cuttlefish the gfxstream modes offer capsets 3
 `drm_virgl` does not boot, so gfxstream is the GPU route there.
 
 Proven on devicelab's Cuttlefish (run 36833432698): `--vulkan`, with Skia
-and with Impeller, on "Virtio-GPU GFXStream (SwiftShader Device)". GL
-there tried Zink and got "egl: failed to create dri2 screen", so the
-launcher now passes `--vulkan` on that GPU; `--gl` in `engine-switches`
-forces GL back. To see why Zink fails, put Mesa's debug variables in
+and with Impeller, on "Virtio-GPU GFXStream (SwiftShader Device)". The
+launcher passes `--vulkan` on that GPU; `--gl` in `engine-switches`
+forces GL, which there runs on softpipe: Zink in our Mesa (26.2) requires
+`VK_KHR_maintenance5`, which Cuttlefish's gfxstream driver does not offer
+("ZINK: VK_KHR_maintenance5 required!" from the debug Mesa, devicelab run
+36844387402). Older Mesa would not need it but would also be older for
+Turnip on phones, so the kit keeps 26.2 and GL on Cuttlefish's GPU is not
+supported. Phones are unaffected: Turnip offers maintenance5.
+
+To see why a driver fails, put Mesa's debug variables in
 `$AERA_PLUGIN_DATA/environment`, one `KEY=VALUE` per line:
 
 ```sh
