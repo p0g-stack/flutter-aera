@@ -7,13 +7,14 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libclang-dev libegl1 libegl-mesa0 libgles2
       - run: cargo test --workspace
-      - name: Counter in the simulator
+      - name: Simulator: counter, hot reload, text input
         run: |
           curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.5-stable.tar.xz | tar -C "$RUNNER_TEMP" -xJ
           export PATH=$RUNNER_TEMP/flutter/bin:$PATH
           flutter --disable-analytics >/dev/null
           ci/sim-smoke.sh "$RUNNER_TEMP/smoke"
           ci/hot-reload-check.sh "$RUNNER_TEMP/smoke"
+          ci/text-input-check.sh "$RUNNER_TEMP/smoke"
       - name: Counter through AERA with the Host API 3 patches
         run: sudo ci/aera-host-check.sh "$RUNNER_TEMP/smoke"
       - uses: actions/upload-artifact@v4
@@ -23,4 +24,5 @@ jobs:
           path: |
             ${{ runner.temp }}/smoke/sim/*.png
             ${{ runner.temp }}/smoke/hot-reload/*.png
+            ${{ runner.temp }}/smoke/text-input/*.png
             ${{ runner.temp }}/smoke/aera-host/*.ppm
