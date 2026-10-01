@@ -1,13 +1,40 @@
 //! Renderers: Flutter draws offscreen on the GPU, then the frame is copied
 //! into an AERA slot.
 //!
-//! Now: [`gl`] (Skia on GLES through EGL's Mesa surfaceless platform: Zink on
-//! Turnip on the phone, llvmpipe on a PC) with a full-frame readback.
-//! Planned, in this order: async pack-buffer readback with damage-only
-//! copies, Vulkan (`vk.rs`, straight on Turnip), Impeller, then dma-buf
-//! slots imported as render targets once AERA offers them (demo#1 item 9).
+//! - [`gl`], the default: GLES through EGL's Mesa surfaceless platform (Zink
+//!   on Turnip on the phone, softpipe or llvmpipe on a PC).
+//! - [`vk`], with `--vulkan` as in flutter-pi: Vulkan straight on Turnip (or
+//!   lavapipe on a PC).
+//!
+//! Either draws with Skia, or Impeller with `--enable-impeller` (the
+//! engine's own switch, as on GTK), and copies the whole frame into the slot.
+//! Planned: cheaper copies, then dma-buf slots imported as render targets
+//! once AERA offers them (demo#1 item 9).
 
 pub mod gl;
+pub mod vk;
+
+/// The renderer this process uses.
+pub enum Renderer {
+    Gl(gl::Gl),
+    Vk(vk::Vk),
+}
+
+impl Renderer {
+    pub fn gl(&self) -> &gl::Gl {
+        match self {
+            Renderer::Gl(g) => g,
+            Renderer::Vk(_) => unreachable!("GL callback on the Vulkan renderer"),
+        }
+    }
+
+    pub fn vk(&self) -> &vk::Vk {
+        match self {
+            Renderer::Vk(v) => v,
+            Renderer::Gl(_) => unreachable!("Vulkan callback on the GL renderer"),
+        }
+    }
+}
 
 /// Swaps R and B in place, for drivers that cannot read back BGRA.
 pub fn rgba_to_bgra(rows: &mut [u8], width: usize, stride: usize, height: usize) {

@@ -1,7 +1,7 @@
 //! `aera-flutter`: started by `aera-plugin` (launcher/) with AERA's control
 //! socket on fd 4 and the frame memfd on fd 3.
 //!
-//! Usage: `aera-flutter [--root DIR] [--engine-arg ARG]...`. The payload
+//! Usage: `aera-flutter [--root DIR] [--vulkan] [--engine-arg ARG]...`. The payload
 //! root defaults to `AERA_PLUGIN_ROOT`, else two levels above this binary.
 //! Developer engine switches also come from the environment and the plugin
 //! data directory (`debug.rs`).
@@ -32,6 +32,7 @@ fn run() -> Result<i32, String> {
         match a.as_str() {
             "--root" => root = args.next().map(PathBuf::from),
             "--engine-arg" => engine_args.extend(args.next()),
+            "--vulkan" => engine_args.push(a),
             // Host API 2 passes --aera-host-api=N; the handshake decides.
             a if a.starts_with("--aera-host-api") => {}
             other => return Err(format!("unknown argument {other}")),
@@ -47,6 +48,7 @@ fn run() -> Result<i32, String> {
     flutter_aera::env::apply();
     flutter_aera::debug::clear_url();
     engine_args.extend(flutter_aera::debug::switches());
+    let vulkan = flutter_aera::renderer::vk::take_switch(&mut engine_args);
     if !engine_args.is_empty() {
         eprintln!("aera-flutter: engine switches {engine_args:?}");
     }
@@ -61,6 +63,7 @@ fn run() -> Result<i32, String> {
 
     let mut config = Config::from_root(&root);
     config.engine_args = engine_args;
+    config.vulkan = vulkan;
     let engine = Engine::start(config, control, slots)?;
     engine.replay(early);
     Ok(engine.run())

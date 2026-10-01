@@ -55,15 +55,20 @@ def region(img, x0, y0, x1, y1):
     return [img[2][y][x0 * 4:x1 * 4] for y in range(y0, y1)]
 
 
-before, after = read_png(sys.argv[1]), read_png(sys.argv[2])
-w, h = before[0], before[1]
-bar_before, bar_after = pixel(before, w // 2, 60), pixel(after, w // 2, 60)
-print(f"app bar {bar_before} -> {bar_after}")
-if bar_before == bar_after:
-    sys.exit("the reload did not change the app")
-# Only the app bar was recoloured: the body, with the count in the middle,
-# must be the same pixels (a lost state would show 0, not 3).
-body = (0, h // 4, w, h * 3 // 4)
-if region(before, *body) != region(after, *body):
-    sys.exit("the count did not survive the reload")
-print("body unchanged: state kept")
+def main():
+    before, after = read_png(sys.argv[1]), read_png(sys.argv[2])
+    w, h = before[0], before[1]
+    bar_before, bar_after = pixel(before, w // 2, 60), pixel(after, w // 2, 60)
+    print(f"app bar {bar_before} -> {bar_after}")
+    if bar_before == bar_after:
+        sys.exit("the reload did not change the app")
+    # Only the app bar was recoloured: the body, with the count in the middle,
+    # must be the same pixels (a lost state would show 0, not 3).
+    body = (0, h // 4, w, h * 3 // 4)
+    if region(before, *body) != region(after, *body):
+        sys.exit("the count did not survive the reload")
+    print("body unchanged: state kept")
+
+
+if __name__ == "__main__":
+    main()

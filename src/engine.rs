@@ -18,6 +18,8 @@ use crate::ffi::{self, FlutterEngineProcTable, FlutterTask, FLUTTER_ENGINE_VERSI
 use crate::handlers::{self, Effect, Handlers};
 use crate::host::{kind, lifecycle, Control, Message, Slots};
 use crate::renderer::gl::{self, Gl};
+use crate::renderer::vk::Vk;
+use crate::renderer::Renderer;
 use crate::task_runner::TaskRunner;
 use crate::view::View;
 
@@ -31,6 +33,8 @@ pub struct Config {
     pub aot_library: PathBuf,
     /// Extra engine switches, e.g. `--verbose-logging`.
     pub engine_args: Vec<String>,
+    /// Render with Vulkan instead of GL (`--vulkan`).
+    pub vulkan: bool,
 }
 
 impl Config {
@@ -42,6 +46,7 @@ impl Config {
             icu_data: root.join("usr/share/flutter/icudtl.dat"),
             aot_library: root.join("usr/lib/libapp.so"),
             engine_args: vec![],
+            vulkan: false,
         }
     }
 }
@@ -57,7 +62,7 @@ struct Shared {
     engine: Mutex<ffi::FlutterEngine>,
     control: Control,
     slots: Slots,
-    gl: Gl,
+    renderer: Renderer,
     runner: TaskRunner,
     view: Mutex<View>,
     handlers: Mutex<Handlers>,
@@ -124,13 +129,28 @@ impl Engine {
         let library = unsafe { Library::new(&config.engine_library) }
             .map_err(|e| format!("load {}: {e}", config.engine_library.display()))?;
         let procs = load_procs(&library)?;
-        let gl = Gl::new(geometry.width, geometry.height)?;
+        // The engine's switch, as GTK passes it through.
+        let impeller = config.engine_args.iter().any(|a| a == "--enable-impeller" || a == "--enable-impeller=true");
+        let renderer = if config.vulkan {
+            match Vk::new(geometry.width, geometry.height, geometry.stride as usize) {
+                Ok(v) => {
+                    eprintln!("aera-flutter: Vulkan on {}", v.name());
+                    Renderer::Vk(v)
+                }
+                Err(e) => {
+                    eprintln!("aera-flutter: Vulkan unavailable ({e}), using GL");
+                    Renderer::Gl(Gl::new(geometry.width, geometry.height, impeller)?)
+                }
+            }
+        } else {
+            Renderer::Gl(Gl::new(geometry.width, geometry.height, impeller)?)
+        };
         let shared = Box::new(Shared {
             procs,
             engine: Mutex::new(std::ptr::null_mut()),
             control,
             slots,
-            gl,
+            renderer,
             runner: TaskRunner::new().map_err(|e| e.to_string())?,
             view: Mutex::new(View::new(geometry)),
             handlers: Mutex::new(Handlers::default()),
@@ -142,18 +162,44 @@ impl Engine {
 
         // SAFETY: plain C structs; zeroed is valid and every callback we set
         // matches the header's signature.
+        // SAFETY: plain C structs; zeroed is valid and every callback we set
+        // matches the header's signature.
         let mut renderer: ffi::FlutterRendererConfig = unsafe { std::mem::zeroed() };
-        renderer.type_ = ffi::kOpenGL;
-        unsafe {
-            let gl = &mut renderer.__bindgen_anon_1.open_gl;
-            gl.struct_size = std::mem::size_of::<ffi::FlutterOpenGLRendererConfig>();
-            gl.make_current = Some(cb_make_current);
-            gl.clear_current = Some(cb_clear_current);
-            gl.make_resource_current = Some(cb_make_resource_current);
-            gl.present = Some(cb_present);
-            gl.fbo_callback = Some(cb_fbo);
-            gl.surface_transformation = Some(cb_transformation);
-            gl.gl_proc_resolver = Some(cb_proc_resolver);
+        // Extension name pointers, read during Initialize only.
+        let mut vk_names: (Vec<*const c_char>, Vec<*const c_char>) = (vec![], vec![]);
+        match &shared.renderer {
+            Renderer::Gl(_) => unsafe {
+                renderer.type_ = ffi::kOpenGL;
+                let gl = &mut renderer.__bindgen_anon_1.open_gl;
+                gl.struct_size = std::mem::size_of::<ffi::FlutterOpenGLRendererConfig>();
+                gl.make_current = Some(cb_make_current);
+                gl.clear_current = Some(cb_clear_current);
+                gl.make_resource_current = Some(cb_make_resource_current);
+                gl.present = Some(cb_present);
+                gl.fbo_callback = Some(cb_fbo);
+                gl.surface_transformation = Some(cb_transformation);
+                gl.gl_proc_resolver = Some(cb_proc_resolver);
+            },
+            Renderer::Vk(v) => unsafe {
+                vk_names.0 = v.instance_extensions.iter().map(|e| e.as_ptr()).collect();
+                vk_names.1 = v.device_extensions.iter().map(|e| e.as_ptr()).collect();
+                renderer.type_ = ffi::kVulkan;
+                let c = &mut renderer.__bindgen_anon_1.vulkan;
+                c.struct_size = std::mem::size_of::<ffi::FlutterVulkanRendererConfig>();
+                c.version = v.api_version;
+                c.instance = v.instance_handle();
+                c.physical_device = v.physical_device_handle();
+                c.device = v.device_handle();
+                c.queue_family_index = v.queue_family;
+                c.queue = v.queue_handle();
+                c.enabled_instance_extension_count = vk_names.0.len();
+                c.enabled_instance_extensions = vk_names.0.as_mut_ptr();
+                c.enabled_device_extension_count = vk_names.1.len();
+                c.enabled_device_extensions = vk_names.1.as_mut_ptr();
+                c.get_instance_proc_address_callback = Some(cb_vk_proc);
+                c.get_next_image_callback = Some(cb_vk_next_image);
+                c.present_image_callback = Some(cb_vk_present);
+            },
         }
 
         let mut strings = vec![cstring("aera-flutter")];
@@ -430,24 +476,24 @@ unsafe fn shared<'a>(user_data: *mut c_void) -> &'a Shared {
 // failure by value, and the crate is built with panic = "abort" in release.
 
 unsafe extern "C" fn cb_make_current(user_data: *mut c_void) -> bool {
-    shared(user_data).gl.make_current()
+    shared(user_data).renderer.gl().make_current()
 }
 
 unsafe extern "C" fn cb_clear_current(user_data: *mut c_void) -> bool {
-    shared(user_data).gl.clear_current()
+    shared(user_data).renderer.gl().clear_current()
 }
 
 unsafe extern "C" fn cb_make_resource_current(user_data: *mut c_void) -> bool {
-    shared(user_data).gl.make_resource_current()
+    shared(user_data).renderer.gl().make_resource_current()
 }
 
 unsafe extern "C" fn cb_fbo(user_data: *mut c_void) -> u32 {
     let s = shared(user_data);
     if s.frames.load(Ordering::Relaxed) == 0 {
         static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| eprintln!("aera-flutter: GL renderer {}", s.gl.renderer()));
+        ONCE.call_once(|| eprintln!("aera-flutter: GL renderer {}", s.renderer.gl().renderer()));
     }
-    s.gl.framebuffer()
+    s.renderer.gl().framebuffer()
 }
 
 unsafe extern "C" fn cb_transformation(user_data: *mut c_void) -> ffi::FlutterTransformation {
@@ -455,12 +501,38 @@ unsafe extern "C" fn cb_transformation(user_data: *mut c_void) -> ffi::FlutterTr
 }
 
 unsafe extern "C" fn cb_proc_resolver(user_data: *mut c_void, name: *const c_char) -> *mut c_void {
-    shared(user_data).gl.proc_address(CStr::from_ptr(name))
+    shared(user_data).renderer.gl().proc_address(CStr::from_ptr(name))
 }
 
 /// Raster thread: copy the frame into a free slot and tell AERA.
 unsafe extern "C" fn cb_present(user_data: *mut c_void) -> bool {
     let s = shared(user_data);
+    present(s, |slot, stride| s.renderer.gl().read_frame(slot, stride))
+}
+
+unsafe extern "C" fn cb_vk_proc(user_data: *mut c_void, instance: *mut c_void, name: *const c_char) -> *mut c_void {
+    shared(user_data).renderer.vk().proc_address(instance, CStr::from_ptr(name))
+}
+
+unsafe extern "C" fn cb_vk_next_image(user_data: *mut c_void, _info: *const ffi::FlutterFrameInfo) -> ffi::FlutterVulkanImage {
+    let v = shared(user_data).renderer.vk();
+    ffi::FlutterVulkanImage {
+        struct_size: std::mem::size_of::<ffi::FlutterVulkanImage>(),
+        image: v.image_handle(),
+        format: v.format.as_raw() as u32,
+    }
+}
+
+unsafe extern "C" fn cb_vk_present(user_data: *mut c_void, _image: *const ffi::FlutterVulkanImage) -> bool {
+    let s = shared(user_data);
+    let v = s.renderer.vk();
+    if s.frames.load(Ordering::Relaxed) == 0 {
+        eprintln!("aera-flutter: Vulkan renderer {}", v.name());
+    }
+    present(s, |slot, stride| v.read_frame(slot, stride))
+}
+
+fn present(s: &Shared, read: impl FnOnce(&mut [u8], usize)) -> bool {
     let Some(index) = s.slots.acquire(Duration::from_secs(1)) else {
         // AERA held every slot for a second (or we are shutting down): drop
         // this frame rather than stall the raster thread forever.
@@ -468,7 +540,7 @@ unsafe extern "C" fn cb_present(user_data: *mut c_void) -> bool {
     };
     let stride = s.slots.geometry().stride as usize;
     // SAFETY: `index` is ours until `present`.
-    s.gl.read_frame(s.slots.slot_mut(index), stride);
+    read(unsafe { s.slots.slot_mut(index) }, stride);
     let message = s.slots.present(index);
     s.frames.fetch_add(1, Ordering::Relaxed);
     if let Err(e) = s.control.send(&message) {

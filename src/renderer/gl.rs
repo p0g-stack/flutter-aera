@@ -93,6 +93,9 @@ pub struct Gl {
     fbo: AtomicU32,
     /// 0 unknown, 1 BGRA readback works, 2 it does not.
     bgra: AtomicU8,
+    /// Impeller ignores `surface_transformation`, so its frames arrive
+    /// bottom-up and are flipped on the CPU.
+    flip_rows: bool,
 }
 
 // SAFETY: EGL handles are process-wide; each context is only made current on
@@ -101,7 +104,7 @@ unsafe impl Send for Gl {}
 unsafe impl Sync for Gl {}
 
 impl Gl {
-    pub fn new(width: u32, height: u32) -> Result<Gl, String> {
+    pub fn new(width: u32, height: u32, impeller: bool) -> Result<Gl, String> {
         // SAFETY: loading the system EGL and resolving symbols with the
         // signatures the EGL 1.5 spec gives them.
         unsafe {
@@ -182,6 +185,7 @@ impl Gl {
                 height: height as i32,
                 fbo: AtomicU32::new(0),
                 bgra: AtomicU8::new(0),
+                flip_rows: impeller,
             })
         }
     }
@@ -291,10 +295,32 @@ impl Gl {
         if !bgra {
             super::rgba_to_bgra(out, self.width as usize, stride, self.height as usize);
         }
+        if self.flip_rows {
+            flip_rows(&mut out[..stride * self.height as usize], stride);
+        }
     }
 }
 
-/// Flutter draws upside down into our FBO, so reading GL rows bottom-up
+/// Reverses the order of `stride`-byte rows in place.
+pub fn flip_rows(rows: &mut [u8], stride: usize) {
+    let n = rows.len() / stride;
+    for i in 0..n / 2 {
+        let (top, bottom) = rows.split_at_mut((n - 1 - i) * stride);
+        top[i * stride..(i + 1) * stride].swap_with_slice(&mut bottom[..stride]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn flip_rows() {
+        let mut b = vec![1, 1, 2, 2, 3, 3];
+        super::flip_rows(&mut b, 2);
+        assert_eq!(b, [3, 3, 2, 2, 1, 1]);
+    }
+}
+
+/// Flutter (Skia) draws upside down into our FBO, so reading GL rows bottom-up
 /// gives a top-down image with no CPU flip.
 pub fn flip_vertically(height: u32) -> FlutterTransformation {
     FlutterTransformation {

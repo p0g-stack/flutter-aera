@@ -8,6 +8,7 @@ pieces follow GTK and flutter-pi.
 | --- | --- |
 | Engine switches | GTK's `FLUTTER_ENGINE_SWITCHES=N` + `FLUTTER_ENGINE_SWITCH_1…N`, and, since AERA starts plugins with a fixed environment, one switch per line in `$AERA_PLUGIN_DATA/engine-switches` |
 | VM service URL | logged by the engine, and written to `$AERA_PLUGIN_DATA/vm-service-url` on each start (removed at start, so it is never stale) |
+| Renderer | `--vulkan` (the embedder's, as flutter-pi) and `--enable-impeller` (the engine's) work as engine switches; `docs/device.md` |
 | Log | `aera-plugin` sends stdout and stderr to `$AERA_PLUGIN_DATA/aera-flutter.log`, new each launch |
 | Start a plugin | AERA RPC `plugin` / `open` (Host API 3 patch 0008), as tapping it in the launcher |
 

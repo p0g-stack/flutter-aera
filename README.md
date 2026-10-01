@@ -35,7 +35,7 @@ spec/engine-pin.md    Flutter release, engine revision, header provenance
 src/engine.rs         dlopen, proc table, project args, run          ≈ fl_engine
 src/view.rs           window metrics, pointer, frame slots           ≈ fl_view
 src/task_runner.rs    platform task runner, vsync from FRAME_DONE
-src/renderer/         gl.rs (Zink), vk.rs, impeller; readback now, dma-buf later
+src/renderer/         gl.rs (default), vk.rs (--vulkan); Skia or Impeller; readback now, dma-buf later
 src/host/             socket + memfd slots, SURFACE, input, lifecycle, keyboard inset
 src/handlers/         one per standard channel
 src/ime.rs            text-input model
@@ -53,21 +53,25 @@ example/              the counter app as an .aerap
 
 The counter app renders and counts taps in `sim/` and through AERA's own
 launcher, session and pixel surface with the Host API 3 patches
-(`ci/aera-host-check.sh`), on the GL renderer with full-frame readback. The
-debug runtime kits for arm64 and x64 are published (`spec/aerap.md`). Not
-yet: a run inside an AERA image (devicelab's Cuttlefish build), a device
-run, async/damage readback, Vulkan and Impeller, `example/` .aerap.
+(`ci/aera-host-check.sh`). The debug runtime kits for arm64 and x64 are
+published (`spec/aerap.md`). Checked in CI under the simulator:
 
-Next, in order: the Host API 3 image on Cuttlefish; then a debug run for
-`flutter_p0g run aera` hot reload, flutter-pi style: a debug (JIT) engine in
-the kit loading the app's `kernel_blob.bin`, the VM service URL in the log
-(the debug engine already prints it) for port forwarding and
-`flutter attach`, and a way to start a debug plugin from adb and from the
-sim; then faster frame copies, Vulkan, Impeller. `spec/aerap.md` is the package layout `flutter_p0g` packs.
+- Renderers: GL (the default) and Vulkan (`--vulkan`, as flutter-pi), each
+  with Skia or Impeller (`--enable-impeller`), with full-frame readback
+  (`ci/renderer-check.sh`).
+- Hot reload with a stock `flutter attach` (`ci/hot-reload-check.sh`,
+  `docs/debugging.md`).
+- Text input through AERA's keyboard, with its height as the bottom inset
+  (`ci/text-input-check.sh`).
+
+Not yet: a run inside an AERA image (devicelab's Cuttlefish build), a device
+run, cheaper frame copies, `example/` .aerap. `spec/aerap.md` is the
+package layout `flutter_p0g` packs.
 
 ```sh
 cargo test --workspace
 ci/sim-smoke.sh /tmp/smoke      # needs flutter 3.47.5 on PATH; frames in /tmp/smoke/sim
+ci/renderer-check.sh /tmp/smoke         # GL/Vulkan x Skia/Impeller (Vulkan needs a driver, e.g. lavapipe)
 sudo ci/aera-host-check.sh /tmp/smoke   # AERA + patches; frames in /tmp/smoke/aera-host
 ```
 

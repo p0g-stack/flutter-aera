@@ -73,3 +73,10 @@ which isolates GPU problems from everything else.
 
 Cuttlefish's `gfxstream` mode has no Mesa guest driver in the kit; use
 `drm_virgl` for a GPU path, or software.
+
+GL is the default. `--vulkan` in `$AERA_PLUGIN_DATA/engine-switches` (one
+switch per line, `docs/debugging.md`) renders with Vulkan instead: Turnip
+on a Qualcomm phone; the x64 kit has no Vulkan driver yet, so there it falls
+back to GL and logs why. `--enable-impeller` switches either to Impeller.
+The log names the result: `aera-flutter: GL renderer …` or `Vulkan renderer
+…`, and the engine's `Using the Impeller rendering backend (…)`.
