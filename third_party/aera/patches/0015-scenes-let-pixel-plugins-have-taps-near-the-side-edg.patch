@@ -1,0 +1,138 @@
+From a91d1d555a259243a25a2abdb41a7ae2a18a51ec Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 18:20:46 +0000
+Subject: [PATCH 15/15] scenes: let pixel plugins have taps near the side edges
+
+The pixel plugin scene gave the plugin no touch that started within the
+side-edge Back zone (72 px, or 1/20 of the width), so on a 720 px screen
+a control near either edge, such as Flutter's floating action button,
+could not be tapped. AERA's own widgets in the same place still receive
+those taps: the engine only turns a contact into Back once it has
+travelled inward.
+
+Decide the same way here. A first contact in the zone is held back while
+the engine tracks it. Once it moves inward past the touch slop (16 px or
+a third of the zone), mostly horizontally, it is AERA's Back swipe and
+stays AERA's. A tap, or a contact that moves along the edge instead, is
+claimed for the plugin: it receives the press where the finger landed,
+then the rest of the contact, and the engine cancels its swipe.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/scenes/pixel_plugin_scene.cpp | 62 ++++++++++++++++++++++------
+ 1 file changed, 49 insertions(+), 13 deletions(-)
+
+diff --git a/aeraui/scenes/pixel_plugin_scene.cpp b/aeraui/scenes/pixel_plugin_scene.cpp
+index 1367af3..77d1c0d 100644
+--- a/aeraui/scenes/pixel_plugin_scene.cpp
++++ b/aeraui/scenes/pixel_plugin_scene.cpp
+@@ -64,6 +64,11 @@ struct PixelScene {
+   double pixels_per_unit = 1.0;
+   bool touch_pressed[kMaxPointers]{};
+   bool touch_ignored[kMaxPointers]{};
++  // A first contact that landed in a side-edge zone, not yet known to be
++  // AERA's Back swipe or a touch for the plugin.
++  bool edge_pending = false;
++  int edge_x = 0;
++  int edge_y = 0;
+   bool keyboard_multiline = false;
+   uint32_t keyboard_inset = 0;
+   bool frame_waiting_for_refresh = false;
+@@ -171,6 +176,7 @@ void ReleaseTouches(PixelScene *scene) {
+     scene->touch_pressed[slot] = false;
+     scene->touch_ignored[slot] = false;
+   }
++  scene->edge_pending = false;
+ }
+ 
+ void HideKeyboard(PixelScene *scene) {
+@@ -366,6 +372,18 @@ void Tick(lv_timer_t *timer) {
+          "Plugin process exited; its resources were reclaimed");
+   }
+ }
++
++// Sends a touch at screen point (x, y), mapped to surface pixels.
++bool SendTouch(PixelScene *s, plugin_api::Kind kind, int slot, int x, int y) {
++  const int px = std::clamp(static_cast<int>(std::lround(
++      (x - s->view_left) * s->pixels_per_unit)), 0,
++      static_cast<int>(s->surface.Geometry().width) - 1);
++  const int py = std::clamp(static_cast<int>(std::lround(
++      (y - s->view_top) * s->pixels_per_unit)), 0,
++      static_cast<int>(s->surface.Geometry().height) - 1);
++  return s->session.Send(kind, static_cast<uint32_t>(slot),
++                         static_cast<uint32_t>(px), static_cast<uint32_t>(py));
++}
+ }  // namespace
+ 
+ bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed) {
+@@ -383,6 +401,29 @@ bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed) {
+     if (!pressed) s->touch_ignored[slot] = false;
+     return false;
+   }
++  // A first contact in a side-edge zone may be AERA's Back swipe, which the
++  // engine tracks while we return false. Decide by movement, as Android's
++  // edge Back does: once it moves inward past the touch slop, mostly
++  // horizontally, it is Back and stays AERA's; a tap, or a contact that
++  // moves along the edge, is the plugin's and starts where it landed.
++  const int screen_width = lv_obj_get_width(s->screen);
++  const int edge = std::max(72, screen_width / 20);
++  if (slot == 0 && s->edge_pending) {
++    const int inward = s->edge_x <= edge ? x - s->edge_x : s->edge_x - x;
++    const int along = std::abs(y - s->edge_y);
++    const int slop = std::max(16, edge / 3);
++    if (pressed && inward <= slop && along <= slop) return false;
++    s->edge_pending = false;
++    if (pressed && inward > along) {
++      s->touch_ignored[slot] = true;
++      return false;
++    }
++    // Claim the contact: the engine cancels its edge swipe when we return
++    // true. Deliver the press where it landed, then this event.
++    if (!SendTouch(s, plugin_api::Kind::kTouchDown, slot, s->edge_x, s->edge_y))
++      return false;
++    s->touch_pressed[slot] = true;
++  }
+   const bool was_pressed = s->touch_pressed[slot];
+   if (pressed && !was_pressed) {
+     bool on_keyboard = false;
+@@ -392,28 +433,23 @@ bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed) {
+       on_keyboard = x >= area.x1 && x <= area.x2 && y >= area.y1 &&
+                     y <= area.y2;
+     }
+-    // Side edges stay AERA's Back gesture, as in Browser.
+-    const int screen_width = lv_obj_get_width(s->screen);
+-    const int edge = std::max(72, screen_width / 20);
+-    if (!inside || on_keyboard ||
+-        (slot == 0 && (x <= edge || x >= screen_width - edge))) {
++    if (!inside || on_keyboard) {
+       s->touch_ignored[slot] = true;
+       return false;
+     }
++    if (slot == 0 && (x <= edge || x >= screen_width - edge)) {
++      s->edge_pending = true;
++      s->edge_x = x;
++      s->edge_y = y;
++      return false;
++    }
+   } else if (!was_pressed) {
+     return false;
+   }
+-  const int px = std::clamp(static_cast<int>(std::lround(
+-      (x - s->view_left) * s->pixels_per_unit)), 0,
+-      static_cast<int>(s->surface.Geometry().width) - 1);
+-  const int py = std::clamp(static_cast<int>(std::lround(
+-      (y - s->view_top) * s->pixels_per_unit)), 0,
+-      static_cast<int>(s->surface.Geometry().height) - 1);
+   const auto kind = !pressed ? plugin_api::Kind::kTouchUp
+       : was_pressed ? plugin_api::Kind::kTouchMove
+                     : plugin_api::Kind::kTouchDown;
+-  s->session.Send(kind, static_cast<uint32_t>(slot),
+-                  static_cast<uint32_t>(px), static_cast<uint32_t>(py));
++  SendTouch(s, kind, slot, x, y);
+   s->touch_pressed[slot] = pressed;
+   return true;
+ }
+-- 
+2.43.0
+

@@ -26,6 +26,7 @@ and, where they belong in AERA, answered with the next patch number.
 | The battery monitor re-queries the health HAL every second, so without one it is two failed service manager lookups per second (log spam, wasted binder calls) (devicelab D2) | 0012 |
 | Blank screen on any non-Qualcomm DRM driver: the display code splits the screen across the first two planes, and on virtio-gpu the second is a cursor plane, so every atomic commit fails with EINVAL (devicelab D3) | 0013, confirmed on Cuttlefish image e54e216 |
 | logd aborts every few seconds: `/etc/task_profiles.json` is only required with encryption and never copied into the ramdisk (devicelab D4) | 0014, confirmed on Cuttlefish image e54e216 |
+| Touches that start within 72 px of a side edge never reach a pixel plugin (our 0006 copied Browser's rule), so a FAB near the edge is dead; AERA's own widgets get them (devicelab D5) | 0015 |
 
 ## Worked around in the payload
 

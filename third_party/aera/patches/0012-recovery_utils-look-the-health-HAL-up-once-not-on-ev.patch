@@ -1,7 +1,7 @@
 From 14cb5afa7efe7db40ed315b771907376620db3cc Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 15:44:05 +0000
-Subject: [PATCH 12/14] recovery_utils: look the health HAL up once, not on
+Subject: [PATCH 12/15] recovery_utils: look the health HAL up once, not on
  every battery read
 
 TWRP's battery monitor calls GetBatteryInfo() every second, and every call
