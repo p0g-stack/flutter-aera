@@ -14,3 +14,4 @@
 0014-prebuilt-pack-task_profiles.json-on-every-build.patch
 0015-scenes-let-pixel-plugins-have-taps-near-the-side-edg.patch
 0016-aeraui-take-an-RPC-request-whose-writer-already-hung.patch
+0017-aera_remote-create-the-virtual-input-device-when-Rem.patch

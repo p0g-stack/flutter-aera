@@ -1,7 +1,7 @@
 From a91d1d555a259243a25a2abdb41a7ae2a18a51ec Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 18:20:46 +0000
-Subject: [PATCH 15/16] scenes: let pixel plugins have taps near the side edges
+Subject: [PATCH 15/17] scenes: let pixel plugins have taps near the side edges
 
 The pixel plugin scene gave the plugin no touch that started within the
 side-edge Back zone (72 px, or 1/20 of the width), so on a 720 px screen

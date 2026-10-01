@@ -1,7 +1,7 @@
 From 68029730988c2366ce59e19be29bafc39084fa2a Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 17:20:22 +0000
-Subject: [PATCH 14/16] prebuilt: pack task_profiles.json on every build
+Subject: [PATCH 14/17] prebuilt: pack task_profiles.json on every build
 
 logd sets its background scheduling policy through libprocessgroup, which
 reads /etc/task_profiles.json, and aborts when it cannot. task_profiles.json
