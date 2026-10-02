@@ -1,0 +1,52 @@
+From 0bcc77c1fd593ac981aa99a1c427503aee2f6cc1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 2 Oct 2026 10:01:37 +0000
+Subject: [PATCH 3/3] draw: allocate a layer larger than the whole budget when
+ none is held
+
+lv_draw_layer_alloc_buf() refuses a layer whenever the layers already
+allocated plus the new one would exceed LV_DRAW_LAYER_MAX_MEMORY, so the
+draw unit leaves the task for later, expecting another layer to finish
+and free memory. A layer that alone is larger than the budget can never
+fit. With no other layer holding memory nothing will ever be freed, the
+layer's tasks are never taken, and lv_refr keeps dispatching forever:
+the UI hangs with the process alive.
+
+AERA hits this with LV_DRAW_LAYER_MAX_MEMORY 4 MiB once transforms go
+through layers: on an adaptive-resolution device the logical screen is
+1440x2696, and a Recents card shrunk on press needs a transform layer of
+its on-screen size (8 MiB or more). Tapping it hung recovery.
+
+Allocate such a layer when no other layer holds memory; the budget still
+limits layers that are rendered at the same time. Also close the
+profiler section on that early return.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ src/draw/lv_draw.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/draw/lv_draw.c b/src/draw/lv_draw.c
+index dc4ce2219..c97267049 100644
+--- a/src/draw/lv_draw.c
++++ b/src/draw/lv_draw.c
+@@ -493,9 +493,13 @@ void * lv_draw_layer_alloc_buf(lv_layer_t * layer)
+ 
+ #if LV_DRAW_LAYER_MAX_MEMORY > 0
+     /* Do not allocate the layer if the sum of allocated layer sizes
+-     * will exceed `LV_DRAW_LAYER_MAX_MEMORY` */
+-    if((_draw_info.used_memory_for_layers + layer_size_byte) > LV_DRAW_LAYER_MAX_MEMORY) {
++     * will exceed `LV_DRAW_LAYER_MAX_MEMORY`. A layer that is larger than the
++     * whole budget is still allocated when no other layer holds memory:
++     * waiting would never free enough for it, and rendering would wait forever. */
++    if(_draw_info.used_memory_for_layers > 0 &&
++       (_draw_info.used_memory_for_layers + layer_size_byte) > LV_DRAW_LAYER_MAX_MEMORY) {
+         LV_LOG_WARN("LV_DRAW_LAYER_MAX_MEMORY was reached when allocating the layer.");
++        LV_PROFILER_DRAW_END;
+         return NULL;
+     }
+ #endif
+-- 
+2.43.0
+

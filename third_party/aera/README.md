@@ -56,6 +56,7 @@ Cuttlefish image.
 | --- | --- |
 | 0001 | `src/draw/sw/blend/lv_draw_sw_blend.c`: clip every software blend to the target layer's buffer, so a clip area that reaches past it skips the draw instead of writing through NULL or past a row (backstop for devicelab D10/D12) |
 | 0002 | `lv_conf.h`: `LV_DRAW_TRANSFORM_USE_MATRIX 0`. Neither of AERA's renderers applies a draw task's matrix, so transforms were never drawn and the widened clip let shrunk, off-screen objects blend outside the display buffer (the D10/D12 crash). Transforms now go through layers and scale as the styles ask (pressed buttons, tiles and cards shrink slightly; enlarged icons are drawn enlarged) |
+| 0003 | `src/draw/lv_draw.c`: a layer larger than the whole `LV_DRAW_LAYER_MAX_MEMORY` budget is allocated when no other layer holds memory, instead of being left for later forever. With 0002 transforms use layers, and on an adaptive-resolution screen (logical 1440x2696) a Recents card shrunk on press needs more than AERA's 4 MiB: tapping it hung recovery (devicelab D13) |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as

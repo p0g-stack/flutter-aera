@@ -1,7 +1,7 @@
 From 3129948d0f0579f10484415e065503a977abd150 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 2 Oct 2026 03:53:13 +0000
-Subject: [PATCH 2/2] aera: draw transforms through layers, not the unsupported
+Subject: [PATCH 2/3] aera: draw transforms through layers, not the unsupported
  matrix
 
 LV_DRAW_TRANSFORM_USE_MATRIX needs a draw unit that applies
