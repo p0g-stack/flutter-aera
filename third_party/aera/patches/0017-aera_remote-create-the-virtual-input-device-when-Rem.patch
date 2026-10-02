@@ -1,4 +1,4 @@
-From b8c16fec82c8324d35fdb1bc2f4820510e298e86 Mon Sep 17 00:00:00 2001
+From 9c7a610e9de1d1d7aaa2b84989474cc2f5605763 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:23:17 +0000
 Subject: [PATCH 17/25] aera_remote: create the virtual input device when

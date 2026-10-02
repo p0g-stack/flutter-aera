@@ -1,4 +1,4 @@
-From 00acaf138c57fd2ea5dd726cd99dc1753e55e8c1 Mon Sep 17 00:00:00 2001
+From 3baa8bd9e500a6f883b9957d0156a2425865f4ff Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:27:24 +0000
 Subject: [PATCH 05/25] plugins: accept Host API 3 pixel plugin manifests;
@@ -12,15 +12,23 @@ directory used by the launcher; removing a plugin removes its data.
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
 ---
- aeraui/features/plugins/plugin_manager.cpp | 52 +++++++++++++++++++---
- aeraui/features/plugins/plugin_manager.hpp | 10 ++++-
- 2 files changed, 56 insertions(+), 6 deletions(-)
+ aeraui/features/plugins/plugin_manager.cpp | 66 ++++++++++++++++++++--
+ aeraui/features/plugins/plugin_manager.hpp | 10 +++-
+ 2 files changed, 70 insertions(+), 6 deletions(-)
 
 diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
-index d87b435..4667e7a 100644
+index d87b435..035fdb5 100644
 --- a/aeraui/features/plugins/plugin_manager.cpp
 +++ b/aeraui/features/plugins/plugin_manager.cpp
-@@ -37,6 +37,9 @@ constexpr char kCatalogSignatureUrl[] =
+@@ -22,6 +22,7 @@
+ #include <sstream>
+ #include <sys/resource.h>
+ #include <sys/stat.h>
++#include <sys/statfs.h>
+ #include <sys/types.h>
+ #include <sys/wait.h>
+ #include <unistd.h>
+@@ -37,6 +38,9 @@ constexpr char kCatalogSignatureUrl[] =
  constexpr char kCacheRoot[] = "/tmp/aera-plugin-store";
  constexpr char kStorageRoot[] = "/sdcard/AERA/plugins";
  constexpr char kMemoryRoot[] = "/tmp/aera/plugins";
@@ -30,7 +38,7 @@ index d87b435..4667e7a 100644
  constexpr uint64_t kMaxCatalog = 1024 * 1024;
  constexpr uint64_t kMaxManifest = 64 * 1024;
  constexpr uint64_t kMaxSignature = 4096;
-@@ -298,15 +301,32 @@ bool ParsePlugin(const std::string &text, Plugin &plugin, std::string &error,
+@@ -298,15 +302,32 @@ bool ParsePlugin(const std::string &text, Plugin &plugin, std::string &error,
        (plugin.id == "streams" && plugin.type == "app-runtime" &&
         plugin.entry == "streams");
    const bool generic_entry = plugin.type == "ui-runtime" &&
@@ -66,7 +74,7 @@ index d87b435..4667e7a 100644
        (has_permission("display") && has_permission("touch-input") &&
         std::all_of(plugin.permissions.begin(), plugin.permissions.end(),
                     [](const std::string &permission) {
-@@ -927,7 +947,11 @@ bool Remove(const std::string &id, Progress &progress) {
+@@ -927,7 +948,11 @@ bool Remove(const std::string &id, Progress &progress) {
    if (!SafeId(id)) { progress.error = "Invalid plugin identifier."; return false; }
    const bool memory = RemoveTree(std::string(kMemoryRoot) + "/" + id);
    const bool storage = RemoveTree(std::string(kStorageRoot) + "/" + id);
@@ -79,7 +87,7 @@ index d87b435..4667e7a 100644
      progress.error = "One or more plugin files could not be removed."; return false;
    }
    progress.status = "Plugin removed"; progress.value.store(100); return true;
-@@ -1048,10 +1072,28 @@ bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
+@@ -1048,10 +1073,41 @@ bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
  
  bool IsGeneric(const Plugin &plugin) {
    return plugin.type == "ui-runtime" && plugin.entry == "main" &&
@@ -92,11 +100,24 @@ index d87b435..4667e7a 100644
 +  return IsGeneric(plugin) && plugin.protocol_version == 3;
 +}
 +
++// /sdcard/AERA can exist while /data is not mounted: then it is a folder in
++// recovery's own RAM root, and nothing written there survives a reboot.
++static bool PersistentStorage(const char *path) {
++  struct stat storage{};
++  struct stat root{};
++  struct statfs filesystem{};
++  if (stat(path, &storage) != 0 || !S_ISDIR(storage.st_mode) ||
++      stat("/", &root) != 0 || statfs(path, &filesystem) != 0)
++    return false;
++  constexpr decltype(filesystem.f_type) kTmpfs = 0x01021994;
++  constexpr decltype(filesystem.f_type) kRamfs = 0x858458f6;
++  return storage.st_dev != root.st_dev && filesystem.f_type != kTmpfs &&
++         filesystem.f_type != kRamfs;
++}
++
 +std::string DataDirectory(const Plugin &plugin) {
 +  if (!SafeId(plugin.id)) return {};
-+  struct stat storage{};
-+  const bool on_storage = stat("/sdcard/AERA", &storage) == 0 &&
-+      S_ISDIR(storage.st_mode);
++  const bool on_storage = PersistentStorage("/sdcard/AERA");
 +  const std::string root = on_storage ? kStorageDataRoot : kMemoryDataRoot;
 +  const std::string path = root + "/" + plugin.id;
 +  if (!EnsureDirectory(root)) return {};

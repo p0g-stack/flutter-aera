@@ -31,6 +31,7 @@ and, where they belong in AERA, answered with the next patch number.
 | AERA Remote's first touch after start is lost: the uinput device is created on that touch, recovery rescans /dev/input at most every 2 s, so only the release arrives (two quick taps opened Quick Settings) (devicelab D7) | 0017 |
 | AERA Remote's Home and Menu buttons do nothing: they send KEY_HOMEPAGE and KEY_MENU, which recovery never handled (only Power, Volume, Back), so Home and Recents were reachable only by the bottom-edge swipe (devicelab D8, found in source) | 0023 |
 | A tap at the same x as the previous one arrives at x=0 (the left Back edge), and one on the same spot not at all: the touch translator zeroes its position on release and the kernel never re-sends an unchanged ABS_MT_POSITION_X/Y (the second tap into a plugin was lost; AERA Remote hits it often) (devicelab D9) | 0025 |
+| With `/data` not mounted, `/sdcard/AERA` can still exist as a folder in recovery's RAM root, so plugin data went there without `AERA_PLUGIN_DATA_VOLATILE=1` and was lost on reboot (devicelab D11) | 0005 uses `/sdcard/AERA` only when it is on a different filesystem from `/` and not tmpfs or ramfs; otherwise RAM, flagged volatile by 0022 |
 | The file picker opens in TWRP's current storage, which on a data partition Android never booted is `/data/media` with no user folder yet: "Cannot open folder" and an empty list (devicelab, image with 0023; Files starts there too) | 0018 falls back to `/data/media/0`, then `/sdcard`, when the start cannot be listed |
 
 ## Worked around in the payload

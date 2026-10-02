@@ -1,4 +1,4 @@
-From 82e0a17e6009dc7ef4395a0b43454c4003697366 Mon Sep 17 00:00:00 2001
+From c71bfcab1b1e305a848c26e091b4066e5dc4b30d Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 07:02:12 +0000
 Subject: [PATCH 08/25] rpc: open an installed generic plugin (op plugin,

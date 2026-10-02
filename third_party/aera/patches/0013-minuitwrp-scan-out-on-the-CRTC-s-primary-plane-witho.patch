@@ -1,4 +1,4 @@
-From 71b6cc0e5d9bcccfedcc5ac9cb91dcb9f3cf704b Mon Sep 17 00:00:00 2001
+From c0463c3a31a9418ebc71a004f9460aee89124eb5 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 17:20:22 +0000
 Subject: [PATCH 13/25] minuitwrp: scan out on the CRTC's primary plane without

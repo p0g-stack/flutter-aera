@@ -1,4 +1,4 @@
-From 4f09306ed7335dc78d4d2964afcf4f590a0e7875 Mon Sep 17 00:00:00 2001
+From 1d9925e7e8113d719f3b94a0726a4e1119216cbf Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:44:41 +0000
 Subject: [PATCH 20/25] plugin_api: keep a pixel plugin running across a

@@ -1,4 +1,4 @@
-From 3dc0687505c9d35e367d75cf906d72c3f62344e1 Mon Sep 17 00:00:00 2001
+From 197cf4b3d9add96c863f5ecf236f97278e4715b4 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:08:57 +0000
 Subject: [PATCH 22/25] plugin_api: tell a pixel plugin when its data directory
@@ -62,10 +62,10 @@ index 1f0d2cf..180479a 100644
  
  class Process final {
 diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
-index 4667e7a..ac391ce 100644
+index 035fdb5..c0e053c 100644
 --- a/aeraui/features/plugins/plugin_manager.cpp
 +++ b/aeraui/features/plugins/plugin_manager.cpp
-@@ -1094,6 +1094,11 @@ std::string DataDirectory(const Plugin &plugin) {
+@@ -1108,6 +1108,11 @@ std::string DataDirectory(const Plugin &plugin) {
    return path;
  }
  

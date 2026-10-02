@@ -103,8 +103,9 @@ contributes only `flutter_assets` and, for AOT builds, `libapp.so`.
 ## Storage and lifecycle
 
 AERA picks the data directory (`AERA_PLUGIN_DATA`, patch 0005) at every
-launch: `/sdcard/AERA/plugin-data/<id>` when `/sdcard/AERA` exists
-(storage mounted and decrypted; AERA asks to unlock it on first launch),
+launch: `/sdcard/AERA/plugin-data/<id>` when `/sdcard/AERA` is on mounted
+storage (decrypted; AERA asks to unlock it on first launch; a `/sdcard/AERA`
+folder in recovery's RAM root while `/data` is not mounted does not count),
 otherwise `/tmp/aera/plugin-data/<id>` in RAM, and then AERA also sets
 `AERA_PLUGIN_DATA_VOLATILE=1` (patch 0022) so the app can warn that nothing
 it saves survives a reboot (`Platform.environment`). The embedder (`src/env.rs`)
