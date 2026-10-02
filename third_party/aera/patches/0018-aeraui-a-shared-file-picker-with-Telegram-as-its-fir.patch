@@ -1,7 +1,7 @@
 From 5e95651c886db56e8c3af090b772db56b4f9125f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:35:35 +0000
-Subject: [PATCH 18/26] aeraui: a shared file picker, with Telegram as its
+Subject: [PATCH 18/27] aeraui: a shared file picker, with Telegram as its
  first caller
 
 Telegram's "Attach a file" overlay was AERA's only file picker, written

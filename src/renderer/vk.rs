@@ -88,8 +88,8 @@ pub struct Vk {
     /// The image is RGBA: swap to AERA's BGRA on the CPU.
     swizzle: bool,
     /// The frame size (`width << 32 | height`); a later SURFACE changes it.
-    /// The image and readback buffer are allocated square on the longer
-    /// side, so either orientation fits without reallocating.
+    /// The image and readback buffer are allocated square on the longest
+    /// side the surface allows, so a rotation fits without reallocating.
     size: AtomicU64,
     /// That longer side.
     side: u32,
@@ -114,8 +114,10 @@ fn has(list: &[vk::ExtensionProperties], name: &CStr) -> bool {
 }
 
 impl Vk {
-    pub fn new(width: u32, height: u32) -> Result<Vk, String> {
-        let side = width.max(height);
+    /// `side` is the longest side any later shape may have (at least the
+    /// first shape's).
+    pub fn new(width: u32, height: u32, side: u32) -> Result<Vk, String> {
+        let side = side.max(width).max(height);
         // SAFETY: loading the system (or payload) Vulkan loader and calling it
         // with valid create infos whose pointers outlive each call.
         unsafe {

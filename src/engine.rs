@@ -141,7 +141,7 @@ impl Engine {
         // The engine's switch, as GTK passes it through.
         let impeller = config.engine_args.iter().any(|a| a == "--enable-impeller" || a == "--enable-impeller=true");
         let renderer = if config.vulkan {
-            match Vk::new(geometry.width, geometry.height) {
+            match Vk::new(geometry.width, geometry.height, slots.longest_side()) {
                 Ok(v) => {
                     eprintln!("aera-flutter: Vulkan on {}", v.name());
                     Renderer::Vk(v)

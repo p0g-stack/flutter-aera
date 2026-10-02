@@ -1,7 +1,7 @@
 From f4039cbc487d3c263994fc6c42a8135882a26d56 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 2 Oct 2026 00:04:03 +0000
-Subject: [PATCH 25/26] minuitwrp: start a new contact where its slot last was
+Subject: [PATCH 25/27] minuitwrp: start a new contact where its slot last was
 
 The touch translator zeroes its multitouch position when a contact ends
 (ABS_MT_TRACKING_ID -1, or pressure or touch-major 0), then rebuilds the

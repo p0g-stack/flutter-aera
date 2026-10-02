@@ -1,7 +1,7 @@
 From 820d1e034f7097d7beb6eabf8f57ba205bb8bf80 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:14:19 +0000
-Subject: [PATCH 01/26] plugin_api: Host API 3 wire additions (pixel surface,
+Subject: [PATCH 01/27] plugin_api: Host API 3 wire additions (pixel surface,
  input, keyboard)
 
 Host API 2 lets a plugin describe a declarative UI that AERA draws, or run

@@ -1,7 +1,7 @@
 From 3a9491b27baed72a0585da6240294955b856ae59 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:13:42 +0000
-Subject: [PATCH 23/26] aeraui: act on the Home and Menu keys
+Subject: [PATCH 23/27] aeraui: act on the Home and Menu keys
 
 AERA Remote's Home and Menu buttons send KEY_HOMEPAGE and KEY_MENU, and
 its virtual device advertises both, but recovery handled only Power,

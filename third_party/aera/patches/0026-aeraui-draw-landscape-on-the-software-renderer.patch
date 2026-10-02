@@ -1,7 +1,7 @@
 From 1fca0aa9818de506a046903b0ea3abf24b346eb6 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 2 Oct 2026 03:53:25 +0000
-Subject: [PATCH 26/26] aeraui: draw landscape on the software renderer
+Subject: [PATCH 26/27] aeraui: draw landscape on the software renderer
 
 Only the OpenGL renderer can show landscape: GpuRenderer resizes its
 texture and turns it once into native scanout. The software paths keep

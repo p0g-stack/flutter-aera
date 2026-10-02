@@ -179,6 +179,22 @@ impl Slots {
         self.state.lock().unwrap().geometry
     }
 
+    /// The longest side a frame may take in any later `SURFACE`: AERA sizes
+    /// the memfd as `slots` square frames on its screen's longer side, so a
+    /// rotation can widen a frame beyond the first shape's longer side.
+    pub fn longest_side(&self) -> u32 {
+        let g = self.geometry();
+        let per_slot = self.len / g.slots.max(1) as usize / 4;
+        let mut side = (per_slot as f64).sqrt() as usize;
+        while (side + 1) * (side + 1) <= per_slot {
+            side += 1;
+        }
+        while side * side > per_slot {
+            side -= 1;
+        }
+        (side as u32).max(g.width.max(g.height))
+    }
+
     /// A later `SURFACE`: the new shape within the same memory, a new
     /// generation, and every slot ours again (a frame still being written
     /// is presented as the old generation, which AERA hands straight back).
@@ -341,6 +357,18 @@ mod tests {
         assert_eq!(slots.acquire(short).map(|f| f.index), Some(sent[1].value as usize));
         let sequences: Vec<u32> = sent.iter().map(|m| m.request_id).collect();
         assert_eq!(sequences, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn longest_side_is_what_the_memfd_holds() {
+        // A portrait view below a status bar: 720x1183 on a 720x1348 screen,
+        // memfd sized for 1348x1348 frames. Landscape is 1348 wide.
+        let g = Geometry { width: 720, height: 1183, stride: 2880, slots: 3, scale: 1.75, refresh_hz: 60.0 };
+        let slots = Slots::map(create_memfd_of(1348 * 1348 * 4 * 3).unwrap(), g).unwrap();
+        assert_eq!(slots.longest_side(), 1348);
+        // A memfd of exactly the first shape still gives its longer side.
+        let slots = Slots::map(create_memfd(&g).unwrap(), g).unwrap();
+        assert_eq!(slots.longest_side(), 1183);
     }
 
     #[test]

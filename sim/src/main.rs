@@ -8,9 +8,9 @@
 //!
 //! ```text
 //! aera-host-sim --root PAYLOAD [--embedder BIN] [--out DIR]
-//!               [--size WxH] [--scale S] [--until MS] [--gpu]
+//!               [--size WxH] [--bar PX] [--scale S] [--until MS] [--gpu]
 //!               [--tap X,Y@MS]... [--type TEXT@MS]... [--back@MS]...
-//!               [--snap NAME@MS]...
+//!               [--rotate@MS]... [--snap NAME@MS]...
 //! ```
 //!
 //! Times are milliseconds after the first frame; `--until 0` runs until the
@@ -19,6 +19,13 @@
 //! `vm-service-url` is what `flutter attach --debug-url` takes. While it
 //! runs, a file `OUT/snap` holding NAME writes NAME.png and `OUT/stop` ends
 //! the run.
+//!
+//! `--bar` takes a status bar off the top of a `--size` screen, as AERA's
+//! pixel scene does. `--rotate` turns the screen a quarter, as AERA's
+//! Rotation tile does: a new `SURFACE` for the turned screen less the bar,
+//! in the same memfd (made, like AERA's, with room for square frames on the
+//! screen's longer side). Frames drawn
+//! for the old shape are handed straight back, as AERA's scene does.
 //!
 //! It also runs on a device as a stand-in for AERA's host (built static, see
 //! docs/device.md): `--gpu` then lets Mesa use the device's GPU instead of
@@ -31,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
-use flutter_aera::host::surface::create_memfd;
+use flutter_aera::host::surface::create_memfd_of;
 use flutter_aera::host::transport::pair;
 use flutter_aera::host::{feature, kind, lifecycle, Control, Geometry, Message, PROTOCOL_VERSION};
 
@@ -40,6 +47,7 @@ enum Action {
     Tap(u32, u32),
     Type(String),
     Back,
+    Rotate,
     Snap(String),
 }
 
@@ -48,6 +56,8 @@ struct Options {
     embedder: PathBuf,
     out: PathBuf,
     geometry: Geometry,
+    /// Status bar rows above the surface.
+    bar: u32,
     until: Duration,
     /// Let Mesa pick the GPU (on a device) instead of forcing softpipe.
     gpu: bool,
@@ -66,6 +76,7 @@ fn parse() -> Result<Options, String> {
         embedder: here.with_file_name("aera-flutter"),
         out: PathBuf::from("out/sim"),
         geometry: Geometry::PHONE,
+        bar: 0,
         until: Duration::from_secs(5),
         gpu: false,
         script: vec![],
@@ -84,6 +95,7 @@ fn parse() -> Result<Options, String> {
                 o.geometry.height = h.parse().map_err(|_| "--size WxH")?;
                 o.geometry.stride = o.geometry.width * 4;
             }
+            "--bar" => o.bar = value()?.parse().map_err(|_| "--bar PX")?,
             "--gpu" => o.gpu = true,
             "--scale" => o.geometry.scale = value()?.parse().map_err(|_| "--scale S")?,
             "--until" => o.until = Duration::from_millis(value()?.parse().map_err(|_| "--until MS")?),
@@ -104,11 +116,15 @@ fn parse() -> Result<Options, String> {
                 o.script.push((t, Action::Snap(name.to_owned())));
             }
             b if b.starts_with("--back@") => o.script.push((at(b)?.1, Action::Back)),
+            r if r.starts_with("--rotate@") => o.script.push((at(r)?.1, Action::Rotate)),
             other => return Err(format!("unknown argument {other}")),
         }
     }
     if o.root.as_os_str().is_empty() {
         return Err("--root PAYLOAD is required".into());
+    }
+    if o.bar >= o.geometry.height || o.bar >= o.geometry.width {
+        return Err("--bar must leave room in either orientation".into());
     }
     o.script.sort_by_key(|(t, _)| *t);
     Ok(o)
@@ -197,22 +213,27 @@ impl Screen {
 
 fn run() -> Result<ExitCode, String> {
     let o = parse()?;
-    let g = o.geometry;
+    // The screen; the surface is the screen less the status bar.
+    let (mut screen_w, mut screen_h) = (o.geometry.width, o.geometry.height);
+    let mut g = Geometry { height: screen_h - o.bar, ..o.geometry };
     std::fs::create_dir_all(&o.out).map_err(|e| e.to_string())?;
     let data = o.out.join("plugin-data");
     std::fs::create_dir_all(&data).map_err(|e| e.to_string())?;
 
-    let memfd: OwnedFd = create_memfd(&g).map_err(|e| e.to_string())?;
+    // Room for either orientation, as AERA allocates it.
+    let side = screen_w.max(screen_h) as usize;
+    let len = side * side * 4 * g.slots as usize;
+    let memfd: OwnedFd = create_memfd_of(len).map_err(|e| e.to_string())?;
     let (plugin_end, host_end) = pair().map_err(|e| e.to_string())?;
     // SAFETY: the host's own mapping of the memfd it created.
     let base = unsafe {
-        libc::mmap(std::ptr::null_mut(), g.total_bytes(), libc::PROT_READ, libc::MAP_SHARED, memfd.as_raw_fd(), 0)
+        libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, memfd.as_raw_fd(), 0)
     };
     if base == libc::MAP_FAILED {
         return Err("mmap surface".into());
     }
     // SAFETY: the mapping lives until the process exits.
-    let surface = unsafe { std::slice::from_raw_parts(base as *const u8, g.total_bytes()) };
+    let surface = unsafe { std::slice::from_raw_parts(base as *const u8, len) };
 
     let (m, p) = (memfd.as_raw_fd(), plugin_end.as_raw_fd());
     let mut command = Command::new(&o.embedder);
@@ -263,6 +284,8 @@ fn run() -> Result<ExitCode, String> {
     let mut closed = false;
     let mut keyboard = false;
     let mut next_vsync = Instant::now() + period;
+    // The surface generation, as PRESENT's flags carry it.
+    let mut generation = 0u32;
 
     loop {
         let now = Instant::now();
@@ -293,6 +316,18 @@ fn run() -> Result<ExitCode, String> {
                     }
                     Action::Back => {
                         let _ = host.send(&Message::new(kind::BACK));
+                    }
+                    Action::Rotate => {
+                        // Nothing of the old shape stays on screen; as in
+                        // AERA's Surface::Reshape, every slot is the
+                        // plugin's again without a FRAME_DONE.
+                        screen = Screen::default();
+                        last = None;
+                        (screen_w, screen_h) = (screen_h, screen_w);
+                        g = Geometry { width: screen_w, height: screen_h - o.bar, stride: screen_w * 4, ..g };
+                        generation = generation.wrapping_add(1);
+                        let _ = host.send(&g.to_message());
+                        println!("sim: rotated to {}x{}", g.width, g.height);
                     }
                     Action::Snap(name) => match &last {
                         Some(f) => write_png(&o.out.join(format!("{name}.png")), f, &g)?,
@@ -331,6 +366,11 @@ fn run() -> Result<ExitCode, String> {
                     let slot = msg.value as usize;
                     if slot >= g.slots as usize {
                         return Err(format!("PRESENT for slot {slot}"));
+                    }
+                    if msg.flags != generation {
+                        // Drawn for the shape before a rotation.
+                        let _ = host.send(&Message::with(kind::FRAME_DONE, msg.request_id, 0, 0));
+                        continue;
                     }
                     match screen.present(msg.request_id, slot) {
                         Some(Some(seq)) => {
