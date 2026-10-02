@@ -1,4 +1,4 @@
-From 197cf4b3d9add96c863f5ecf236f97278e4715b4 Mon Sep 17 00:00:00 2001
+From 3b69d5fd479917199fc07a9aa9e6740472e6b356 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:08:57 +0000
 Subject: [PATCH 22/25] plugin_api: tell a pixel plugin when its data directory
@@ -91,7 +91,7 @@ index ade4a79..66a5a69 100644
  
  const char *LocationLabel(Location location);
 diff --git a/aeraui/scenes/pixel_plugin_scene.cpp b/aeraui/scenes/pixel_plugin_scene.cpp
-index 4cccf3d..eec6228 100644
+index 3f85ac4..fb8c1a1 100644
 --- a/aeraui/scenes/pixel_plugin_scene.cpp
 +++ b/aeraui/scenes/pixel_plugin_scene.cpp
 @@ -437,6 +437,7 @@ bool Launch(PixelScene *scene) {

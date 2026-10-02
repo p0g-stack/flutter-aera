@@ -1,4 +1,4 @@
-From 41b07d1e25e3a59a85bab11bd04693a99846e4f2 Mon Sep 17 00:00:00 2001
+From 1e97e414a05acdf37d5d94f623ad6e63c4260a0a Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:06:14 +0000
 Subject: [PATCH 21/25] plugin_api: pause a pixel plugin when its scene is
@@ -24,9 +24,9 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  aeraui/core/engine.cpp                  |   8 +-
  aeraui/features/plugin_api/README.md    |  14 ++
  aeraui/features/plugin_api/protocol.hpp |   6 +-
- aeraui/scenes/pixel_plugin_scene.cpp    | 176 ++++++++++++++++++++++--
+ aeraui/scenes/pixel_plugin_scene.cpp    | 188 ++++++++++++++++++++++--
  aeraui/scenes/scene.hpp                 |   4 +
- 5 files changed, 191 insertions(+), 17 deletions(-)
+ 5 files changed, 203 insertions(+), 17 deletions(-)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
 index 2c36499..add795e 100644
@@ -107,7 +107,7 @@ index 738736c..fa28bd0 100644
  // renumber an existing entry: independently released plugins send these raw
  // values over the socket.
 diff --git a/aeraui/scenes/pixel_plugin_scene.cpp b/aeraui/scenes/pixel_plugin_scene.cpp
-index 51dfe1d..4cccf3d 100644
+index 51dfe1d..3f85ac4 100644
 --- a/aeraui/scenes/pixel_plugin_scene.cpp
 +++ b/aeraui/scenes/pixel_plugin_scene.cpp
 @@ -3,6 +3,11 @@
@@ -252,25 +252,20 @@ index 51dfe1d..4cccf3d 100644
    if (!scene->process.Running()) {
      Stop(scene, "Plugin stopped",
           "Plugin process exited; its resources were reclaimed");
-@@ -553,8 +599,87 @@ void Rotate(PixelScene *scene) {
+@@ -553,8 +599,92 @@ void Rotate(PixelScene *scene) {
      SendKeyboardInset(scene);
    }
  }
 +
-+// The scene is going away. A running plugin is paused and kept, as Browser
-+// is; one that is stopped, still starting or being discarded goes with it.
-+void Detach(PixelScene *scene) {
++// Lets go of the scene's screen and widgets. A plugin that is kept first
++// gets what it is waiting for: a closed picker, the paths already chosen,
++// its touches.
++void Release(PixelScene *scene, bool keep) {
 +  if (gPixelScene == scene) gPixelScene = nullptr;
 +  if (scene->display)
 +    lv_display_remove_event_cb_with_user_data(scene->display,
 +                                              PixelRefreshReady, scene);
-+  const auto running = gRunning.find(scene->plugin.id);
-+  const bool keep = !scene->stopped && !scene->leaving && !scene->discard &&
-+                    scene->session.Connected() && scene->session.Negotiated() &&
-+                    running != gRunning.end() && running->second == scene;
 +  if (keep) {
-+    // Settle what the plugin is waiting for before it is paused: a closed
-+    // picker, the paths already chosen, its touches.
 +    if (scene->picker) {
 +      file_picker::Forget(scene->picker);
 +      scene->picker = nullptr;
@@ -279,6 +274,7 @@ index 51dfe1d..4cccf3d 100644
 +    }
 +    while (!scene->picked.empty()) SendPicked(scene);
 +    ReleaseTouches(scene);
++    scene->keyboard_inset = UINT32_MAX;
 +  }
 +  if (scene->image) lv_image_set_src(scene->image, nullptr);
 +  lv_image_cache_drop(&scene->descriptor);
@@ -288,13 +284,22 @@ index 51dfe1d..4cccf3d 100644
 +  scene->viewport = scene->image = scene->keyboard = nullptr;
 +  scene->frame_waiting_for_refresh = false;
 +  scene->showing = false;
++}
++
++// The scene is going away. A running plugin is paused and kept, as Browser
++// is; one that is stopped, still starting or being discarded goes with it.
++void Detach(PixelScene *scene) {
++  const auto running = gRunning.find(scene->plugin.id);
++  const bool keep = !scene->stopped && !scene->leaving && !scene->discard &&
++                    scene->session.Connected() && scene->session.Negotiated() &&
++                    running != gRunning.end() && running->second == scene;
++  Release(scene, keep);
 +  if (!keep) {
 +    delete scene;
 +    return;
 +  }
 +  // From here AERA sends only RESUME (with a new SURFACE first), STOP or
 +  // CLOSE, and no FRAME_DONE: the plugin's rendering stalls by itself.
-+  scene->keyboard_inset = UINT32_MAX;
 +  scene->inactive = false;
 +  scene->paused = true;
 +  scene->session.Send(plugin_api::Kind::kLifecycle, 0,
@@ -340,7 +345,7 @@ index 51dfe1d..4cccf3d 100644
  bool PixelPluginActive() {
    return gPixelScene && !gPixelScene->stopped;
  }
-@@ -630,15 +755,31 @@ bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed) {
+@@ -630,15 +760,38 @@ bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed) {
  
  void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
                             ActionCallback callback, void *context) {
@@ -350,11 +355,18 @@ index 51dfe1d..4cccf3d 100644
 +  PixelScene *scene = nullptr;
 +  const auto running = gRunning.find(plugin.id);
 +  if (running != gRunning.end()) {
-+    if (!running->second->screen && !running->second->stopped &&
-+        running->second->plugin.payload_sha256 == plugin.payload_sha256)
-+      scene = running->second;
-+    else if (!running->second->screen)
-+      delete running->second;
++    PixelScene *current = running->second;
++    const bool same = !current->stopped && !current->leaving &&
++        !current->discard && current->session.Negotiated() &&
++        current->plugin.payload_sha256 == plugin.payload_sha256;
++    if (same && current->screen) {
++      // Opened again while its scene is still up (its own Recents card): it
++      // moves to the new screen, and the old one goes without pausing it.
++      lv_obj_remove_event_cb_with_user_data(current->screen, nullptr, current);
++      Release(current, true);
++    }
++    if (same) scene = current;
++    else if (!current->screen) delete current;
 +  }
 +  const bool resume = scene != nullptr;
 +  if (!scene) {
@@ -375,7 +387,7 @@ index 51dfe1d..4cccf3d 100644
    }, LV_EVENT_DELETE, scene);
    MainBackground(screen);
    AttachStatusBar(screen, callback, context, StatusBarAction::kNone, true);
-@@ -723,6 +864,17 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+@@ -723,6 +876,17 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
      }
    }, LV_EVENT_ALL, scene);
  
@@ -393,7 +405,7 @@ index 51dfe1d..4cccf3d 100644
    const plugin_api::SurfaceGeometry geometry = Layout(scene);
    // Room for the surface in either orientation, so a rotation keeps the
    // plugin and its memory (pages are only allocated as they are drawn).
-@@ -735,12 +887,6 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+@@ -735,12 +899,6 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
           "Could not create the plugin's display surface.");
      return;
    }

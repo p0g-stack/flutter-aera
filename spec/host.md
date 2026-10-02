@@ -129,7 +129,9 @@ After a pause AERA sends nothing until the plugin is opened again (from
 Recents or the plugin list), then a new `SURFACE` (every slot is the
 plugin's again, in the current orientation) and resume; or stop and
 `CLOSE` when it ends: the plugin's own `CLOSE`, Recents cleared or dropping
-it, or an update replacing it. A plugin that ignores inactive still
+it, or an update replacing it. Opened again while it is still on screen
+(its own Recents card), it keeps running and gets the same new `SURFACE`
+and resume, without a pause. A plugin that ignores inactive still
 behaves correctly. Inactive is appended to the enum, so no released value
 moves.
 
