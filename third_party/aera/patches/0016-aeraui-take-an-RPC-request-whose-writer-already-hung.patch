@@ -1,7 +1,7 @@
 From 018b49a5df6f719790facd605d41b43aacca4c31 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 20:55:03 +0000
-Subject: [PATCH 16/25] aeraui: take an RPC request whose writer already hung
+Subject: [PATCH 16/26] aeraui: take an RPC request whose writer already hung
  up
 
 RunFrame polls AERA's RPC input FIFO for POLLIN only. When a frame reads

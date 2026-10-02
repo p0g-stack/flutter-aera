@@ -10,7 +10,7 @@ Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (`bootable/recovery` in AERA's manifest). The patches touch `aeraui/`, `aera_rpc/`
 (0008) `prebuilt/` (0010, 0014), `recovery_utils/` (0012), `minuitwrp/`
 (0013, 0025), `aera_remote/` (0017) and the top-level
-`Android.mk` (0014).
+`Android.mk` (0014); 0026 touches `aeraui/core/engine.cpp`.
 
 Apply with `git am $(cat patches/series)` on a checkout of the pin. Devicelab
 copies `patches/*.patch` to `aera/build/patches/bootable/recovery/` for the
@@ -43,6 +43,18 @@ Cuttlefish image.
 | 0023 | `core/runner.cpp`, engine: the Home and Menu keys (AERA Remote's buttons) show Home and toggle Recents, as the bottom-edge swipe does (devicelab D8) |
 | 0024 | `core/runner.cpp`, engine: a Back held for half a second (key or edge swipe) skips the pixel plugin and leaves its scene, so a plugin can never trap the user (Yuv's call) |
 | 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped (devicelab D9) |
+| 0026 | `aeraui/core/engine.cpp`: the software renderer (no Adreno) draws landscape into a landscape-shaped buffer and turns each frame upright on flush, instead of folding a landscape layout into the portrait scanout (devicelab D12) |
+
+`lvgl-patches/` is a second, separate series for AERA's LVGL fork
+(`external/lvgl`, android_external_lvgl, pinned at
+017abcbf759c20ee9b91e0bf22e6ee81e04598a1 in AERA's manifest). Apply with
+`git am $(cat lvgl-patches/series)` there; devicelab copies them to
+`aera/build/patches/external/lvgl/`.
+
+| Patch | What |
+| --- | --- |
+| 0001 | `src/draw/sw/blend/lv_draw_sw_blend.c`: clip every software blend to the target layer's buffer, so a clip area that reaches past it skips the draw instead of writing through NULL or past a row (backstop for devicelab D10/D12) |
+| 0002 | `lv_conf.h`: `LV_DRAW_TRANSFORM_USE_MATRIX 0`. Neither of AERA's renderers applies a draw task's matrix, so transforms were never drawn and the widened clip let shrunk, off-screen objects blend outside the display buffer (the D10/D12 crash). Transforms now go through layers and scale as the styles ask (pressed buttons, tiles and cards shrink slightly; enlarged icons are drawn enlarged) |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as

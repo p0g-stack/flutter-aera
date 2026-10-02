@@ -1,7 +1,7 @@
 From 97b701c8919e9ca2ecad079109bfd53510aba4ad Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:39:30 +0000
-Subject: [PATCH 24/25] aeraui: a held Back always leaves a pixel plugin
+Subject: [PATCH 24/26] aeraui: a held Back always leaves a pixel plugin
 
 A pixel plugin takes every Back, as an Android app does, so it can run
 its own navigation. Unlike Browser (Back only while it has history) or a
