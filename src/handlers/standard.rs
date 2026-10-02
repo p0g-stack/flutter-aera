@@ -87,6 +87,14 @@ pub fn decode(bytes: &[u8]) -> Option<Value> {
     r.0.is_empty().then_some(v)
 }
 
+/// A `StandardMethodCodec` call: the method name, then its arguments.
+pub fn decode_call(bytes: &[u8]) -> Option<(String, Value)> {
+    let mut r = Reader(bytes);
+    let Value::Str(method) = r.value(0)? else { return None };
+    let args = r.value(0)?;
+    r.0.is_empty().then_some((method, args))
+}
+
 fn put_size(out: &mut Vec<u8>, n: usize) {
     if n < 254 {
         out.push(n as u8);

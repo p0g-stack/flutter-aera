@@ -21,6 +21,7 @@
 //! | `flutter/keyevent` | JSON message | not sent: AERA's keyboard commits text, as an IME | GDK key events | evdev keys |
 //! | `io.material.plugins/dynamic_color` | standard method | [`dynamic_color`]: `getAccentColor` = AERA's saved accent; in place of the stock plugin's GTK half | GTK plugin: portal or theme accent | not handled |
 //! | `dev.flutter.pigeon.file_selector_linux…showFileChooser` | Pigeon (standard) | [`file_selector`]: AERA's picker (`kPickFiles`), answered when AERA is; in place of the stock plugin's GTK half | GTK plugin: `GtkFileChooserNative` | not handled |
+//! | `flutter.baseflow.com/permissions/methods` | standard method | [`permissions`]: storage and media granted, the rest denied (permanently once asked); the stock plugin has no Linux half | not answered (MissingPluginException) | not handled |
 //! | `flutter/restoration` | standard method | not-implemented (as GTK) | not-implemented | not-implemented |
 //! | anything else | | not-implemented | | |
 
@@ -31,6 +32,7 @@ pub mod keyboard;
 pub mod lifecycle;
 pub mod mousecursor;
 pub mod navigation;
+pub mod permissions;
 pub mod platform;
 pub mod settings;
 pub mod standard;
@@ -84,6 +86,7 @@ impl Handlers {
             mousecursor::CHANNEL => mousecursor::handle(bytes),
             keyboard::CHANNEL => keyboard::handle(bytes),
             dynamic_color::CHANNEL => dynamic_color::handle(bytes, self.settings.accent()),
+            permissions::CHANNEL => permissions::handle(bytes),
             _ => codec::not_implemented(),
         };
         (Some(reply), effects)
