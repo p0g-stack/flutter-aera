@@ -1,7 +1,7 @@
 From c5d7dd815d7f94c577936ea6d5b9287ee984afde Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:15:00 +0000
-Subject: [PATCH 02/24] plugin_api: negotiate Host API 3 per scene; SURFACE
+Subject: [PATCH 02/25] plugin_api: negotiate Host API 3 per scene; SURFACE
  before RESUME; PRESENT outside the rate limit
 
 The session negotiates one protocol version for every plugin, and rate

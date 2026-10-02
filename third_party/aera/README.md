@@ -9,7 +9,7 @@ pin: abf33169b27dee17123c3c436a7299427821b329
 Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (`bootable/recovery` in AERA's manifest). The patches touch `aeraui/`, `aera_rpc/`
 (0008) `prebuilt/` (0010, 0014), `recovery_utils/` (0012), `minuitwrp/`
-(0013), `aera_remote/` (0017) and the top-level
+(0013, 0025), `aera_remote/` (0017) and the top-level
 `Android.mk` (0014).
 
 Apply with `git am $(cat patches/series)` on a checkout of the pin. Devicelab
@@ -42,6 +42,7 @@ Cuttlefish image.
 | 0022 | `plugin_api`: `AERA_PLUGIN_DATA_VOLATILE=1` when the data directory is the RAM fallback |
 | 0023 | `core/runner.cpp`, engine: the Home and Menu keys (AERA Remote's buttons) show Home and toggle Recents, as the bottom-edge swipe does (devicelab D8) |
 | 0024 | `core/runner.cpp`, engine: a Back held for half a second (key or edge swipe) skips the pixel plugin and leaves its scene, so a plugin can never trap the user (Yuv's call) |
+| 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped (devicelab D9) |
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as

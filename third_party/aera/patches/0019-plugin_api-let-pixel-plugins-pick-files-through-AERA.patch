@@ -1,7 +1,7 @@
 From 1613f6467b3d4242b64f5f72480eb91e57875e0f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:37:10 +0000
-Subject: [PATCH 19/24] plugin_api: let pixel plugins pick files through AERA's
+Subject: [PATCH 19/25] plugin_api: let pixel plugins pick files through AERA's
  picker
 
 A Host API 3 plugin draws its own pixels, so it has no way to show the

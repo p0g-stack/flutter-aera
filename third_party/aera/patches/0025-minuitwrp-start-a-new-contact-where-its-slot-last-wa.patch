@@ -1,0 +1,81 @@
+From 35506ac4bbca0ae51d251b2b4ed26986298e306c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 2 Oct 2026 00:04:03 +0000
+Subject: [PATCH 25/25] minuitwrp: start a new contact where its slot last was
+
+The touch translator zeroes its multitouch position when a contact ends
+(ABS_MT_TRACKING_ID -1, or pressure or touch-major 0), then rebuilds the
+next press from the ABS_MT_POSITION_X/Y events that follow. The kernel's
+multitouch protocol B never sends a slot value equal to the one it holds,
+so a press at the same x as the last contact carries no X, and one on
+the same spot carries neither:
+
+  tap 1  TRACKING_ID 1, X 360, Y 263   -> 360,263
+  tap 2  TRACKING_ID 2, Y 460          -> 0,460
+  tap 3  TRACKING_ID 3                 -> no press at all
+
+A second tap on a button lands on the left edge (x=0), where it is a Back
+swipe or a different widget; AERA Remote, which repeats exact pixels,
+hits it more often than a finger.
+
+Keep slot 0's last position, seeded from the device's current value,
+and start each new tracking ID there, so values the kernel leaves out
+come from the slot's state. Devices that report no tracking IDs keep
+their old behaviour.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ minuitwrp/events.cpp | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/minuitwrp/events.cpp b/minuitwrp/events.cpp
+index cb399c1..f9da631 100644
+--- a/minuitwrp/events.cpp
++++ b/minuitwrp/events.cpp
+@@ -523,6 +523,11 @@ static int vk_init(struct ev *e)
+     e->mt_slots[0].xi = e->mt_slots[1].xi = e->mt_p.xi;
+     e->mt_slots[0].yi = e->mt_slots[1].yi = e->mt_p.yi;
+     e->mt_slots[0].synced = e->mt_slots[1].synced = 0;
++    // The position the kernel holds for its current slot (slot 0 unless a
++    // second finger was last): a new contact at the same place sends no
++    // ABS_MT_POSITION_X/Y (see ABS_MT_TRACKING_ID below).
++    e->mt_slots[0].x = e->mt_p.xi.value;
++    e->mt_slots[0].y = e->mt_p.yi.value;
+     e->mt_slot = 0;
+     e->mt_active[0] = e->mt_active[1] = false;
+     e->mt_dirty[0] = e->mt_dirty[1] = false;
+@@ -860,6 +865,7 @@ static int vk_modify(struct ev *e, struct input_event *ev)
+ 		case ABS_MT_POSITION_X: //35
+             e->mt_p.synced |= 0x01;
+             e->mt_p.x = ev->value;
++            if (e->mt_slot == 0) e->mt_slots[0].x = ev->value;
+ #ifdef _EVENT_LOGGING
+             printf("EV: %s => EV_ABS  ABS_MT_POSITION_X  %d\n", e->deviceName, ev->value);
+ #endif
+@@ -868,6 +874,7 @@ static int vk_modify(struct ev *e, struct input_event *ev)
+         case ABS_MT_POSITION_Y: //36
+             e->mt_p.synced |= 0x02;
+             e->mt_p.y = ev->value;
++            if (e->mt_slot == 0) e->mt_slots[0].y = ev->value;
+ #ifdef _EVENT_LOGGING
+             printf("EV: %s => EV_ABS  ABS_MT_POSITION_Y  %d\n", e->deviceName, ev->value);
+ #endif
+@@ -907,6 +914,14 @@ static int vk_modify(struct ev *e, struct input_event *ev)
+                 if (use_tracking_id_negative_as_touch_release)
+                     printf("using ABS_MT_TRACKING_ID value -1 to indicate touch releases\n");
+ #endif
++            } else if (e->mt_slot == 0) {
++                // A new contact starts where the slot last was: the kernel
++                // drops ABS_MT_POSITION_X/Y values equal to the slot's
++                // current ones, so a press at the same x (or the same spot)
++                // carries no X (or nothing). The release above zeroed mt_p.
++                e->mt_p.x = e->mt_slots[0].x;
++                e->mt_p.y = e->mt_slots[0].y;
++                e->mt_p.synced |= 0x03;
+             }
+ #ifdef _EVENT_LOGGING
+             printf("EV: %s => EV_ABS ABS_MT_TRACKING_ID %d\n", e->deviceName, ev->value);
+-- 
+2.43.0
+
