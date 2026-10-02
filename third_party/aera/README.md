@@ -37,7 +37,7 @@ Cuttlefish image.
 | 0017 | `aera_remote/input.cpp`, `aera_remote.cpp`: create the virtual input device when Remote starts, so the first touch's press is not lost before recovery's input reader opens it (devicelab D7) |
 | 0018 | `aeraui/components/file_picker`: a shared file picker (one file, several, a folder, save as) that browses like Files; Telegram's attach picker becomes a caller, confined to its roots as before |
 | 0019 | `plugin_api`, pixel plugin scene: `REQUEST_OPERATION` `kPickFiles` opens that picker for a pixel plugin (`kFeatureFilePicker`); paths come back as `OPERATION_RESULT`s |
-| 0020 | `plugin_api`, pixel plugin scene, engine: a rotation sends a new `SURFACE` on the same memfd (sized at launch for either orientation) instead of restarting the plugin; `PRESENT` `flags` carry the surface generation and stale frames are released |
+| 0020 | `plugin_api`, pixel plugin scene, engine: a rotation sends a new `SURFACE` on the same memfd (sized at launch for either orientation) instead of restarting the plugin; `PRESENT` `flags` carry the surface generation and stale frames are released; the Quick Settings shade the rotation came from is laid out again for the new size |
 | 0021 | `plugin_api`, pixel plugin scene, engine: leaving the scene pauses the plugin (no `FRAME_DONE`) instead of stopping it; reopening sends a new `SURFACE` and resume; `kInactive` for a shade, sheet or picker over it; stopped by `CLOSE`, Recents or an update |
 | 0022 | `plugin_api`: `AERA_PLUGIN_DATA_VOLATILE=1` when the data directory is the RAM fallback |
 | 0023 | `core/runner.cpp`, engine: the Home and Menu keys (AERA Remote's buttons) show Home and toggle Recents, as the bottom-edge swipe does (devicelab D8) |

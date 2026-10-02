@@ -1,4 +1,4 @@
-From 1fca0aa9818de506a046903b0ea3abf24b346eb6 Mon Sep 17 00:00:00 2001
+From 3cbb9cab3d73da74d80a885acccebeb1d8fd58a1 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 2 Oct 2026 03:53:25 +0000
 Subject: [PATCH 26/27] aeraui: draw landscape on the software renderer

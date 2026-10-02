@@ -1,4 +1,4 @@
-From 3b69d5fd479917199fc07a9aa9e6740472e6b356 Mon Sep 17 00:00:00 2001
+From ad01987e6eb765a7deb33d9f2523950ecf3ab964 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:08:57 +0000
 Subject: [PATCH 22/27] plugin_api: tell a pixel plugin when its data directory

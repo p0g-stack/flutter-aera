@@ -1,4 +1,4 @@
-From 1d9925e7e8113d719f3b94a0726a4e1119216cbf Mon Sep 17 00:00:00 2001
+From b175c634be3cd333fb940945824930608cd3836f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:44:41 +0000
 Subject: [PATCH 20/27] plugin_api: keep a pixel plugin running across a
@@ -19,10 +19,15 @@ is the plugin's again, and the scene shows nothing until a frame of the
 new shape arrives. The rotation toggle no longer returns Home while a
 pixel plugin is running.
 
+The Quick Settings shade the rotation was started from stays open over
+the plugin, so it is laid out again for the screen's new size instead of
+keeping the old orientation's width (tiles cut off at the edge).
+
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
 ---
  aeraui/core/engine.cpp                       |   2 +-
+ aeraui/core/status_bar.cpp                   |  67 +++++++---
  aeraui/features/plugin_api/README.md         |  10 +-
  aeraui/features/plugin_api/session.cpp       |   5 +
  aeraui/features/plugin_api/session.hpp       |   2 +
@@ -32,7 +37,7 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  aeraui/scenes/scene.hpp                      |   3 +
  aeraui/tests/plugin_api_pixel_host_check.cpp |   2 +-
  aeraui/tests/plugin_api_surface_test.cpp     |  46 +++++--
- 10 files changed, 196 insertions(+), 53 deletions(-)
+ 11 files changed, 242 insertions(+), 74 deletions(-)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
 index 77bf86a..2c36499 100644
@@ -47,6 +52,105 @@ index 77bf86a..2c36499 100644
          self->ShowHome();
        return;
      }
+diff --git a/aeraui/core/status_bar.cpp b/aeraui/core/status_bar.cpp
+index ea2f322..e6ba07d 100644
+--- a/aeraui/core/status_bar.cpp
++++ b/aeraui/core/status_bar.cpp
+@@ -103,6 +103,32 @@ void SetShadeVisible(StatusState *state, int visible) {
+   lv_obj_set_y(state->sheet, state->shade_visible - state->shade_height);
+ }
+ 
++// Drops the state's references to the shade's widgets; the caller deletes
++// the shade.
++void ForgetShade(StatusState *state) {
++  state->shade = nullptr;
++  state->sheet = nullptr;
++  state->shade_wifi = nullptr;
++  state->shade_wifi_detail = nullptr;
++  state->shade_rotation = nullptr;
++  state->shade_rotation_detail = nullptr;
++  state->shade_flashlight = nullptr;
++  state->shade_flashlight_detail = nullptr;
++  state->shade_reboot = nullptr;
++  state->shade_reboot_detail = nullptr;
++  state->shade_recorder = nullptr;
++  state->shade_recorder_detail = nullptr;
++  state->shade_update = nullptr;
++  state->shade_update_title = nullptr;
++  state->shade_update_detail = nullptr;
++  state->shade_download = nullptr;
++  state->shade_download_title = nullptr;
++  state->shade_download_detail = nullptr;
++  state->shade_download_progress = nullptr;
++  state->brightness_value = nullptr;
++  state->brightness_slider = nullptr;
++}
++
+ void AnimateShade(StatusState *state, bool open) {
+   if (state == nullptr || state->shade == nullptr) return;
+   if (!open) {
+@@ -119,27 +145,7 @@ void AnimateShade(StatusState *state, bool open) {
+       lv_obj_set_y(static_cast<lv_obj_t *>(target), value);
+     });
+     lv_anim_start(&slide);
+-    state->shade = nullptr;
+-    state->sheet = nullptr;
+-    state->shade_wifi = nullptr;
+-    state->shade_wifi_detail = nullptr;
+-    state->shade_rotation = nullptr;
+-    state->shade_rotation_detail = nullptr;
+-    state->shade_flashlight = nullptr;
+-    state->shade_flashlight_detail = nullptr;
+-    state->shade_reboot = nullptr;
+-    state->shade_reboot_detail = nullptr;
+-    state->shade_recorder = nullptr;
+-    state->shade_recorder_detail = nullptr;
+-    state->shade_update = nullptr;
+-    state->shade_update_title = nullptr;
+-    state->shade_update_detail = nullptr;
+-    state->shade_download = nullptr;
+-    state->shade_download_title = nullptr;
+-    state->shade_download_detail = nullptr;
+-    state->shade_download_progress = nullptr;
+-    state->brightness_value = nullptr;
+-    state->brightness_slider = nullptr;
++    ForgetShade(state);
+     lv_obj_delete_delayed(closing, 250);
+     return;
+   }
+@@ -764,6 +770,24 @@ bool StatusBarShadeOpen() {
+   return gOpenShade != nullptr;
+ }
+ 
++// A screen that changes size keeps its scene (a pixel plugin across a
++// rotation started from the shade): an open shade is laid out again for the
++// new size and stays open.
++void ScreenResized(lv_event_t *event) {
++  auto *state = static_cast<StatusState *>(lv_event_get_user_data(event));
++  if (state == nullptr || state->shade == nullptr) return;
++  lv_anim_delete(state, nullptr);
++  // The rotation that resized the screen may come from a tile in this very
++  // shade, so it goes after the event that is running.
++  lv_obj_t *shade = state->shade;
++  ForgetShade(state);
++  lv_obj_add_flag(shade, LV_OBJ_FLAG_HIDDEN);
++  lv_obj_delete_async(shade);
++  state->dragging = false;
++  BuildShade(state);
++  SetShadeVisible(state, state->shade_height);
++}
++
+ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
+                      void *context, StatusBarAction action, bool soft_surface) {
+   auto *state = new StatusState;
+@@ -772,6 +796,7 @@ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
+   state->context = context;
+   state->action = action;
+   lv_obj_add_event_cb(screen, DeleteState, LV_EVENT_DELETE, state);
++  lv_obj_add_event_cb(screen, ScreenResized, LV_EVENT_SIZE_CHANGED, state);
+ 
+   lv_obj_t *bar = lv_obj_create(screen);
+   state->bar = bar;
 diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
 index 1c41f9e..94e4e16 100644
 --- a/aeraui/features/plugin_api/README.md
