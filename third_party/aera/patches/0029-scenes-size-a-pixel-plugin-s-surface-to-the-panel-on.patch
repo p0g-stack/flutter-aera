@@ -1,0 +1,122 @@
+From c9ff2f23cfe1e08652d5cdd08deb272daefb5ac5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 3 Oct 2026 00:12:48 +0000
+Subject: [PATCH] scenes: size a pixel plugin's surface to the panel on each
+ axis
+
+A pixel plugin's surface was AERA's logical view scaled by one factor,
+the panel's long side over the canvas's. With adaptive resolution the
+canvas is 1440 columns and need not have the panel's exact shape, so
+the other axis came out a few pixels off: on a 1272x2772 panel the
+portrait surface was 1279 wide, and the plugin laid out its rightmost
+seven columns where the glass has none.
+
+Scale each axis by the panel's size along it, in the screen's current
+orientation, and recompute on every layout, so a rotation swaps them.
+Touches, the keyboard inset and the surface all use the axis they lie
+on. Where the canvas has the panel's shape, both factors are the old
+one and nothing changes.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/scenes/pixel_plugin_scene.cpp | 37 +++++++++++++++++-----------
+ 1 file changed, 23 insertions(+), 14 deletions(-)
+
+diff --git a/aeraui/scenes/pixel_plugin_scene.cpp b/aeraui/scenes/pixel_plugin_scene.cpp
+index fb8c1a1..2993517 100644
+--- a/aeraui/scenes/pixel_plugin_scene.cpp
++++ b/aeraui/scenes/pixel_plugin_scene.cpp
+@@ -72,9 +72,10 @@ struct PixelScene {
+   std::thread worker;
+   lv_timer_t *timer = nullptr;
+   // The viewport in AERA's logical coordinates, and surface pixels per
+-  // logical unit (the panel is usually smaller than AERA's 1440 columns).
++  // logical unit across and down (the panel is usually smaller than AERA's
++  // 1440 columns, and its shape need not be the canvas's exactly).
+   int view_left = 0, view_top = 0, view_width = 0, view_height = 0;
+-  double pixels_per_unit = 1.0;
++  double pixels_per_unit_x = 1.0, pixels_per_unit_y = 1.0;
+   bool touch_pressed[kMaxPointers]{};
+   bool touch_ignored[kMaxPointers]{};
+   // A first contact that landed in a side-edge zone, not yet known to be
+@@ -189,7 +190,7 @@ uint32_t KeyboardInset(PixelScene *scene) {
+   const int covered = scene->view_top + scene->view_height - area.y1;
+   if (covered <= 0) return 0;
+   return static_cast<uint32_t>(std::lround(
+-      std::min(covered, scene->view_height) * scene->pixels_per_unit));
++      std::min(covered, scene->view_height) * scene->pixels_per_unit_y));
+ }
+ 
+ void SendKeyboardInset(PixelScene *scene) {
+@@ -516,10 +517,10 @@ void Tick(lv_timer_t *timer) {
+ // Sends a touch at screen point (x, y), mapped to surface pixels.
+ bool SendTouch(PixelScene *s, plugin_api::Kind kind, int slot, int x, int y) {
+   const int px = std::clamp(static_cast<int>(std::lround(
+-      (x - s->view_left) * s->pixels_per_unit)), 0,
++      (x - s->view_left) * s->pixels_per_unit_x)), 0,
+       static_cast<int>(s->surface.Geometry().width) - 1);
+   const int py = std::clamp(static_cast<int>(std::lround(
+-      (y - s->view_top) * s->pixels_per_unit)), 0,
++      (y - s->view_top) * s->pixels_per_unit_y)), 0,
+       static_cast<int>(s->surface.Geometry().height) - 1);
+   return s->session.Send(kind, static_cast<uint32_t>(slot),
+                          static_cast<uint32_t>(px), static_cast<uint32_t>(py));
+@@ -529,9 +530,9 @@ bool SendTouch(PixelScene *s, plugin_api::Kind kind, int slot, int x, int y) {
+ plugin_api::SurfaceGeometry ViewGeometry(PixelScene *scene) {
+   plugin_api::SurfaceGeometry geometry;
+   geometry.width = static_cast<uint32_t>(
+-      std::lround(scene->view_width * scene->pixels_per_unit));
++      std::lround(scene->view_width * scene->pixels_per_unit_x));
+   geometry.height = static_cast<uint32_t>(
+-      std::lround(scene->view_height * scene->pixels_per_unit));
++      std::lround(scene->view_height * scene->pixels_per_unit_y));
+   geometry.stride = geometry.width * 4;
+   geometry.slots = 3;
+   geometry.scale = DeviceScale(static_cast<int>(
+@@ -549,6 +550,20 @@ plugin_api::SurfaceGeometry Layout(PixelScene *scene) {
+   scene->view_top = StatusBarHeight();
+   scene->view_width = lv_obj_get_width(screen);
+   scene->view_height = lv_obj_get_height(screen) - scene->view_top;
++  // Each axis of the canvas maps onto the same axis of the panel, so the
++  // surface is exactly as wide and as tall as the glass that shows it.
++  const int screen_width = lv_obj_get_width(screen);
++  const int screen_height = lv_obj_get_height(screen);
++  const int panel_short = std::min(gr_fb_width(), gr_fb_height());
++  const int panel_long = std::max(gr_fb_width(), gr_fb_height());
++  const bool landscape = screen_width > screen_height;
++  const int panel_width = landscape ? panel_long : panel_short;
++  const int panel_height = landscape ? panel_short : panel_long;
++  scene->pixels_per_unit_x = screen_width > 0 && panel_width > 0
++      ? std::min(1.0, static_cast<double>(panel_width) / screen_width) : 1.0;
++  scene->pixels_per_unit_y = screen_height > 0 && panel_height > 0
++      ? std::min(1.0, static_cast<double>(panel_height) / screen_height)
++      : 1.0;
+   const plugin_api::SurfaceGeometry geometry = ViewGeometry(scene);
+   if (scene->viewport) {
+     lv_obj_set_pos(scene->viewport, scene->view_left, scene->view_top);
+@@ -797,12 +812,6 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+   MainBackground(screen);
+   AttachStatusBar(screen, callback, context, StatusBarAction::kNone, true);
+ 
+-  const int logical_long = std::max(lv_display_get_horizontal_resolution(
+-      scene->display), lv_display_get_vertical_resolution(scene->display));
+-  const int physical_long = std::max(gr_fb_width(), gr_fb_height());
+-  scene->pixels_per_unit = logical_long > 0 && physical_long > 0
+-      ? std::min(1.0, static_cast<double>(physical_long) / logical_long)
+-      : 1.0;
+   // The view's size, for the loading panel; widgets are placed below.
+   Layout(scene);
+ 
+@@ -893,7 +902,7 @@ void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
+   // plugin and its memory (pages are only allocated as they are drawn).
+   const uint64_t long_side = static_cast<uint64_t>(std::lround(
+       std::max(lv_obj_get_width(screen), lv_obj_get_height(screen)) *
+-      scene->pixels_per_unit));
++      std::max(scene->pixels_per_unit_x, scene->pixels_per_unit_y)));
+   if (!scene->surface.Create(geometry,
+                              long_side * long_side * 4 * geometry.slots)) {
+     Stop(scene, "Plugin unavailable",
+-- 
+2.43.0
+
