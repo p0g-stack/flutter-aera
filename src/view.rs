@@ -9,8 +9,13 @@ pub const VIEW_ID: i64 = 0;
 pub const DISPLAY_ID: u64 = 0;
 
 /// The bottom padding, in logical pixels: on the Infiniti's rounded corners
-/// labels 17 dp from the side were still cut, so 20 dp lifts them clear.
-pub const CORNER_DP: f64 = 20.0;
+/// bottom-navigation labels about 17 dp up were only just cut, so 8 dp more
+/// lifts them clear. Minimal on purpose (Yuv).
+pub const BOTTOM_DP: f64 = 8.0;
+
+/// The side padding, in logical pixels: just enough that a control drawn
+/// at the very edge is not on the curve of a rounded panel.
+pub const SIDE_DP: f64 = 4.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct View {
@@ -41,17 +46,14 @@ impl View {
     /// (left, top, right, bottom), sent on `aera/window`. Flutter's
     /// embedder API has no padding field (handlers/window.rs).
     ///
-    /// Sides: half of AERA's edge Back zone, which is a twentieth of the
-    /// screen's width (`max(72, width / 20)` on AERA's 1440-wide canvas,
-    /// 0015), so a control is never deep in the zone. Bottom:
-    /// [`CORNER_DP`], clear of a phone's rounded corners and of most of the
-    /// bottom Recents strip. Top: none, AERA's status bar is above the view.
-    /// Constants, not the device's real radius: AERA does not expose one
-    /// (Yuv's compromise, 2026-10-02).
+    /// Sides [`SIDE_DP`], bottom [`BOTTOM_DP`]: the least that keeps
+    /// controls off a phone's rounded corners. Top: none, AERA's status bar
+    /// is above the view. Constants, not the device's real radius: AERA does
+    /// not expose one (Yuv: a compromise, kept minimal, 2026-10-02).
     pub fn padding(&self) -> Padding {
         let g = self.geometry;
-        let side = (g.width as f64 / 40.0).round();
-        let bottom = (CORNER_DP * g.scale).round().min(g.height as f64 / 4.0);
+        let side = (SIDE_DP * g.scale).round();
+        let bottom = (BOTTOM_DP * g.scale).round();
         [side, 0.0, side, bottom]
     }
 
@@ -105,13 +107,13 @@ mod tests {
     }
 
     #[test]
-    fn padding_is_half_the_edge_zone_and_a_corner() {
+    fn padding_is_minimal() {
         // The Infiniti's portrait surface (0029) and its landscape one.
         let mut g = Geometry::PHONE;
         (g.width, g.height, g.scale) = (1272, 2647, 3.0);
-        assert_eq!(View::new(g).padding(), [32.0, 0.0, 32.0, 60.0]);
+        assert_eq!(View::new(g).padding(), [12.0, 0.0, 12.0, 24.0]);
         (g.width, g.height) = (2772, 1154);
-        assert_eq!(View::new(g).padding(), [69.0, 0.0, 69.0, 60.0]);
+        assert_eq!(View::new(g).padding(), [12.0, 0.0, 12.0, 24.0]);
     }
 
     #[test]
