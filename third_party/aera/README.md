@@ -11,14 +11,16 @@ Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (0008) `prebuilt/` (0010, 0014), `recovery_utils/` (0012), `minuitwrp/`
 (0013, 0025) and the top-level `Android.mk` (0014); 0026 touches
 `aeraui/core/engine.cpp`. 0017 and 0027 moved to `remote-patches/` (R0001,
-R0002) and 0028 to `refinement-patches/` (F0001); their numbers stay unused
-so earlier references keep their meaning.
+R0002), 0028 to `refinement-patches/` (F0001) and 0011 to
+`cuttlefish-patches/` (C0001); their numbers stay unused so earlier
+references keep their meaning.
 
 Apply with `git am $(cat patches/series)` on a checkout of the pin, then
-`refinement-patches/` and `remote-patches/` (below), in that order. Devicelab
-copies `patches/*.patch`, `refinement-patches/*.patch` and
-`remote-patches/*.patch` to `aera/build/patches/bootable/recovery/` for the
-image; the `F` and `R` names sort after the numbered ones in that order.
+`cuttlefish-patches/` (x86_64 builds only), `refinement-patches/` and
+`remote-patches/` (below), in that order. Devicelab copies the `*.patch`
+files of each to `aera/build/patches/bootable/recovery/`; the `C`, `F` and
+`R` names sort after the numbered ones in that order. Each extra series
+applies on `patches/` alone.
 
 | Patch | What |
 | --- | --- |
@@ -32,7 +34,6 @@ image; the `F` and `R` names sort after the numbered ones in that order.
 | 0008 | AERA RPC `plugin` / `open`: start an installed plugin over adb, for `flutter attach` (docs/debugging.md) |
 | 0009 | `AERA_APPEARANCE=light\|dark` in a Host API 3 plugin's environment, from AERA's theme (platform brightness) |
 | 0010 | `prebuilt/Android.mk`: pack `libincfs.so` on every build (`libandroidfw.so` needs it), not only with FBE |
-| 0011 | libwebp's SSE2/SSE4.1 sources, so recovery links for x86_64 (Cuttlefish) |
 | 0012 | `recovery_utils/battery_utils.cpp`: look the health HAL up once (again at most once a minute if missing, or after it dies) instead of on every 1 s battery read (devicelab D2) |
 | 0013 | `minuitwrp/graphics_drm.cpp`: without a Qualcomm SDE topology, scan out on the CRTC's own primary plane with one layer mixer (devicelab D3) |
 | 0014 | `task_profiles.json` required and packed on every build, so logd stops aborting on builds that ship logd (`TARGET_USES_LOGD := true`) without the file in their device tree (devicelab D4) |
@@ -48,6 +49,13 @@ image; the `F` and `R` names sort after the numbered ones in that order.
 | 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped, on whichever slot the kernel is on (devicelab D9; the Infiniti panel's raw path was not on slot 0) |
 | 0026 | `aeraui/core/engine.cpp`: the software renderer (no Adreno) draws landscape into a landscape-shaped buffer and turns each frame upright on flush, instead of folding a landscape layout into the portrait scanout (devicelab D12) |
 | 0029 | `aeraui/scenes/pixel_plugin_scene.cpp`: the surface is scaled to the panel on each axis, so with adaptive resolution it is exactly the panel's width (it was 1279 on a 1272 panel; Infiniti hand walk) |
+
+`cuttlefish-patches/` is the series only an emulator build needs: nothing
+in it matters on an arm64 phone (harmless there).
+
+| Patch | What |
+| --- | --- |
+| C0001 | libwebp's SSE2/SSE4.1 sources, so recovery links for x86_64 (Cuttlefish; was 0011) |
 
 `refinement-patches/` is the series for refinements of AERA's own behaviour:
 optional polish that AERA works without and that a plugin does not need,
