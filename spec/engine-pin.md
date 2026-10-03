@@ -7,21 +7,22 @@
 | Engine content hash | `ab598368592da0064197e2bc15c7f5b0a2c6bb1f` (`engine_stamp.json`) |
 | Dart SDK | 3.13.4 |
 | `vendor/flutter/flutter_embedder.h` sha256 | `b9f20ec9453c623102da4d736076f57c0bb75a9e9beb50c196954a4899a01503` (stock header + `third_party/flutter-engine/patches`) |
-| `linux-x64-embedder.zip` sha256 (sim engine, debug/JIT) | `d819c2a3aaa6c93bc57f4e535b6ad65500717f033b5576132da899b5a32fe86d` |
-| `linux-arm64-embedder.zip` sha256 (phone engine, debug/JIT) | `2bfe19c80c007fc70731a4ff55d20436f95d8f565651d258714f8e274263fd47` |
-| `linux-x64/artifacts.zip` sha256 (`icudtl.dat`, host `gen_snapshot`) | `b2e6e1e6b95866297b77580d04dbebcd45863585ad9f484108101c7c2f427a4a` |
+| Engine release | `engine-af7e796-0d7f3ed2` (`ci/engine-tag.sh`: revision + sha256 of the patch series), built by `ci/build-engine.sh` |
+| `linux-x64-debug-embedder.zip` sha256 (sim) | `3d5df7a667253dafb053b376ff44865518637d60aaf64ceb5130741aef20857b` |
+| `linux-arm64-debug-embedder.zip` sha256 (phone, JIT) | `9f073512db3b971c0ea07657852897f03ffca7627fc0b48d54a4c9dd6d855c18` |
+| `linux-arm64-profile-embedder.zip` sha256 (+ x64 `gen_snapshot`) | `d16e8cac4372e6096bbb7efa9e08102eb2e1c33f7bda87f6562e560571de94f3` |
+| `linux-arm64-release-embedder.zip` sha256 (+ x64 `gen_snapshot`) | `6fd21fe01a29c04fbfe75e11d316e0e688ec7870ea551f2528bc6e69e1ed8197` |
 
-Artifacts come from
-`https://storage.googleapis.com/flutter_infra_release/flutter/<git revision>/linux-x64/<name>`
-(the git revision, not the content hash, serves the embedder zip).
-`ci/fetch-engine.sh` fetches them and checks these hashes.
-
-The vendored header is Google's plus `third_party/flutter-engine/patches`
-(0001 adds view padding); `ci/fetch-engine.sh` checks the stock header with
-the patches applied. Our own engines (debug, profile and release, built from
-source by `ci/build-engine.sh`, release `engine-<revision>-<series hash>`)
-replace Google's zips here once published; until then the kit runs Google's
-debug engine, which ignores the padding fields.
+Our engines, not Google's: built from the revision above with
+`third_party/flutter-engine/patches` (0001 adds view padding) by
+`ci/build-engine.sh` and published to
+`https://github.com/p0g-stack/flutter-aera/releases/tag/engine-af7e796-0d7f3ed2`.
+Each zip holds `libflutter_engine.so`, `flutter_embedder.h` and `icudtl.dat`.
+`ci/fetch-engine.sh DIR ARCH [MODE]` fetches one, checks its hash, and checks
+its header is `vendor/flutter/flutter_embedder.h` byte for byte. A Flutter
+bump or a change to the patch series makes a new release name: run the
+Engine workflow (or `ci/build-engine.sh` + `ci/publish-engine.sh` by hand),
+then update the hashes here and in `ci/fetch-engine.sh`.
 
 ## Mesa
 
