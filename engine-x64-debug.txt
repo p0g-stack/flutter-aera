@@ -1,0 +1,20 @@
+run 37085652052 x64-debug ec499eed36668dc40e2702b514b49a2b31eabb92
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root       145G   44G  101G  31% /
+/dev/root       145G   44G  101G  31% /
+WARNING: Your metrics.cfg file was invalid or nonexistent. A new one will be created.
+________ running 'python3 engine/src/flutter/third_party/dart/tools/generate_package_config.py' in '/mnt/engine/flutter'
+________ running 'python3 engine/src/flutter/third_party/dart/tools/generate_sdk_version_file.py' in '/mnt/engine/flutter'
+________ running 'python3 engine/src/flutter/tools/pub_get_offline.py' in '/mnt/engine/flutter'
+________ running 'python3 engine/src/flutter/tools/githooks/setup.py' in '/mnt/engine/flutter'
+Installing Git Hooks
+Installing Debian bullseye amd64 root image: /mnt/engine/flutter/engine/src/build/linux/debian_bullseye_amd64-sysroot
+Downloading https://commondatastorage.googleapis.com/chrome-linux-sysroot/36a164623d03f525e3dfb783a5e9b8a00e98e1ddd2b5cff4e449bd016dd27e50
+Installing Debian bullseye arm64 root image: /mnt/engine/flutter/engine/src/build/linux/debian_bullseye_arm64-sysroot
+Downloading https://commondatastorage.googleapis.com/chrome-linux-sysroot/2f915d821eec27515c0c6d21b69898e23762908d8d7ccc1aa2a8f5f25e8b7e18
+Generating compile_commands took 25ms
+Done. Made 1139 targets from 382 files in 282ms
+Using prebuilt Dart SDK binary. If you are editing Dart sources and wish to compile the Dart SDK, set `--no-prebuilt-dart-sdk`.
+Generating GN files in: out/aera_x64_debug
+python3_bin_reldir.txt not found. need to initialize depot_tools by
+running gclient, update_depot_tools or ensure_bootstrap.
