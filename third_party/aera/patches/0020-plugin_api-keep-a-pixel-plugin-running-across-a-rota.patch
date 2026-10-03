@@ -1,8 +1,7 @@
-From b175c634be3cd333fb940945824930608cd3836f Mon Sep 17 00:00:00 2001
+From fc76b44db55638fa6dd04f508a6662fb7bdafeea Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:44:41 +0000
-Subject: [PATCH 20/29] plugin_api: keep a pixel plugin running across a
- rotation
+Subject: [PATCH] plugin_api: keep a pixel plugin running across a rotation
 
 Rotating from Quick Settings returns AERA to Home, which ends a running
 pixel plugin: its surface had one fixed size, so there was no way to

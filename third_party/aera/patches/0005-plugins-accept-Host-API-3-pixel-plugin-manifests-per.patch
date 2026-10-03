@@ -1,8 +1,8 @@
-From 3baa8bd9e500a6f883b9957d0156a2425865f4ff Mon Sep 17 00:00:00 2001
+From 687979d49d7d287522c7a43d709f165c18b79746 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:27:24 +0000
-Subject: [PATCH 05/29] plugins: accept Host API 3 pixel plugin manifests;
- per-plugin data directory
+Subject: [PATCH] plugins: accept Host API 3 pixel plugin manifests; per-plugin
+ data directory
 
 Accept protocol 3 manifests whose min_host_api matches, requiring the
 display, touch-input and pixel-surface permissions and allowing

@@ -1,8 +1,8 @@
-From 5e95651c886db56e8c3af090b772db56b4f9125f Mon Sep 17 00:00:00 2001
+From 54471373f0a4f1afa5f3ced856ae1ed1d9728a6f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:35:35 +0000
-Subject: [PATCH 18/29] aeraui: a shared file picker, with Telegram as its
- first caller
+Subject: [PATCH] aeraui: a shared file picker, with Telegram as its first
+ caller
 
 Telegram's "Attach a file" overlay was AERA's only file picker, written
 inside telegram_scene.cpp: one file, four hard-coded storage roots, a

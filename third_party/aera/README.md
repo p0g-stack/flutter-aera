@@ -9,12 +9,14 @@ pin: abf33169b27dee17123c3c436a7299427821b329
 Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (`bootable/recovery` in AERA's manifest). The patches touch `aeraui/`, `aera_rpc/`
 (0008) `prebuilt/` (0010, 0014), `recovery_utils/` (0012), `minuitwrp/`
-(0013, 0025), `aera_remote/` (0017, 0027) and the top-level
-`Android.mk` (0014); 0026 and 0028 touch `aeraui/core/engine.cpp`.
+(0013, 0025) and the top-level `Android.mk` (0014); 0026 and 0028 touch
+`aeraui/core/engine.cpp`. 0017 and 0027 moved to `remote-patches/` (R0001,
+R0002); their numbers stay unused so earlier references keep their meaning.
 
-Apply with `git am $(cat patches/series)` on a checkout of the pin. Devicelab
-copies `patches/*.patch` to `aera/build/patches/bootable/recovery/` for the
-Cuttlefish image.
+Apply with `git am $(cat patches/series)` on a checkout of the pin, then
+`remote-patches/` (below). Devicelab copies `patches/*.patch` and then
+`remote-patches/*.patch` to `aera/build/patches/bootable/recovery/` for the
+Cuttlefish image; the `R` names sort after the numbered ones.
 
 | Patch | What |
 | --- | --- |
@@ -34,7 +36,6 @@ Cuttlefish image.
 | 0014 | `task_profiles.json` required and packed on every build, so logd stops aborting on builds that ship logd (`TARGET_USES_LOGD := true`) without the file in their device tree (devicelab D4) |
 | 0015 | pixel plugin scene: a contact in the side-edge zone is Back only once it swipes inward; taps there reach the plugin (devicelab D5) |
 | 0016 | `aeraui/core/engine.cpp`: take an RPC request whose writer already hung up (POLLHUP), so a request is never left waiting for the next client (devicelab D6) |
-| 0017 | `aera_remote/input.cpp`, `aera_remote.cpp`: create the virtual input device when Remote starts, so the first touch's press is not lost before recovery's input reader opens it (devicelab D7) |
 | 0018 | `aeraui/components/file_picker`: a shared file picker (one file, several, a folder, save as) that browses like Files; Telegram's attach picker becomes a caller, confined to its roots as before |
 | 0019 | `plugin_api`, pixel plugin scene: `REQUEST_OPERATION` `kPickFiles` opens that picker for a pixel plugin (`kFeatureFilePicker`); paths come back as `OPERATION_RESULT`s |
 | 0020 | `plugin_api`, pixel plugin scene, engine: a rotation sends a new `SURFACE` on the same memfd (sized at launch for either orientation) instead of restarting the plugin; `PRESENT` `flags` carry the surface generation and stale frames are released; the Quick Settings shade the rotation came from is laid out again for the new size |
@@ -44,11 +45,20 @@ Cuttlefish image.
 | 0024 | `core/runner.cpp`, engine: a Back held for half a second (key or edge swipe) skips the pixel plugin and leaves its scene, so a plugin can never trap the user (Yuv's call) |
 | 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped, on whichever slot the kernel is on (devicelab D9; the Infiniti panel's raw path was not on slot 0) |
 | 0026 | `aeraui/core/engine.cpp`: the software renderer (no Adreno) draws landscape into a landscape-shaped buffer and turns each frame upright on flush, instead of folding a landscape layout into the portrait scanout (devicelab D12) |
-| 0027 | `aera_remote/aera_remote.cpp`: `/screen.jpg` waits (up to 0.5 s) for a frame captured after the request, instead of returning the one from the previous request (devicelab D12) |
 | 0028 | `aeraui/core/engine.cpp`: a contact in the bottom strip starts the Recents swipe only once it moves up past the touch slop; a tap or a sideways contact goes to what is under it (pixel plugin, browser or AERA's own UI) instead of flashing the Recents preview and being lost (Infiniti hardware walk) |
 | 0029 | `aeraui/scenes/pixel_plugin_scene.cpp`: the surface is scaled to the panel on each axis, so with adaptive resolution it is exactly the panel's width (it was 1279 on a 1272 panel; Infiniti hand walk) |
 
-`lvgl-patches/` is a second, separate series for AERA's LVGL fork
+`remote-patches/` is the series for AERA Remote (`aera_remote/`: its server,
+input injection and screen capture), against the same pin and applied after
+`patches/` (`git am $(cat remote-patches/series)`). Neither series needs the
+other today. AERA Remote work goes here (Yuv, 2026-10-02).
+
+| Patch | What |
+| --- | --- |
+| R0001 | `aera_remote/input.cpp`, `aera_remote.cpp`: create the virtual input device when Remote starts, so the first touch's press is not lost before recovery's input reader opens it (devicelab D7; was 0017) |
+| R0002 | `aera_remote/aera_remote.cpp`: `/screen.jpg` waits (up to 0.5 s) for a frame captured after the request, instead of returning the one from the previous request (devicelab D12; was 0027) |
+
+`lvgl-patches/` is a separate series for AERA's LVGL fork
 (`external/lvgl`, android_external_lvgl, pinned at
 017abcbf759c20ee9b91e0bf22e6ee81e04598a1 in AERA's manifest). Apply with
 `git am $(cat lvgl-patches/series)` there; devicelab copies them to

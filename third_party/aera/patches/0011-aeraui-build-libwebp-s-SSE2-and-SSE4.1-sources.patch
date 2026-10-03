@@ -1,7 +1,7 @@
-From 0cc1d3841f3008c7cb10e4e875c66a964c5f6b95 Mon Sep 17 00:00:00 2001
+From e0160dab4148806fc5dd68840de13ac26fa398c8 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 13:55:28 +0000
-Subject: [PATCH 11/29] aeraui: build libwebp's SSE2 and SSE4.1 sources
+Subject: [PATCH] aeraui: build libwebp's SSE2 and SSE4.1 sources
 
 libaera_webp_decoder lists libwebp's NEON sources but not its SSE ones.
 On x86 and x86_64, libwebp's dsp.h defines WEBP_HAVE_SSE2 and

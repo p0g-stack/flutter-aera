@@ -1,8 +1,8 @@
-From 4b55a3afd3a96d120fe4801dae88a4fbb66958f5 Mon Sep 17 00:00:00 2001
+From 01848dbce62b633b069b1bb154161b5bdb5f52fe Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:06:14 +0000
-Subject: [PATCH 21/29] plugin_api: pause a pixel plugin when its scene is
- left, resume it on return
+Subject: [PATCH] plugin_api: pause a pixel plugin when its scene is left,
+ resume it on return
 
 A pixel plugin was stopped whenever its scene was left, so going Home or
 through Recents and back cold-started the app. Browser instead keeps its

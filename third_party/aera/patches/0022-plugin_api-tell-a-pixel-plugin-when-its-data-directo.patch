@@ -1,8 +1,8 @@
-From ad01987e6eb765a7deb33d9f2523950ecf3ab964 Mon Sep 17 00:00:00 2001
+From 028e991ed7a83e5228a6f43d3529bf9ca3ba8748 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:08:57 +0000
-Subject: [PATCH 22/29] plugin_api: tell a pixel plugin when its data directory
- is in RAM
+Subject: [PATCH] plugin_api: tell a pixel plugin when its data directory is in
+ RAM
 
 AERA_PLUGIN_DATA falls back to RAM when storage is not mounted, and a
 plugin had no way to know that what it saves will not survive a reboot.

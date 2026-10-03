@@ -1,8 +1,8 @@
-From 3a5cfa21ab6b693da860f33cf400f56f2bda2895 Mon Sep 17 00:00:00 2001
+From 9b5359109af580160e875f2a21749ad023ca643c Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 07:15:08 +0000
-Subject: [PATCH 09/29] plugin_api: tell Host API 3 plugins AERA's light or
- dark appearance
+Subject: [PATCH] plugin_api: tell Host API 3 plugins AERA's light or dark
+ appearance
 
 A plugin that draws its own UI cannot tell whether AERA is in its light or
 dark theme, so it cannot match it.
