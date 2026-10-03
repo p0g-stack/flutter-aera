@@ -71,7 +71,10 @@ and, where they belong in AERA, answered with the next patch number.
 ## Not covered yet
 
 - Slots are sealed memfds copied by the CPU; no dma-buf slots, so a GPU
-  frame is read back before AERA sees it.
+  frame is read back before AERA sees it. Won't do (Yuv, 2026-10-03: too
+  much engineering for an overhaul): every AERA payload (Browser, Doom,
+  RetroArch) hands frames the same way, and the copy path holds 60 Hz on
+  the Infiniti.
 - No damage rectangles on `PRESENT`: AERA redraws the whole surface even
   when we copied only what changed (`src/renderer/damage.rs`).
 - Sound needs AERA's closed `aera-audio-bridge`, which only official AERA
