@@ -73,3 +73,25 @@ class _AeraWindowPaddingState extends State<AeraWindowPadding> {
     );
   }
 }
+
+/// The widgets binding for an app on AERA: [runApp]'s root goes inside
+/// [AeraWindowPadding], so the app needs no code of its own. flutter_p0g's
+/// AERA build calls [install] in a generated entrypoint before the app's own
+/// `main`; [runApp] then finds this binding already in place.
+class AeraWindowBinding extends WidgetsFlutterBinding {
+  static bool _installed = false;
+
+  /// Creates this binding. Call it first, before any other binding exists;
+  /// later calls do nothing.
+  static WidgetsBinding install() {
+    if (!_installed) {
+      _installed = true;
+      AeraWindowBinding();
+    }
+    return WidgetsBinding.instance;
+  }
+
+  @override
+  Widget wrapWithDefaultView(Widget rootWidget) =>
+      super.wrapWithDefaultView(AeraWindowPadding(child: rootWidget));
+}
