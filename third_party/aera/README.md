@@ -10,7 +10,7 @@ Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (`bootable/recovery` in AERA's manifest). The patches touch `aeraui/`, `aera_rpc/`
 (0008) `prebuilt/` (0010, 0014), `recovery_utils/` (0012), `minuitwrp/`
 (0013, 0025), `aera_remote/` (0017, 0027) and the top-level
-`Android.mk` (0014); 0026 touches `aeraui/core/engine.cpp`.
+`Android.mk` (0014); 0026 and 0028 touch `aeraui/core/engine.cpp`.
 
 Apply with `git am $(cat patches/series)` on a checkout of the pin. Devicelab
 copies `patches/*.patch` to `aera/build/patches/bootable/recovery/` for the
@@ -45,6 +45,7 @@ Cuttlefish image.
 | 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped (devicelab D9) |
 | 0026 | `aeraui/core/engine.cpp`: the software renderer (no Adreno) draws landscape into a landscape-shaped buffer and turns each frame upright on flush, instead of folding a landscape layout into the portrait scanout (devicelab D12) |
 | 0027 | `aera_remote/aera_remote.cpp`: `/screen.jpg` waits (up to 0.5 s) for a frame captured after the request, instead of returning the one from the previous request (devicelab D12) |
+| 0028 | `aeraui/core/engine.cpp`: a contact in the bottom strip starts the Recents swipe only once it moves up past the touch slop; a tap or a sideways contact goes to what is under it (pixel plugin, browser or AERA's own UI) instead of flashing the Recents preview and being lost (Infiniti hardware walk) |
 
 `lvgl-patches/` is a second, separate series for AERA's LVGL fork
 (`external/lvgl`, android_external_lvgl, pinned at
