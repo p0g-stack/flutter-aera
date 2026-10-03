@@ -3,9 +3,9 @@
 //! API sets only `physical_view_inset_*` (`viewInsets`, the keyboard), never
 //! `physical_padding_*` (`viewPadding`, what `SafeArea` and
 //! `MediaQuery.padding` read), so an embedder cannot report padding the way
-//! Android's does. The app's AERA shell applies this message as its root
-//! `MediaQuery` padding; an app without that shell sees zero padding, as on
-//! Linux desktop.
+//! Android's does. `AeraWindowPadding` (`dart/aera_window`), wrapped round
+//! the app on its AERA place, applies this message as the root `MediaQuery`
+//! padding; an app without it sees zero padding, as on Linux desktop.
 //!
 //! The embedder sends `{"viewPadding":{"left":L,"top":T,"right":R,"bottom":B}}`
 //! (physical pixels, like `FlutterView.viewPadding`) with every window
