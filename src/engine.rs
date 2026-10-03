@@ -564,8 +564,13 @@ unsafe extern "C" fn cb_fbo(user_data: *mut c_void) -> u32 {
     s.renderer.gl().framebuffer()
 }
 
+/// Asked at the start of each frame, before the engine asks for the
+/// framebuffer, which is when a rotation reallocates it: so the flip is
+/// about the height the frame will have, not the one the framebuffer had.
+/// (With the old height the first frame after a rotation was drawn shifted
+/// off the surface, and later partial repaints left the rest stale.)
 unsafe extern "C" fn cb_transformation(user_data: *mut c_void) -> ffi::FlutterTransformation {
-    gl::flip_vertically(shared(user_data).renderer.gl().size().1)
+    gl::flip_vertically(shared(user_data).renderer.gl().drawing_size().1)
 }
 
 unsafe extern "C" fn cb_proc_resolver(user_data: *mut c_void, name: *const c_char) -> *mut c_void {

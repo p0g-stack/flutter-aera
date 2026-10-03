@@ -242,6 +242,12 @@ impl Gl {
         self.wanted.store(pack(width, height), Ordering::Release);
     }
 
+    /// The size the next frame is drawn at: the framebuffer's, or after a
+    /// [`Gl::resize`] the size it takes when the raster thread next asks.
+    pub fn drawing_size(&self) -> (u32, u32) {
+        unpack(self.wanted.load(Ordering::Acquire))
+    }
+
     /// The size of the framebuffer as last allocated.
     pub fn size(&self) -> (u32, u32) {
         unpack(self.current.load(Ordering::Acquire))

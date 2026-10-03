@@ -29,9 +29,13 @@ run gl-impeller "Impeller rendering backend (OpenGLES)" --enable-impeller
 run vulkan "Vulkan renderer" --vulkan
 run vulkan-impeller "Impeller rendering backend (Vulkan)" --vulkan --enable-impeller
 
-# A rotation, as on a 720x1348 phone with a 165-row status bar: the surface
+# Rotations, as on a 720x1348 phone with a 165-row status bar: the surface
 # turns from 720x1183 to 1348x555, wider than the first shape's longer side,
-# and the app must keep drawing (devicelab D12: Vulkan kept the old shape).
+# and back. The app must keep drawing (devicelab D12: Vulkan kept the old
+# shape), and the first frame of each shape must be upright and whole: it is
+# the one frame the counter draws after a turn (Infiniti: with the flip about
+# the old height it was drawn off the surface, and later partial repaints
+# left the rest stale).
 rotate() {
   local name=$1; shift
   local out=$work/rotate-$name
@@ -40,15 +44,22 @@ rotate() {
   local i=1
   for s in "$@"; do env+=("FLUTTER_ENGINE_SWITCH_$i=$s"); i=$((i + 1)); done
   env "${env[@]}" "$repo/target/release/aera-host-sim" --root "$work/payload" --out "$out" --until 5000 \
-    --size 720x1348 --bar 165 --scale 1.75 --snap portrait@1500 --rotate@2000 --snap landscape@4500 \
+    --size 720x1348 --bar 165 --scale 1.75 --snap portrait@1500 --rotate@2000 --snap landscape@2800 \
+    --rotate@3200 --snap back@4000 \
     >"$out.log" 2>&1
-  if ! grep -q "surface now 1348x555" "$out.log" || [ ! -f "$out/landscape.png" ]; then
+  if ! grep -q "surface now 1348x555" "$out.log" || [ ! -f "$out/landscape.png" ] || [ ! -f "$out/back.png" ]; then
     echo "rotate $name: no landscape frame" >&2; cat "$out.log" >&2; exit 1
   fi
-  python3 - "$out/landscape.png" <<'PY'
-import struct, sys
-w, h = struct.unpack(">II", open(sys.argv[1], "rb").read(24)[16:24])
-assert (w, h) == (1348, 555), (w, h)
+  python3 - "$out/landscape.png" "$out/back.png" "$repo/ci" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[3])
+from png_compare import pixel, read_png
+for path, size in ((sys.argv[1], (1348, 555)), (sys.argv[2], (720, 1183))):
+    frame = read_png(path)
+    assert (frame[0], frame[1]) == size, (path, frame[0], frame[1])
+    top, bottom = pixel(frame, frame[0] // 2, 40), pixel(frame, frame[0] // 2, frame[1] - 10)
+    if sum(top) >= sum(bottom):
+        sys.exit(f"{path}: not upright and whole after a rotation (top {top}, bottom {bottom})")
 PY
   echo "rotate $name: ok"
 }
