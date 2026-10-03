@@ -2,10 +2,15 @@
 //! and touches as Flutter pointer events. ≈ GTK's `fl_view`.
 
 use crate::ffi::{self, FlutterPointerEvent, FlutterWindowMetricsEvent};
+use crate::handlers::window::Padding;
 use crate::host::{kind, Geometry, Message};
 
 pub const VIEW_ID: i64 = 0;
 pub const DISPLAY_ID: u64 = 0;
+
+/// The bottom padding, in logical pixels: on the Infiniti's rounded corners
+/// labels 17 dp from the side were still cut, so 20 dp lifts them clear.
+pub const CORNER_DP: f64 = 20.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct View {
@@ -30,6 +35,24 @@ impl View {
         m.display_id = DISPLAY_ID;
         m.view_id = VIEW_ID;
         m
+    }
+
+    /// The padding apps keep their controls out of, in physical pixels
+    /// (left, top, right, bottom), sent on `aera/window`. Flutter's
+    /// embedder API has no padding field (handlers/window.rs).
+    ///
+    /// Sides: half of AERA's edge Back zone, which is a twentieth of the
+    /// screen's width (`max(72, width / 20)` on AERA's 1440-wide canvas,
+    /// 0015), so a control is never deep in the zone. Bottom:
+    /// [`CORNER_DP`], clear of a phone's rounded corners and of most of the
+    /// bottom Recents strip. Top: none, AERA's status bar is above the view.
+    /// Constants, not the device's real radius: AERA does not expose one
+    /// (Yuv's compromise, 2026-10-02).
+    pub fn padding(&self) -> Padding {
+        let g = self.geometry;
+        let side = (g.width as f64 / 40.0).round();
+        let bottom = (CORNER_DP * g.scale).round().min(g.height as f64 / 4.0);
+        [side, 0.0, side, bottom]
     }
 
     /// A touch from AERA as a Flutter pointer event, or `None` if `message`
@@ -79,6 +102,16 @@ mod tests {
         let m = v.metrics();
         assert_eq!((m.width, m.height, m.pixel_ratio), (1080, 2400, 2.75));
         assert_eq!(m.physical_view_inset_bottom, 900.0);
+    }
+
+    #[test]
+    fn padding_is_half_the_edge_zone_and_a_corner() {
+        // The Infiniti's portrait surface (0029) and its landscape one.
+        let mut g = Geometry::PHONE;
+        (g.width, g.height, g.scale) = (1272, 2647, 3.0);
+        assert_eq!(View::new(g).padding(), [32.0, 0.0, 32.0, 60.0]);
+        (g.width, g.height) = (2772, 1154);
+        assert_eq!(View::new(g).padding(), [69.0, 0.0, 69.0, 60.0]);
     }
 
     #[test]

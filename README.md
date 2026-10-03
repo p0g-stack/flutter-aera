@@ -16,7 +16,9 @@ in recovery's namespaces, so apps get root in-process; there is no helper.
 AERA is a Linux process in recovery, so its peers are Linux GTK and
 flutter-pi, not Android. Recovery has fewer things to reach parity with; what
 AERA can't do is answered as not-implemented on the standard channel, never a
-custom channel.
+custom channel. The one exception is padding (`aera/window`,
+`src/handlers/window.rs`): the embedder API cannot set `viewPadding`, so the
+app's AERA shell applies it.
 
 ## Scope
 
