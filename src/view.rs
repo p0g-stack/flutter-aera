@@ -8,9 +8,11 @@ use crate::host::{kind, Geometry, Message};
 pub const VIEW_ID: i64 = 0;
 pub const DISPLAY_ID: u64 = 0;
 
-/// The bottom padding, in logical pixels: on the Infiniti's rounded corners
-/// bottom-navigation labels about 17 dp up were only just cut, so 8 dp more
-/// lifts them clear. Minimal on purpose (Yuv).
+/// The bottom padding, in logical pixels. On the Infiniti the outer
+/// bottom-navigation labels end about 17 dp from the side edges and their
+/// lowest pixels were only just cut by the rounded corners; lifting the bar
+/// 8 dp moves them up the curve, where the corner takes much less of the
+/// width. Minimal on purpose (Yuv).
 pub const BOTTOM_DP: f64 = 8.0;
 
 /// The side padding, in logical pixels: just enough that a control drawn
