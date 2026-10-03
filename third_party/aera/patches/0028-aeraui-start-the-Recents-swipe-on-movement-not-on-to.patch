@@ -1,7 +1,7 @@
-From a4ccfd22d430a25539dc80bf750a928287ba8dcf Mon Sep 17 00:00:00 2001
+From c48448e092da46d94a689cb38e21d82968ab26f3 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 3 Oct 2026 00:08:55 +0000
-Subject: [PATCH] aeraui: start the Recents swipe on movement, not on
+Subject: [PATCH 28/29] aeraui: start the Recents swipe on movement, not on
  touch-down
 
 A contact that landed in the bottom strip started the Recents swipe at

@@ -42,7 +42,7 @@ Cuttlefish image.
 | 0022 | `plugin_api`: `AERA_PLUGIN_DATA_VOLATILE=1` when the data directory is the RAM fallback |
 | 0023 | `core/runner.cpp`, engine: the Home and Menu keys (AERA Remote's buttons) show Home and toggle Recents, as the bottom-edge swipe does (devicelab D8) |
 | 0024 | `core/runner.cpp`, engine: a Back held for half a second (key or edge swipe) skips the pixel plugin and leaves its scene, so a plugin can never trap the user (Yuv's call) |
-| 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped (devicelab D9) |
+| 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped, on whichever slot the kernel is on (devicelab D9; the Infiniti panel's raw path was not on slot 0) |
 | 0026 | `aeraui/core/engine.cpp`: the software renderer (no Adreno) draws landscape into a landscape-shaped buffer and turns each frame upright on flush, instead of folding a landscape layout into the portrait scanout (devicelab D12) |
 | 0027 | `aera_remote/aera_remote.cpp`: `/screen.jpg` waits (up to 0.5 s) for a frame captured after the request, instead of returning the one from the previous request (devicelab D12) |
 | 0028 | `aeraui/core/engine.cpp`: a contact in the bottom strip starts the Recents swipe only once it moves up past the touch slop; a tap or a sideways contact goes to what is under it (pixel plugin, browser or AERA's own UI) instead of flashing the Recents preview and being lost (Infiniti hardware walk) |
