@@ -7,27 +7,19 @@ use crate::host::{kind, Geometry, Message};
 pub const VIEW_ID: i64 = 0;
 pub const DISPLAY_ID: u64 = 0;
 
-/// The bottom padding, in logical pixels. On the Infiniti the outer
-/// bottom-navigation labels end about 17 dp from the side edges and their
-/// lowest pixels were only just cut by the rounded corners; lifting the bar
-/// 8 dp moves them up the curve, where the corner takes much less of the
-/// width. Minimal on purpose (Yuv).
-pub const BOTTOM_DP: f64 = 8.0;
-
-/// The side padding, in logical pixels: just enough that a control drawn
-/// at the very edge is not on the curve of a rounded panel.
-pub const SIDE_DP: f64 = 4.0;
-
 #[derive(Clone, Copy, Debug)]
 pub struct View {
     pub geometry: Geometry,
     /// AERA's keyboard height in surface pixels.
     pub bottom_inset: u32,
+    /// The padding in logical pixels (left, top, right, bottom), from
+    /// [`crate::padding::resolve`].
+    pub padding_dp: [f64; 4],
 }
 
 impl View {
     pub fn new(geometry: Geometry) -> View {
-        View { geometry, bottom_inset: 0 }
+        View { geometry, bottom_inset: 0, padding_dp: crate::padding::DEFAULT.dp() }
     }
 
     pub fn metrics(&self) -> FlutterWindowMetricsEvent {
@@ -53,15 +45,11 @@ impl View {
     /// (left, top, right, bottom): `viewPadding`, sent with the window
     /// metrics (our engine patch 0001, as Android's embedding sets it).
     ///
-    /// Sides [`SIDE_DP`], bottom [`BOTTOM_DP`]: the least that keeps
-    /// controls off a phone's rounded corners. Top: none, AERA's status bar
-    /// is above the view. Constants, not the device's real radius: AERA does
-    /// not expose one (Yuv: a compromise, kept minimal, 2026-10-02).
+    /// [`View::padding_dp`] at the surface's scale; see [`crate::padding`]
+    /// for where it comes from.
     pub fn padding(&self) -> [f64; 4] {
-        let g = self.geometry;
-        let side = (SIDE_DP * g.scale).round();
-        let bottom = (BOTTOM_DP * g.scale).round();
-        [side, 0.0, side, bottom]
+        let scale = self.geometry.scale;
+        self.padding_dp.map(|dp| (dp * scale).round())
     }
 
     /// A touch from AERA as a Flutter pointer event, or `None` if `message`
@@ -126,6 +114,9 @@ mod tests {
         assert_eq!(View::new(g).padding(), [12.0, 0.0, 12.0, 24.0]);
         (g.width, g.height) = (2772, 1154);
         assert_eq!(View::new(g).padding(), [12.0, 0.0, 12.0, 24.0]);
+        let mut v = View::new(g);
+        v.padding_dp = [6.0, 0.0, 6.0, 10.0];
+        assert_eq!(v.padding(), [18.0, 0.0, 18.0, 30.0]);
     }
 
     #[test]

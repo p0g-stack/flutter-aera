@@ -38,6 +38,8 @@ pub struct Config {
     pub vulkan: bool,
     /// AERA's `HELLO_ACK` features.
     pub host_features: u32,
+    /// The view's padding in logical pixels (left, top, right, bottom).
+    pub padding_dp: [f64; 4],
 }
 
 impl Config {
@@ -51,6 +53,7 @@ impl Config {
             engine_args: vec![],
             vulkan: false,
             host_features: 0,
+            padding_dp: crate::padding::DEFAULT.dp(),
         }
     }
 }
@@ -162,7 +165,7 @@ impl Engine {
             renderer,
             damage: Mutex::new(Damage::new(geometry.width, geometry.height, geometry.slots as usize)),
             runner: TaskRunner::new().map_err(|e| e.to_string())?,
-            view: Mutex::new(View::new(geometry)),
+            view: Mutex::new(View { padding_dp: config.padding_dp, ..View::new(geometry) }),
             handlers: Mutex::new(Handlers { settings: crate::aera_settings::Settings::load(), features: config.host_features, ..Handlers::default() }),
             vsync: Mutex::new(Vsync { baton: None, last_ns: 0 }),
             exit: AtomicBool::new(false),

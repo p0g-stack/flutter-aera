@@ -18,7 +18,13 @@ flutter-pi, not Android. Recovery has fewer things to reach parity with; what
 AERA can't do is answered as not-implemented on the standard channel, never a
 custom channel. Padding (rounded corners) rides the window metrics as
 `viewPadding`, through our engine patch (`third_party/flutter-engine/`), as
-Android reports its bars and cutout.
+Android reports its bars and cutout. AERA exposes no corner geometry at
+runtime, so each edge comes from, first match wins: `$AERA_PLUGIN_DATA/view.json`
+(tuning override), the payload's `usr/share/flutter/view.json` (written by
+flutter_p0g from `aera/plugin.json` `"padding"`), AERA's givens (top 0: the
+status bar is above the surface), our default (4 dp sides, 8 dp bottom).
+Format: `{"padding": {"left": 4, "top": 0, "right": 4, "bottom": 8}}` in dp,
+any edge may be left out. See `src/padding.rs`.
 
 ## Scope
 

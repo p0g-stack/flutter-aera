@@ -73,6 +73,7 @@ fn run() -> Result<i32, String> {
     config.engine_args = engine_args;
     config.vulkan = vulkan;
     config.host_features = session.features;
+    config.padding_dp = flutter_aera::padding::resolve(&root);
     let engine = Engine::start(config, control, slots)?;
     engine.replay(early);
     Ok(engine.run())
