@@ -1,4 +1,4 @@
-From 94304a16d3a6773711825627a3ef329192820bd0 Mon Sep 17 00:00:00 2001
+From 56ce37a3eb620734e1ae807a2e657b5fdbc16367 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 2 Oct 2026 03:53:25 +0000
 Subject: [PATCH] aeraui: draw landscape on the software renderer
@@ -27,7 +27,7 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  1 file changed, 98 insertions(+), 11 deletions(-)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index aee366d..d4c8b34 100644
+index 1567ab5..68f36e8 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
 @@ -296,21 +296,11 @@ public:
@@ -64,7 +64,7 @@ index aee366d..d4c8b34 100644
      buffer_size_ = 0;
      scanout1_ = nullptr;
      scanout2_ = nullptr;
-@@ -2306,6 +2300,10 @@ private:
+@@ -2290,6 +2284,10 @@ private:
        lv_display_set_rotation(
            self->display_, self->landscape_ ? LV_DISPLAY_ROTATION_90
                                            : LV_DISPLAY_ROTATION_0);
@@ -75,7 +75,7 @@ index aee366d..d4c8b34 100644
        __android_log_print(ANDROID_LOG_INFO, kLogTag,
                            "display orientation changed to %s",
                            self->landscape_ ? "landscape" : "portrait");
-@@ -3098,6 +3096,75 @@ private:
+@@ -3082,6 +3080,75 @@ private:
      gesture_depth_ = 0;
    }
  
@@ -151,7 +151,7 @@ index aee366d..d4c8b34 100644
    bool PresentScaledSoftware(const uint8_t *pixels) {
      const unsigned int index = next_software_scanout_;
      GRSurface *surface = index == 0 ? scanout_surface1_ : scanout_surface2_;
-@@ -3148,6 +3215,23 @@ private:
+@@ -3132,6 +3199,23 @@ private:
        return;
      }
  
@@ -175,7 +175,7 @@ index aee366d..d4c8b34 100644
      if (self->direct_scanout_) {
        if (lv_display_flush_is_last(display)) {
          bool presented = false;
-@@ -3160,6 +3244,8 @@ private:
+@@ -3144,6 +3228,8 @@ private:
            else if (pixels == self->scanout_surface2_->data)
              target = self->scanout2_;
            presented = target != nullptr && gr_drm_present(target) == 0;
@@ -184,7 +184,7 @@ index aee366d..d4c8b34 100644
          }
  
          if (!presented) {
-@@ -3294,6 +3380,7 @@ private:
+@@ -3278,6 +3364,7 @@ private:
    DisplayTransform transform_{};
    size_t buffer_size_ = 0;
    void *draw_buffer_ = nullptr;

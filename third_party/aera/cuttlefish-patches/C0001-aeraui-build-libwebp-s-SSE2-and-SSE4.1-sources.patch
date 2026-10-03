@@ -1,4 +1,4 @@
-From e0160dab4148806fc5dd68840de13ac26fa398c8 Mon Sep 17 00:00:00 2001
+From a6e38050df0f46a9ec32710088c3f7221311922d Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 13:55:28 +0000
 Subject: [PATCH] aeraui: build libwebp's SSE2 and SSE4.1 sources

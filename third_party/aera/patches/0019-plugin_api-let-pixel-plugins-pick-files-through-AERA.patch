@@ -1,4 +1,4 @@
-From 6f15a1ceb61b843b8edf142b3ff0db25edc4ce2f Mon Sep 17 00:00:00 2001
+From aebf6386f511b0b9f50fdce3ab2c8d5f4e40214c Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:37:10 +0000
 Subject: [PATCH] plugin_api: let pixel plugins pick files through AERA's

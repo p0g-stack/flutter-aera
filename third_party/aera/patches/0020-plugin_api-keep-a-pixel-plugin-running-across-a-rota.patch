@@ -1,4 +1,4 @@
-From fc76b44db55638fa6dd04f508a6662fb7bdafeea Mon Sep 17 00:00:00 2001
+From 99bcb001d54727f2b7c64a47d9f567ab7abaa3f5 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:44:41 +0000
 Subject: [PATCH] plugin_api: keep a pixel plugin running across a rotation

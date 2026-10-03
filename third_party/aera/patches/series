@@ -8,7 +8,6 @@
 0008-rpc-open-an-installed-generic-plugin-op-plugin-actio.patch
 0009-plugin_api-tell-Host-API-3-plugins-AERA-s-light-or-d.patch
 0010-prebuilt-pack-libincfs.so-on-every-build.patch
-0012-recovery_utils-look-the-health-HAL-up-once-not-on-ev.patch
 0013-minuitwrp-scan-out-on-the-CRTC-s-primary-plane-witho.patch
 0014-prebuilt-pack-task_profiles.json-on-every-build.patch
 0015-scenes-let-pixel-plugins-have-taps-near-the-side-edg.patch
@@ -18,7 +17,6 @@
 0020-plugin_api-keep-a-pixel-plugin-running-across-a-rota.patch
 0021-plugin_api-pause-a-pixel-plugin-when-its-scene-is-le.patch
 0022-plugin_api-tell-a-pixel-plugin-when-its-data-directo.patch
-0023-aeraui-act-on-the-Home-and-Menu-keys.patch
 0024-aeraui-a-held-Back-always-leaves-a-pixel-plugin.patch
 0025-minuitwrp-start-a-new-contact-where-its-slot-last-wa.patch
 0026-aeraui-draw-landscape-on-the-software-renderer.patch

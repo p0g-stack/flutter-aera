@@ -8,12 +8,13 @@ pin: abf33169b27dee17123c3c436a7299427821b329
 
 Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (`bootable/recovery` in AERA's manifest). The patches touch `aeraui/`, `aera_rpc/`
-(0008) `prebuilt/` (0010, 0014), `recovery_utils/` (0012), `minuitwrp/`
-(0013, 0025) and the top-level `Android.mk` (0014); 0026 touches
-`aeraui/core/engine.cpp`. 0017 and 0027 moved to `remote-patches/` (R0001,
-R0002), 0028 to `refinement-patches/` (F0001) and 0011 to
-`cuttlefish-patches/` (C0001); their numbers stay unused so earlier
-references keep their meaning.
+(0008) `prebuilt/` (0010, 0014), `minuitwrp/` (0013, 0025) and the
+top-level `Android.mk` (0014); 0026 touches `aeraui/core/engine.cpp`. 0017,
+0027 and 0023 moved to `remote-patches/` (R0001, R0002, R0003), 0028 to
+`refinement-patches/` (F0001) and 0011 to `cuttlefish-patches/` (C0001);
+0012 was dropped (Yuv, patch audit 2026-10-03: log spam only, never seen
+on hardware). Their numbers stay unused so earlier references keep their
+meaning.
 
 Apply with `git am $(cat patches/series)` on a checkout of the pin, then
 `cuttlefish-patches/` (x86_64 builds only), `refinement-patches/` and
@@ -34,7 +35,6 @@ applies on `patches/` alone.
 | 0008 | AERA RPC `plugin` / `open`: start an installed plugin over adb, for `flutter attach` (docs/debugging.md) |
 | 0009 | `AERA_APPEARANCE=light\|dark` in a Host API 3 plugin's environment, from AERA's theme (platform brightness) |
 | 0010 | `prebuilt/Android.mk`: pack `libincfs.so` on every build (`libandroidfw.so` needs it), not only with FBE |
-| 0012 | `recovery_utils/battery_utils.cpp`: look the health HAL up once (again at most once a minute if missing, or after it dies) instead of on every 1 s battery read (devicelab D2) |
 | 0013 | `minuitwrp/graphics_drm.cpp`: without a Qualcomm SDE topology, scan out on the CRTC's own primary plane with one layer mixer (devicelab D3) |
 | 0014 | `task_profiles.json` required and packed on every build, so logd stops aborting on builds that ship logd (`TARGET_USES_LOGD := true`) without the file in their device tree (devicelab D4) |
 | 0015 | pixel plugin scene: a contact in the side-edge zone is Back only once it swipes inward; taps there reach the plugin (devicelab D5) |
@@ -44,7 +44,6 @@ applies on `patches/` alone.
 | 0020 | `plugin_api`, pixel plugin scene, engine: a rotation sends a new `SURFACE` on the same memfd (sized at launch for either orientation) instead of restarting the plugin; `PRESENT` `flags` carry the surface generation and stale frames are released; the Quick Settings shade the rotation came from is laid out again for the new size |
 | 0021 | `plugin_api`, pixel plugin scene, engine: leaving the scene pauses the plugin (no `FRAME_DONE`) instead of stopping it; reopening sends a new `SURFACE` and resume; `kInactive` for a shade, sheet or picker over it; stopped by `CLOSE`, Recents or an update |
 | 0022 | `plugin_api`: `AERA_PLUGIN_DATA_VOLATILE=1` when the data directory is the RAM fallback |
-| 0023 | `core/runner.cpp`, engine: the Home and Menu keys (AERA Remote's buttons) show Home and toggle Recents, as the bottom-edge swipe does (devicelab D8) |
 | 0024 | `core/runner.cpp`, engine: a Back held for half a second (key or edge swipe) skips the pixel plugin and leaves its scene, so a plugin can never trap the user (Yuv's call) |
 | 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped, on whichever slot the kernel is on (devicelab D9; the Infiniti panel's raw path was not on slot 0) |
 | 0026 | `aeraui/core/engine.cpp`: the software renderer (no Adreno) draws landscape into a landscape-shaped buffer and turns each frame upright on flush, instead of folding a landscape layout into the portrait scanout (devicelab D12) |
@@ -75,16 +74,16 @@ It needs nothing from `refinement-patches/` today. AERA Remote work goes here (Y
 | --- | --- |
 | R0001 | `aera_remote/input.cpp`, `aera_remote.cpp`: create the virtual input device when Remote starts, so the first touch's press is not lost before recovery's input reader opens it (devicelab D7; was 0017) |
 | R0002 | `aera_remote/aera_remote.cpp`: `/screen.jpg` waits (up to 0.5 s) for a frame captured after the request, instead of returning the one from the previous request (devicelab D12; was 0027) |
+| R0003 | `core/runner.cpp`, engine: the Home and Menu keys (AERA Remote's buttons, KEY_HOMEPAGE and KEY_MENU) show Home and toggle Recents, as the bottom-edge swipe does (devicelab D8; was 0023, on top of 0024 since the 2026-10-03 audit) |
 
 `lvgl-patches/` is a separate series for AERA's LVGL fork
 (`external/lvgl`, android_external_lvgl, pinned at
 017abcbf759c20ee9b91e0bf22e6ee81e04598a1 in AERA's manifest). Apply with
-`git am $(cat lvgl-patches/series)` there; devicelab copies them to
+`git am $(cat lvgl-patches/series)` there (0001, a blend-clip backstop nothing reached once 0002 was in, was dropped in the 2026-10-03 audit); devicelab copies them to
 `aera/build/patches/external/lvgl/`.
 
 | Patch | What |
 | --- | --- |
-| 0001 | `src/draw/sw/blend/lv_draw_sw_blend.c`: clip every software blend to the target layer's buffer, so a clip area that reaches past it skips the draw instead of writing through NULL or past a row (backstop for devicelab D10/D12) |
 | 0002 | `lv_conf.h`: `LV_DRAW_TRANSFORM_USE_MATRIX 0`. Neither of AERA's renderers applies a draw task's matrix, so transforms were never drawn and the widened clip let shrunk, off-screen objects blend outside the display buffer (the D10/D12 crash). Transforms now go through layers and scale as the styles ask (pressed buttons, tiles and cards shrink slightly; enlarged icons are drawn enlarged) |
 | 0003 | `src/draw/lv_draw.c`: a layer larger than the whole `LV_DRAW_LAYER_MAX_MEMORY` budget is allocated when no other layer holds memory, instead of being left for later forever. With 0002 transforms use layers, and on an adaptive-resolution screen (logical 1440x2696) a Recents card shrunk on press needs more than AERA's 4 MiB: tapping it hung recovery (devicelab D13) |
 

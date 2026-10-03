@@ -1,4 +1,4 @@
-From cb6c4c091c0d276b3853bb9190ed24b8287fda92 Mon Sep 17 00:00:00 2001
+From 4de7ca99cb6f3e0c7c668213e49568688fee0c74 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 18:20:46 +0000
 Subject: [PATCH] scenes: let pixel plugins have taps near the side edges

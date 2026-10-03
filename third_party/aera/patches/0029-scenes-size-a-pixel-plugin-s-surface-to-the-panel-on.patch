@@ -1,4 +1,4 @@
-From eb122f2e24dc6be779af3255418d63c725f20f43 Mon Sep 17 00:00:00 2001
+From 088dc5efaaf476c147cf92ed9ae4962141604d03 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 3 Oct 2026 00:12:48 +0000
 Subject: [PATCH] scenes: size a pixel plugin's surface to the panel on each

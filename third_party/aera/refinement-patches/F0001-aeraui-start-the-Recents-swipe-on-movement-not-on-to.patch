@@ -1,4 +1,4 @@
-From f953a10e3d99fad95002bd40faf0c6978a7bd08a Mon Sep 17 00:00:00 2001
+From f3e03b9a651fa8326da93786dc96f92fbb42e527 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 3 Oct 2026 00:08:55 +0000
 Subject: [PATCH] aeraui: start the Recents swipe on movement, not on
@@ -31,10 +31,10 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  1 file changed, 90 insertions(+), 23 deletions(-)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index d4c8b34..55f8a5e 100644
+index 68f36e8..19f039d 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
-@@ -781,6 +781,19 @@ public:
+@@ -765,6 +765,19 @@ public:
          visible_y = logical_x;
        }
      }
@@ -54,7 +54,7 @@ index d4c8b34..55f8a5e 100644
      // Global raw-input consumers live below lock/operation overlays. Keep
      // those consumers from stealing contacts that belong to trusted AERA UI.
      if (suspended_ || lock_overlay_ != nullptr || power_overlay_ != nullptr ||
-@@ -788,74 +801,110 @@ public:
+@@ -772,74 +785,110 @@ public:
          operation_running_ || nas_running_ || plugin_running_ ||
          update_installing_ ||
          (update_running_ && update_task_ == UpdateTask::kDownload)) {
@@ -186,7 +186,7 @@ index d4c8b34..55f8a5e 100644
        const int32_t visible_width = landscape_ ? height_ : width_;
        const int32_t edge = std::max(72, visible_width / 20);
        if (pointer_.x <= edge)
-@@ -865,7 +914,7 @@ public:
+@@ -849,7 +898,7 @@ public:
        return;
      }
  
@@ -195,7 +195,7 @@ index d4c8b34..55f8a5e 100644
        const int32_t vertical = std::abs(pointer_.y - swipe_start_y_);
        const int32_t visible_height = landscape_ ? width_ : height_;
        if (vertical > visible_height / 8) {
-@@ -888,7 +937,7 @@ public:
+@@ -872,7 +921,7 @@ public:
        return;
      }
  
@@ -204,7 +204,7 @@ index d4c8b34..55f8a5e 100644
        // Several touch controllers zero ABS_MT_POSITION_Y when the tracking ID
        // is released. Validate direction with the last coordinate seen while
        // the contact was still active.
-@@ -1808,6 +1857,11 @@ private:
+@@ -1792,6 +1841,11 @@ private:
      if (!gesture_transition) lv_obj_fade_in(overlay, 170, 0);
    }
  
@@ -216,7 +216,7 @@ index d4c8b34..55f8a5e 100644
    void BeginRecentsSwipe(int32_t x, int32_t y) {
      CancelRecentsSwipe();
      recents_swipe_active_ = true;
-@@ -2143,6 +2197,7 @@ private:
+@@ -2127,6 +2181,7 @@ private:
    }
  
    void CancelRecentsSwipe() {
@@ -224,7 +224,7 @@ index d4c8b34..55f8a5e 100644
      recents_swipe_active_ = false;
      recents_swipe_max_up_ = 0;
      recents_swipe_hold_started_ms_ = 0;
-@@ -3369,6 +3424,10 @@ private:
+@@ -3353,6 +3408,10 @@ private:
      }
      data->state = self->pointer_.pressed ? LV_INDEV_STATE_PRESSED
                                           : LV_INDEV_STATE_RELEASED;
@@ -235,7 +235,7 @@ index d4c8b34..55f8a5e 100644
    }
  
    int32_t physical_width_ = 0;
-@@ -3509,6 +3568,14 @@ private:
+@@ -3493,6 +3552,14 @@ private:
    bool gesture_navigate_back_ = false;
    bool gesture_held_ = false;
    bool recents_swipe_active_ = false;

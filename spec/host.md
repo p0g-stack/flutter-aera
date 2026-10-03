@@ -103,7 +103,7 @@ elsewhere. The app is paused, as for Home, and stays in Recents. So an app
 that keeps Back to itself, or has stopped answering, can always be left,
 also with gesture navigation (the bottom swipe) off. AERA Remote's Back
 button sends a press and release together, so it cannot hold; its Home
-button (0023) leaves instead.
+button (R0003) leaves instead.
 
 Plugin → host: `KEYBOARD_SHOW` (13) with `value` purpose (0 text, 2
 digits) and `flags` 1 for multiline; `KEYBOARD_HIDE` (14).

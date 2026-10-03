@@ -1,4 +1,4 @@
-From 54471373f0a4f1afa5f3ced856ae1ed1d9728a6f Mon Sep 17 00:00:00 2001
+From 5de01bddc356fe4c274cbfe2c3d115f991aac557 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:35:35 +0000
 Subject: [PATCH] aeraui: a shared file picker, with Telegram as its first

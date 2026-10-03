@@ -1,4 +1,4 @@
-From 01848dbce62b633b069b1bb154161b5bdb5f52fe Mon Sep 17 00:00:00 2001
+From 36fecc8482efdf0ecd416b5336042be4bd0a7f4c Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:06:14 +0000
 Subject: [PATCH] plugin_api: pause a pixel plugin when its scene is left,
