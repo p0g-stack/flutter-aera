@@ -1,0 +1,35 @@
+From 2379f8db7c927678845f6f85df515697b5800345 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 3 Oct 2026 01:12:35 +0000
+Subject: [PATCH] tools/gn: no ANGLE X11/Wayland WSI for Linux target builds
+
+An embedder-only build for --target-os linux still evaluates
+//flutter/third_party/angle, whose angle_use_wayland defaults to is_linux,
+while Flutter's build_overrides/wayland.gni defines no wayland_dir, so gn
+gen fails. Host (desktop) builds already turn these ANGLE options off; do
+the same for explicit Linux target builds.
+
+After ardera/flutter-ci's patch of the same name (MIT), adapted to this
+revision.
+---
+ engine/src/flutter/tools/gn | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/engine/src/flutter/tools/gn b/engine/src/flutter/tools/gn
+index 7a2b89e..1b8554d 100755
+--- a/engine/src/flutter/tools/gn
++++ b/engine/src/flutter/tools/gn
+@@ -799,7 +799,9 @@ def to_gn_args(args):
+   # There is a special case for Android on Windows because there we _only_ build
+   # gen_snapshot, but the build defines otherwise make it look like the build is
+   # for a host Windows build and make GN think we will be building ANGLE.
+-  if is_host_build(args) or (args.target_os == 'android' and get_host_os() == 'win'):
++  if is_host_build(args) or args.target_os == 'linux' or (
++      args.target_os == 'android' and get_host_os() == 'win'
++  ):
+     # Don't include git commit information.
+     gn_args['angle_enable_commit_id'] = False
+     # Do not build unnecessary parts of the ANGLE tree.
+-- 
+2.43.0
+

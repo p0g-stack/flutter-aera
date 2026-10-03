@@ -1,0 +1,79 @@
+From e9de48eaced137f9db60cf50c6f71848b1076a72 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 3 Oct 2026 00:44:15 +0000
+Subject: [PATCH] embedder: carry view padding in FlutterWindowMetricsEvent
+
+The embedder API sets viewInsets but never viewPadding, so an embedder has no
+way to report what Android reports for its system bars and cutout: the part
+of the view apps keep controls out of (SafeArea, MediaQuery.padding).
+FlutterWindowMetricsEvent gains physical_view_padding_{top,right,bottom,left}
+at its end, read through struct_size like every later field, and the engine
+feeds them to ViewportMetrics physical_padding_*, the fields Android's
+embedding fills. Older embedders send zero, as before.
+---
+ .../shell/platform/embedder/embedder.cc       | 19 +++++++++++++++++++
+ .../shell/platform/embedder/embedder.h        | 11 +++++++++++
+ 2 files changed, 30 insertions(+)
+
+diff --git a/engine/src/flutter/shell/platform/embedder/embedder.cc b/engine/src/flutter/shell/platform/embedder/embedder.cc
+index d7f02e7..096b225 100644
+--- a/engine/src/flutter/shell/platform/embedder/embedder.cc
++++ b/engine/src/flutter/shell/platform/embedder/embedder.cc
+@@ -1666,6 +1666,14 @@ MakeViewportMetricsFromWindowMetrics(
+       SAFE_ACCESS(flutter_metrics, physical_view_inset_bottom, 0.0);
+   metrics.physical_view_inset_left =
+       SAFE_ACCESS(flutter_metrics, physical_view_inset_left, 0.0);
++  metrics.physical_padding_top =
++      SAFE_ACCESS(flutter_metrics, physical_view_padding_top, 0.0);
++  metrics.physical_padding_right =
++      SAFE_ACCESS(flutter_metrics, physical_view_padding_right, 0.0);
++  metrics.physical_padding_bottom =
++      SAFE_ACCESS(flutter_metrics, physical_view_padding_bottom, 0.0);
++  metrics.physical_padding_left =
++      SAFE_ACCESS(flutter_metrics, physical_view_padding_left, 0.0);
+   metrics.display_id = SAFE_ACCESS(flutter_metrics, display_id, 0);
+ 
+   if (metrics.device_pixel_ratio <= 0.0) {
+@@ -1687,6 +1695,17 @@ MakeViewportMetricsFromWindowMetrics(
+            "physical height or width.";
+   }
+ 
++  if (metrics.physical_padding_top < 0 || metrics.physical_padding_right < 0 ||
++      metrics.physical_padding_bottom < 0 ||
++      metrics.physical_padding_left < 0 ||
++      metrics.physical_padding_top > metrics.physical_height ||
++      metrics.physical_padding_right > metrics.physical_width ||
++      metrics.physical_padding_bottom > metrics.physical_height ||
++      metrics.physical_padding_left > metrics.physical_width) {
++    return "Physical view padding is invalid. It must be non-negative and "
++           "no greater than physical height or width.";
++  }
++
+   return metrics;
+ }
+ 
+diff --git a/engine/src/flutter/shell/platform/embedder/embedder.h b/engine/src/flutter/shell/platform/embedder/embedder.h
+index e9f3769..a6ff271 100644
+--- a/engine/src/flutter/shell/platform/embedder/embedder.h
++++ b/engine/src/flutter/shell/platform/embedder/embedder.h
+@@ -1097,6 +1097,17 @@ typedef struct {
+   /// If |has_constraints| is `true`, this must be greater than or equal to
+   /// |min_height_constraint| and |height|.
+   size_t max_height_constraint;
++  /// Top padding of the window: the part of the view the system partly
++  /// obscures (a rounded corner, a cutout), which apps keep their controls out
++  /// of. Delivered as `FlutterView.viewPadding`, as Android's system bar and
++  /// cutout insets are. Must be non-negative and at most the height.
++  double physical_view_padding_top;
++  /// Right padding of the window. At most the width.
++  double physical_view_padding_right;
++  /// Bottom padding of the window. At most the height.
++  double physical_view_padding_bottom;
++  /// Left padding of the window. At most the width.
++  double physical_view_padding_left;
+ } FlutterWindowMetricsEvent;
+ 
+ typedef struct {
+-- 
+2.43.0
+

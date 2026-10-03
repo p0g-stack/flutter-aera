@@ -1097,6 +1097,17 @@ typedef struct {
   /// If |has_constraints| is `true`, this must be greater than or equal to
   /// |min_height_constraint| and |height|.
   size_t max_height_constraint;
+  /// Top padding of the window: the part of the view the system partly
+  /// obscures (a rounded corner, a cutout), which apps keep their controls out
+  /// of. Delivered as `FlutterView.viewPadding`, as Android's system bar and
+  /// cutout insets are. Must be non-negative and at most the height.
+  double physical_view_padding_top;
+  /// Right padding of the window. At most the width.
+  double physical_view_padding_right;
+  /// Bottom padding of the window. At most the height.
+  double physical_view_padding_bottom;
+  /// Left padding of the window. At most the width.
+  double physical_view_padding_left;
 } FlutterWindowMetricsEvent;
 
 typedef struct {

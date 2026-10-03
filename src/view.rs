@@ -2,7 +2,6 @@
 //! and touches as Flutter pointer events. ≈ GTK's `fl_view`.
 
 use crate::ffi::{self, FlutterPointerEvent, FlutterWindowMetricsEvent};
-use crate::handlers::window::Padding;
 use crate::host::{kind, Geometry, Message};
 
 pub const VIEW_ID: i64 = 0;
@@ -39,20 +38,26 @@ impl View {
         m.height = self.geometry.height as usize;
         m.pixel_ratio = self.geometry.scale;
         m.physical_view_inset_bottom = self.bottom_inset.min(self.geometry.height) as f64;
+        // viewPadding, through third_party/flutter-engine patch 0001.
+        let [left, top, right, bottom] = self.padding();
+        m.physical_view_padding_left = left;
+        m.physical_view_padding_top = top;
+        m.physical_view_padding_right = right;
+        m.physical_view_padding_bottom = bottom;
         m.display_id = DISPLAY_ID;
         m.view_id = VIEW_ID;
         m
     }
 
     /// The padding apps keep their controls out of, in physical pixels
-    /// (left, top, right, bottom), sent on `aera/window`. Flutter's
-    /// embedder API has no padding field (handlers/window.rs).
+    /// (left, top, right, bottom): `viewPadding`, sent with the window
+    /// metrics (our engine patch 0001, as Android's embedding sets it).
     ///
     /// Sides [`SIDE_DP`], bottom [`BOTTOM_DP`]: the least that keeps
     /// controls off a phone's rounded corners. Top: none, AERA's status bar
     /// is above the view. Constants, not the device's real radius: AERA does
     /// not expose one (Yuv: a compromise, kept minimal, 2026-10-02).
-    pub fn padding(&self) -> Padding {
+    pub fn padding(&self) -> [f64; 4] {
         let g = self.geometry;
         let side = (SIDE_DP * g.scale).round();
         let bottom = (BOTTOM_DP * g.scale).round();
@@ -106,6 +111,11 @@ mod tests {
         let m = v.metrics();
         assert_eq!((m.width, m.height, m.pixel_ratio), (1080, 2400, 2.75));
         assert_eq!(m.physical_view_inset_bottom, 900.0);
+        let p = v.padding();
+        assert_eq!(
+            [m.physical_view_padding_left, m.physical_view_padding_top, m.physical_view_padding_right, m.physical_view_padding_bottom],
+            p
+        );
     }
 
     #[test]

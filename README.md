@@ -16,10 +16,9 @@ in recovery's namespaces, so apps get root in-process; there is no helper.
 AERA is a Linux process in recovery, so its peers are Linux GTK and
 flutter-pi, not Android. Recovery has fewer things to reach parity with; what
 AERA can't do is answered as not-implemented on the standard channel, never a
-custom channel. The one exception is padding (`aera/window`,
-`src/handlers/window.rs`): the stock engine's embedder API cannot set
-`viewPadding`, so the app's AERA place wraps itself in `AeraWindowPadding`
-from `dart/aera_window`, and `SafeArea` does the rest.
+custom channel. Padding (rounded corners) rides the window metrics as
+`viewPadding`, through our engine patch (`third_party/flutter-engine/`), as
+Android reports its bars and cutout.
 
 ## Scope
 

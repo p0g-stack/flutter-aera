@@ -408,14 +408,9 @@ impl Shared {
     }
 
     fn send_metrics(&self) {
-        let (m, padding) = {
-            let view = self.view.lock().unwrap();
-            (view.metrics(), view.padding())
-        };
+        let m = self.view.lock().unwrap().metrics();
         // SAFETY: a live engine and a metrics struct on the stack.
         unsafe { (self.procs.SendWindowMetricsEvent.unwrap())(self.engine(), &m) };
-        // Padding goes beside the metrics: the embedder API cannot carry it.
-        self.apply(vec![handlers::window::update(padding)]);
     }
 
     fn send(&self, channel: &str, bytes: &[u8]) {
@@ -684,11 +679,6 @@ unsafe extern "C" fn cb_platform_message(message: *const ffi::FlutterPlatformMes
     let m = &*message;
     let channel = CStr::from_ptr(m.channel).to_string_lossy();
     let bytes = if m.message.is_null() { &[][..] } else { std::slice::from_raw_parts(m.message, m.message_size) };
-    if channel == handlers::window::CHANNEL {
-        let padding = s.view.lock().unwrap().padding();
-        s.respond(m.response_handle as usize, &handlers::window::message(padding));
-        return;
-    }
     let (reply, effects) = s.handlers.lock().unwrap().on_message(&channel, bytes, m.response_handle as usize);
     if let Some(reply) = reply {
         s.respond(m.response_handle as usize, &reply);

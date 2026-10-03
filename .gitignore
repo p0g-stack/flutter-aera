@@ -3,5 +3,3 @@
 *.png
 !example/**/*.png
 __pycache__/
-.dart_tool/
-pubspec.lock

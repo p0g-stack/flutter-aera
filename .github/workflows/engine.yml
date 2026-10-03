@@ -1,0 +1,63 @@
+name: Engine
+# Builds the embedder engines with ci/build-engine.sh (flutter-pi's minimal
+# recipe, third_party/flutter-engine/patches) and publishes them with
+# ci/publish-engine.sh. Runs on GitHub's runners, or on a self-hosted runner
+# when the repository variable ENGINE_RUNNER names its label. The same two
+# scripts build and publish by hand on any x64 Linux machine. A configuration
+# already in the release is skipped. A failed build pushes its log tail to
+# the ci-logs/engine-<config> branch.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [third_party/flutter-engine/**, ci/build-engine.sh, ci/engine-tag.sh, ci/publish-engine.sh, .github/workflows/engine.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  engine:
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [arm64-debug, arm64-profile, arm64-release, x64-debug]
+    runs-on: ${{ vars.ENGINE_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - name: Already built?
+        id: have
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(ci/engine-tag.sh)
+          if gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "linux-${{ matrix.config }}-embedder.zip"; then
+            echo "done=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Room on disk
+        if: steps.have.outputs.done != 'true' && !vars.ENGINE_RUNNER
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
+          sudo mkdir -p /mnt/engine && sudo chown "$USER" /mnt/engine
+          df -h / /mnt
+      - name: Build
+        if: steps.have.outputs.done != 'true'
+        run: |
+          work=${{ vars.ENGINE_RUNNER && '$HOME/flutter-aera-engine' || '/mnt/engine' }}
+          ci/build-engine.sh "$work" dist ${{ matrix.config }} > "$RUNNER_TEMP/build.log" 2>&1 || { tail -n 80 "$RUNNER_TEMP/build.log"; exit 1; }
+          tail -n 5 "$RUNNER_TEMP/build.log"
+      - name: Publish
+        if: steps.have.outputs.done != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ci/publish-engine.sh dist
+      - name: Failure log
+        if: failure()
+        run: |
+          set +e
+          log=$RUNNER_TEMP/failure.txt
+          { echo "run ${{ github.run_id }} ${{ matrix.config }} $GITHUB_SHA"; df -h / /mnt; tail -n 300 "$RUNNER_TEMP/build.log"; } > "$log" 2>&1
+          cd "$RUNNER_TEMP" && rm -rf logs && git init -q logs && cd logs
+          cp "$log" "engine-${{ matrix.config }}.txt"
+          git add . && git -c user.name=ci -c user.email=ci@localhost commit -qm "engine ${{ matrix.config }} failure, run ${{ github.run_id }}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/ci-logs/engine-${{ matrix.config }}

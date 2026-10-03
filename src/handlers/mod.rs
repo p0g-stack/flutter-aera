@@ -5,8 +5,8 @@
 //! an engine or a host. `engine.rs` carries the effects out.
 //!
 //! Stub policy (AGENTS.md): what AERA can't do answers not-implemented (the
-//! empty reply) or is a no-op documented here, never a custom channel. The
-//! one exception is [`window`], padding, which the embedder API cannot carry.
+//! empty reply) or is a no-op documented here, never a custom channel.
+//! Padding is not a channel: it rides the window metrics (`view.rs`).
 //!
 //! | Channel | Codec | Here | Linux GTK | flutter-pi |
 //! | --- | --- | --- | --- | --- |
@@ -22,7 +22,6 @@
 //! | `flutter/keyevent` | JSON message | not sent: AERA's keyboard commits text, as an IME | GDK key events | evdev keys |
 //! | `io.material.plugins/dynamic_color` | standard method | [`dynamic_color`]: `getAccentColor` = AERA's saved accent; in place of the stock plugin's GTK half | GTK plugin: portal or theme accent | not handled |
 //! | `dev.flutter.pigeon.file_selector_linux…showFileChooser` | Pigeon (standard) | [`file_selector`]: AERA's picker (`kPickFiles`), answered when AERA is; in place of the stock plugin's GTK half | GTK plugin: `GtkFileChooserNative` | not handled |
-//! | `aera/window` | JSON message | [`window`]: the view's padding (edge strips, rounded corners), for the app's AERA shell to apply; custom because the embedder API has no padding | none (zero padding) | none |
 //! | `flutter/restoration` | standard method | not-implemented (as GTK) | not-implemented | not-implemented |
 //! | anything else | | not-implemented | | |
 
@@ -37,7 +36,6 @@ pub mod platform;
 pub mod settings;
 pub mod standard;
 pub mod textinput;
-pub mod window;
 
 use crate::host::Message;
 use crate::ime::Ime;
