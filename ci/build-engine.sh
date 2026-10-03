@@ -88,7 +88,9 @@ for config in "${configs[@]}"; do
       --no-goma --no-rbe
     targets=(libflutter_engine.so flutter_embedder.h icudtl.dat)
     if [ "$arch" = arm64 ] && [ "$mode" != debug ]; then targets+=(clang_x64/gen_snapshot); fi
-    ninja -C "out/$out" "${targets[@]}"
+    # The ninja Flutter's DEPS pins (depot_tools' wrapper wants a bootstrap
+    # we skip).
+    "$src/third_party/ninja/ninja" -C "out/$out" "${targets[@]}"
   )
   stage=$work/stage/$config
   rm -rf "$stage" && mkdir -p "$stage"
