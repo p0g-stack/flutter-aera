@@ -1,0 +1,30 @@
+run 37085652052 arm64-debug ec499eed36668dc40e2702b514b49a2b31eabb92
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root       145G   44G  101G  31% /
+/dev/root       145G   44G  101G  31% /
+WARNING: Your metrics.cfg file was invalid or nonexistent. A new one will be created.
+________ running 'python3 engine/src/flutter/third_party/dart/tools/generate_package_config.py' in '/mnt/engine/flutter'
+________ running 'python3 engine/src/flutter/third_party/dart/tools/generate_sdk_version_file.py' in '/mnt/engine/flutter'
+________ running 'python3 engine/src/flutter/tools/pub_get_offline.py' in '/mnt/engine/flutter'
+________ running 'python3 engine/src/flutter/tools/githooks/setup.py' in '/mnt/engine/flutter'
+Installing Git Hooks
+Installing Debian bullseye amd64 root image: /mnt/engine/flutter/engine/src/build/linux/debian_bullseye_amd64-sysroot
+Downloading https://commondatastorage.googleapis.com/chrome-linux-sysroot/36a164623d03f525e3dfb783a5e9b8a00e98e1ddd2b5cff4e449bd016dd27e50
+Installing Debian bullseye arm64 root image: /mnt/engine/flutter/engine/src/build/linux/debian_bullseye_arm64-sysroot
+Downloading https://commondatastorage.googleapis.com/chrome-linux-sysroot/2f915d821eec27515c0c6d21b69898e23762908d8d7ccc1aa2a8f5f25e8b7e18
+WARNING at the command-line "--args":1:1616: Build argument has no effect.
+buildtools_path="//flutter/buildtools" is_debug=false optimize_for_size=false engine_version="0a963e2201a87ba9cb00af8637c815b42b628393" content_hash="3018547ea6fca5bb66546af6aa3bcaf099c640c7" skia_version="8df24be66531469e576a806749a0202ae26b8d08" dart_version="b530c21f7de367b94fb04787bfed9d8e989d75e8" full_dart_sdk=false enable_unittests=false skia_use_libpng_decode=true skia_use_libpng_encode=true skia_use_rust_png_decode=false skia_use_rust_png_encode=false skia_use_dng_sdk=false skia_enable_pdf=false skia_use_x11=false skia_use_wuffs=true skia_use_expat=true skia_use_fontconfig=false skia_use_icu=true skia_use_xps=false is_official_build=true android_full_debug=false is_clang=true skia_gl_standard="" use_clang_static_analyzer=false enable_coverage=false enable_lto=true host_os="linux" host_cpu="x64" target_os="linux" target_cpu="arm64" dart_target_arch="arm64" flutter_use_fontconfig=false dart_component_kind="static_library" embedder_for_target=true dart_lib_export_symbols=false flutter_runtime_mode="debug" dart_version_git_info=true dart_runtime_mode="develop" concurrent_toolchain_jobs=4 dart_sdk_verification_hash="b530c21f7d" enable_desktop_embeddings=false enable_backtrace=true dart_disable_secure_socket=false use_default_linux_sysroot=true skia_use_gl=true skia_use_vulkan=true skia_use_vma=false shell_enable_vulkan=true disable_hidden_visibility=false dart_dynamic_modules=false flutter_prebuilt_dart_sdk=true dart_sdk_output="built-dart-sdk" build_glfw_shell=false build_embedder_examples=false stripped_symbols=true is_minimal_linux=true angle_enable_commit_id=false angle_build_all=false angle_has_astc_encoder=false angle_enable_libdrm=false angle_use_x11=false angle_use_wayland=false angle_enable_vulkan_validation_layers=false angle_vulkan_headers_dir="//flutter/third_party/vulkan-deps/vulkan-headers/src" angle_vulkan_loader_dir="//flutter/third_party/vulkan-deps/vulkan-loader/src" angle_vulkan_tools_dir="//flutter/third_party/vulkan-deps/vulkan-tools/src" angle_lunarg_vulkantools_dir="//flutter/third_party/vulkan-deps/lunarg-vulkantools/src"
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               ^----
+The variable "angle_build_all" was set as a build argument
+but never appeared in a declare_args() block in any buildfile.
+
+To view all possible args, run "gn args --list <out_dir>"
+
+The build continued as if that argument was unspecified.
+
+Generating compile_commands took 42ms
+Done. Made 1306 targets from 353 files in 389ms
+Using prebuilt Dart SDK binary. If you are editing Dart sources and wish to compile the Dart SDK, set `--no-prebuilt-dart-sdk`.
+Generating GN files in: out/aera_arm64_debug
+python3_bin_reldir.txt not found. need to initialize depot_tools by
+running gclient, update_depot_tools or ensure_bootstrap.
