@@ -9,14 +9,16 @@ pin: abf33169b27dee17123c3c436a7299427821b329
 Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (`bootable/recovery` in AERA's manifest). The patches touch `aeraui/`, `aera_rpc/`
 (0008) `prebuilt/` (0010, 0014), `recovery_utils/` (0012), `minuitwrp/`
-(0013, 0025) and the top-level `Android.mk` (0014); 0026 and 0028 touch
+(0013, 0025) and the top-level `Android.mk` (0014); 0026 touches
 `aeraui/core/engine.cpp`. 0017 and 0027 moved to `remote-patches/` (R0001,
-R0002); their numbers stay unused so earlier references keep their meaning.
+R0002) and 0028 to `refinement-patches/` (F0001); their numbers stay unused
+so earlier references keep their meaning.
 
 Apply with `git am $(cat patches/series)` on a checkout of the pin, then
-`remote-patches/` (below). Devicelab copies `patches/*.patch` and then
+`refinement-patches/` and `remote-patches/` (below), in that order. Devicelab
+copies `patches/*.patch`, `refinement-patches/*.patch` and
 `remote-patches/*.patch` to `aera/build/patches/bootable/recovery/` for the
-Cuttlefish image; the `R` names sort after the numbered ones.
+image; the `F` and `R` names sort after the numbered ones in that order.
 
 | Patch | What |
 | --- | --- |
@@ -45,13 +47,21 @@ Cuttlefish image; the `R` names sort after the numbered ones.
 | 0024 | `core/runner.cpp`, engine: a Back held for half a second (key or edge swipe) skips the pixel plugin and leaves its scene, so a plugin can never trap the user (Yuv's call) |
 | 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped, on whichever slot the kernel is on (devicelab D9; the Infiniti panel's raw path was not on slot 0) |
 | 0026 | `aeraui/core/engine.cpp`: the software renderer (no Adreno) draws landscape into a landscape-shaped buffer and turns each frame upright on flush, instead of folding a landscape layout into the portrait scanout (devicelab D12) |
-| 0028 | `aeraui/core/engine.cpp`: a contact in the bottom strip starts the Recents swipe only once it moves up past the touch slop; a tap or a sideways contact goes to what is under it (pixel plugin, browser or AERA's own UI) instead of flashing the Recents preview and being lost (Infiniti hardware walk) |
 | 0029 | `aeraui/scenes/pixel_plugin_scene.cpp`: the surface is scaled to the panel on each axis, so with adaptive resolution it is exactly the panel's width (it was 1279 on a 1272 panel; Infiniti hand walk) |
+
+`refinement-patches/` is the series for refinements of AERA's own behaviour:
+optional polish that AERA works without and that a plugin does not need,
+kept apart from the defect fixes above (Yuv, 2026-10-02). Applied after
+`patches/`; it needs nothing from `remote-patches/`.
+
+| Patch | What |
+| --- | --- |
+| F0001 | `aeraui/core/engine.cpp`: a contact in the bottom strip starts the Recents swipe only once it moves up past the touch slop; a tap or a sideways contact goes to what is under it (pixel plugin, browser or AERA's own UI) instead of flashing the Recents preview and being lost. Optional polish (Infiniti hardware walk; was 0028) |
 
 `remote-patches/` is the series for AERA Remote (`aera_remote/`: its server,
 input injection and screen capture), against the same pin and applied after
-`patches/` (`git am $(cat remote-patches/series)`). Neither series needs the
-other today. AERA Remote work goes here (Yuv, 2026-10-02).
+`patches/` and `refinement-patches/` (`git am $(cat remote-patches/series)`).
+It needs nothing from `refinement-patches/` today. AERA Remote work goes here (Yuv, 2026-10-02).
 
 | Patch | What |
 | --- | --- |

@@ -1,4 +1,4 @@
-From 35ec3a21fd47be4d6bc06bcb6b6a6d75a9c04057 Mon Sep 17 00:00:00 2001
+From f953a10e3d99fad95002bd40faf0c6978a7bd08a Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 3 Oct 2026 00:08:55 +0000
 Subject: [PATCH] aeraui: start the Recents swipe on movement, not on

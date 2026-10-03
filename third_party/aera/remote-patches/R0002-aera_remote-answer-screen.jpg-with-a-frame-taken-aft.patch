@@ -1,4 +1,4 @@
-From b929176c4c5d05a9da4bb15d9111921e56cc3053 Mon Sep 17 00:00:00 2001
+From 43f794931ed666094ee9c46a14a7361deea14279 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 2 Oct 2026 05:23:22 +0000
 Subject: [PATCH] aera_remote: answer /screen.jpg with a frame taken after the
