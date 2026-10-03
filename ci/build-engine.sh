@@ -64,6 +64,12 @@ EOF
   echo "$stamp" > "$work/source.stamp"
 fi
 
+# The Debian sysroots the build links against (download_linux_deps is off,
+# so gclient does not fetch them); x64 also hosts gen_snapshot. Idempotent.
+for a in amd64 arm64; do
+  "$src/engine/src/build/linux/sysroot_scripts/install-sysroot.py" --arch=$a
+done
+
 for config in "${configs[@]}"; do
   arch=${config%-*}
   mode=${config#*-}
