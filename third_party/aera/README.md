@@ -10,15 +10,17 @@ Rebased 2026-10-05 from abf3316 onto 9281346 (AERA's aera-16.0 head; image
 aera-infiniti-arm64-a56b3ac-ca015146c92db600 is built from patches/ and
 remote-patches/ at this pin). Two conflicts: 0005 with upstream's
 theme-extension fonts (`IsThemeExtension`, `IsLaunchable`; both kept) and
-0024 with upstream 58d3707, which accepts an edge swipe once it is captured
-(`edge_contact_captured_`); the hold timer now runs on top of that capture.
-F0001 kept its content and now leaves upstream's capture in the pointer
-read; C0001 applied unchanged.
+0024 with upstream 58d3707's captured edge swipe. F0001 kept its content
+and now leaves upstream's capture in the pointer read; C0001 applied
+unchanged. 0024 (held Back leaves a pixel plugin) was then dropped (Yuv,
+2026-10-05: swipe-up is the intended way out); R0003 was refitted without
+it.
 
 Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (`bootable/recovery` in AERA's manifest). The patches touch `aeraui/`, `aera_rpc/`
 (0008) `prebuilt/` (0010, 0014), `minuitwrp/` (0013, 0025) and the
-top-level `Android.mk` (0014); 0026 touches `aeraui/core/engine.cpp`. 0017,
+top-level `Android.mk` (0014); 0026 touches `aeraui/core/engine.cpp`. 0024 was
+dropped 2026-10-05 (Yuv). 0017,
 0027 and 0023 moved to `remote-patches/` (R0001, R0002, R0003), 0028 to
 `refinement-patches/` (F0001) and 0011 to `cuttlefish-patches/` (C0001);
 0012 was dropped (Yuv, patch audit 2026-10-03: log spam only, never seen
@@ -53,7 +55,7 @@ applies on `patches/` alone.
 | 0020 | `plugin_api`, pixel plugin scene, engine: a rotation sends a new `SURFACE` on the same memfd (sized at launch for either orientation) instead of restarting the plugin; `PRESENT` `flags` carry the surface generation and stale frames are released; the Quick Settings shade the rotation came from is laid out again for the new size |
 | 0021 | `plugin_api`, pixel plugin scene, engine: leaving the scene pauses the plugin (no `FRAME_DONE`) instead of stopping it; reopening sends a new `SURFACE` and resume; `kInactive` for a shade, sheet or picker over it; stopped by `CLOSE`, Recents or an update |
 | 0022 | `plugin_api`: `AERA_PLUGIN_DATA_VOLATILE=1` when the data directory is the RAM fallback |
-| 0024 | `core/runner.cpp`, engine: a Back held for half a second (key or edge swipe) skips the pixel plugin and leaves its scene, so a plugin can never trap the user (Yuv's call) |
+| 0024 | dropped 2026-10-05 (Yuv): a held Back leaving a pixel plugin; swipe-up (Home) and AERA Remote's Home key are the way out |
 | 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped, on whichever slot the kernel is on (devicelab D9; the Infiniti panel's raw path was not on slot 0) |
 | 0026 | `aeraui/core/engine.cpp`: the software renderer (no Adreno) draws landscape into a landscape-shaped buffer and turns each frame upright on flush, instead of folding a landscape layout into the portrait scanout (devicelab D12) |
 | 0029 | `aeraui/scenes/pixel_plugin_scene.cpp`: the surface is scaled to the panel on each axis, so with adaptive resolution it is exactly the panel's width (it was 1279 on a 1272 panel; Infiniti hand walk) |
@@ -83,7 +85,7 @@ It needs nothing from `refinement-patches/` today. AERA Remote work goes here (Y
 | --- | --- |
 | R0001 | `aera_remote/input.cpp`, `aera_remote.cpp`: create the virtual input device when Remote starts, so the first touch's press is not lost before recovery's input reader opens it (devicelab D7; was 0017) |
 | R0002 | `aera_remote/aera_remote.cpp`: `/screen.jpg` waits (up to 0.5 s) for a frame captured after the request, instead of returning the one from the previous request (devicelab D12; was 0027) |
-| R0003 | `core/runner.cpp`, engine: the Home and Menu keys (AERA Remote's buttons, KEY_HOMEPAGE and KEY_MENU) show Home and toggle Recents, as the bottom-edge swipe does (devicelab D8; was 0023, on top of 0024 since the 2026-10-03 audit) |
+| R0003 | `core/runner.cpp`, engine: the Home and Menu keys (AERA Remote's buttons, KEY_HOMEPAGE and KEY_MENU) show Home and toggle Recents, as the bottom-edge swipe does (devicelab D8; was 0023) |
 
 `lvgl-patches/` is a separate series for AERA's LVGL fork
 (`external/lvgl`, android_external_lvgl, pinned at

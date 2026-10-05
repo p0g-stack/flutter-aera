@@ -17,7 +17,6 @@
 0020-plugin_api-keep-a-pixel-plugin-running-across-a-rota.patch
 0021-plugin_api-pause-a-pixel-plugin-when-its-scene-is-le.patch
 0022-plugin_api-tell-a-pixel-plugin-when-its-data-directo.patch
-0024-aeraui-a-held-Back-always-leaves-a-pixel-plugin.patch
 0025-minuitwrp-start-a-new-contact-where-its-slot-last-wa.patch
 0026-aeraui-draw-landscape-on-the-software-renderer.patch
 0029-scenes-size-a-pixel-plugin-s-surface-to-the-panel-on.patch

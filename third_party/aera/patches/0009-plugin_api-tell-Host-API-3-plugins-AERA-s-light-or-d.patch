@@ -1,7 +1,7 @@
-From 24e73c7c1b566c7d350708de114fa67590b1ce27 Mon Sep 17 00:00:00 2001
+From fb612a3cd2d08716175691dc7ef61f0ea770b695 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 07:15:08 +0000
-Subject: [PATCH 09/23] plugin_api: tell Host API 3 plugins AERA's light or
+Subject: [PATCH 09/22] plugin_api: tell Host API 3 plugins AERA's light or
  dark appearance
 
 A plugin that draws its own UI cannot tell whether AERA is in its light or

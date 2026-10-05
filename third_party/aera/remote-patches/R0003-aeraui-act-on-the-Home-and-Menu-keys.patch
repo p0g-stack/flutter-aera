@@ -1,4 +1,4 @@
-From 5e28b1aa901ed09a40be90f8675a54066ae102f4 Mon Sep 17 00:00:00 2001
+From 478022c07c53db724782eb6384fabd6e1d29bcc8 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:13:42 +0000
 Subject: [PATCH 3/3] aeraui: act on the Home and Menu keys
@@ -18,7 +18,7 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  3 files changed, 29 insertions(+)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index b66938d..d1da762 100644
+index 6e8e029..93e7811 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
 @@ -639,6 +639,22 @@ public:
@@ -41,25 +41,25 @@ index b66938d..d1da762 100644
 +    else ShowRecents(false);
 +  }
 +
-   void NavigateBack(bool feedback = true, bool held = false) {
-     // A held Back leaving a pixel plugin passes over everything the plugin
-     // would take: whatever it does with Back, or if it stopped answering,
-@@ -3562,6 +3578,8 @@ uint32_t Engine::RunFrame() { return impl_->RunFrame(); }
+   void NavigateBack(bool feedback = true) {
+     if (feedback) RecoveryVibrate(Haptic::kTouch);
+     if (recents_overlay_ != nullptr) {
+@@ -3537,6 +3553,8 @@ uint32_t Engine::RunFrame() { return impl_->RunFrame(); }
  Action Engine::TakeAction() { return impl_->TakeAction(); }
  void Engine::NavigateHome() { impl_->NavigateHome(); }
- void Engine::NavigateBack(bool held) { impl_->NavigateBack(true, held); }
+ void Engine::NavigateBack() { impl_->NavigateBack(); }
 +void Engine::HomeKey() { impl_->HomeKey(); }
 +void Engine::MenuKey() { impl_->MenuKey(); }
  void Engine::SetBackendReady() { impl_->SetBackendReady(); }
  void Engine::BeginDecryption(int credential_type, bool file_based, int user_id,
                               int pattern_grid_size) {
 diff --git a/aeraui/core/runner.cpp b/aeraui/core/runner.cpp
-index 33fbc7e..07872bc 100644
+index b23c0ea..15a65a8 100644
 --- a/aeraui/core/runner.cpp
 +++ b/aeraui/core/runner.cpp
-@@ -362,6 +362,12 @@ bool HandleEvent(Engine& engine, InteractionBoost& performance,
-         hardware.back_pressed_at_ms = 0;
-         engine.NavigateBack(held);
+@@ -355,6 +355,12 @@ bool HandleEvent(Engine& engine, InteractionBoost& performance,
+     if (event.code == KEY_BACK && event.value == 0 && !hardware.screen_off) {
+         engine.NavigateBack();
      }
 +    if (event.code == KEY_HOMEPAGE && event.value == 0 && !hardware.screen_off) {
 +        engine.HomeKey();
@@ -71,13 +71,13 @@ index 33fbc7e..07872bc 100644
  }
  
 diff --git a/aeraui/include/aeraui/engine.hpp b/aeraui/include/aeraui/engine.hpp
-index 07a2ff0..2bc65f6 100644
+index bd6bac4..f027bd9 100644
 --- a/aeraui/include/aeraui/engine.hpp
 +++ b/aeraui/include/aeraui/engine.hpp
-@@ -123,6 +123,11 @@ class Engine final {
-     static constexpr uint32_t kBackHoldMs = 500;
+@@ -119,6 +119,11 @@ class Engine final {
+     // gesture use NavigateBack() to return to the previous native surface.
      void NavigateHome();
-     void NavigateBack(bool held = false);
+     void NavigateBack();
 +    // The Home and Menu keys (AERA Remote's buttons, KEY_HOMEPAGE and
 +    // KEY_MENU) do what the bottom-edge swipe does: Home, and Recents when
 +    // gesture navigation is on.

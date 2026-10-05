@@ -1,7 +1,7 @@
-From 9c78aa25075c2c88ad25de022eeb74f5679f3753 Mon Sep 17 00:00:00 2001
+From aa4f504546e81bcdde1a1ef64597dcf407f116ad Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:06:14 +0000
-Subject: [PATCH 18/23] plugin_api: pause a pixel plugin when its scene is
+Subject: [PATCH 18/22] plugin_api: pause a pixel plugin when its scene is
  left, resume it on return
 
 A pixel plugin was stopped whenever its scene was left, so going Home or

@@ -1,7 +1,7 @@
-From 564e0e501667db076fd280c0066772f50bd51c80 Mon Sep 17 00:00:00 2001
+From 1a45732f63182fd5e1f422977052198443c78727 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 13:54:00 +0000
-Subject: [PATCH 10/23] prebuilt: pack libincfs.so on every build
+Subject: [PATCH 10/22] prebuilt: pack libincfs.so on every build
 
 libandroidfw.so is packed on every build and links libincfs.so, but
 libincfs.so is only packed inside the TW_INCLUDE_CRYPTO_FBE block. A build
