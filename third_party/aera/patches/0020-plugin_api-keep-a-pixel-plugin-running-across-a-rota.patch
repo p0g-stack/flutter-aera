@@ -1,7 +1,8 @@
-From 99bcb001d54727f2b7c64a47d9f567ab7abaa3f5 Mon Sep 17 00:00:00 2001
+From 9f5cca2598a5cba496722626c15e4adf0ec893e8 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:44:41 +0000
-Subject: [PATCH] plugin_api: keep a pixel plugin running across a rotation
+Subject: [PATCH 17/23] plugin_api: keep a pixel plugin running across a
+ rotation
 
 Rotating from Quick Settings returns AERA to Home, which ends a running
 pixel plugin: its surface had one fixed size, so there was no way to
@@ -39,10 +40,10 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  11 files changed, 242 insertions(+), 74 deletions(-)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index 77bf86a..2c36499 100644
+index 12ce476..d9b292b 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
-@@ -2270,7 +2270,7 @@ private:
+@@ -2295,7 +2295,7 @@ private:
        __android_log_print(ANDROID_LOG_INFO, kLogTag,
                            "display orientation changed to %s",
                            self->landscape_ ? "landscape" : "portrait");
@@ -52,7 +53,7 @@ index 77bf86a..2c36499 100644
        return;
      }
 diff --git a/aeraui/core/status_bar.cpp b/aeraui/core/status_bar.cpp
-index ea2f322..e6ba07d 100644
+index 6d6ebd3..a7fbe82 100644
 --- a/aeraui/core/status_bar.cpp
 +++ b/aeraui/core/status_bar.cpp
 @@ -103,6 +103,32 @@ void SetShadeVisible(StatusState *state, int visible) {
@@ -117,7 +118,7 @@ index ea2f322..e6ba07d 100644
      lv_obj_delete_delayed(closing, 250);
      return;
    }
-@@ -764,6 +770,24 @@ bool StatusBarShadeOpen() {
+@@ -772,6 +778,24 @@ bool StatusBarShadeOpen() {
    return gOpenShade != nullptr;
  }
  
@@ -142,7 +143,7 @@ index ea2f322..e6ba07d 100644
  void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
                       void *context, StatusBarAction action, bool soft_surface) {
    auto *state = new StatusState;
-@@ -772,6 +796,7 @@ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
+@@ -780,6 +804,7 @@ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
    state->context = context;
    state->action = action;
    lv_obj_add_event_cb(screen, DeleteState, LV_EVENT_DELETE, state);

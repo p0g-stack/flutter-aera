@@ -4,7 +4,16 @@ A real Host API 3 for AERA Recovery, carried as a patch series against a
 pinned AERA commit (the way the frb patches are carried) until it is offered
 upstream.
 
-pin: abf33169b27dee17123c3c436a7299427821b329
+pin: 92813466db89cc7450a708a4acc0010087028f8f
+
+Rebased 2026-10-05 from abf3316 onto 9281346 (AERA's aera-16.0 head; image
+aera-infiniti-arm64-a56b3ac-ca015146c92db600 is built from patches/ and
+remote-patches/ at this pin). Two conflicts: 0005 with upstream's
+theme-extension fonts (`IsThemeExtension`, `IsLaunchable`; both kept) and
+0024 with upstream 58d3707, which accepts an edge swipe once it is captured
+(`edge_contact_captured_`); the hold timer now runs on top of that capture.
+F0001 kept its content and now leaves upstream's capture in the pointer
+read; C0001 applied unchanged.
 
 Upstream: <https://github.com/AERA-Recovery/android_bootable_recovery>
 (`bootable/recovery` in AERA's manifest). The patches touch `aeraui/`, `aera_rpc/`
@@ -78,7 +87,7 @@ It needs nothing from `refinement-patches/` today. AERA Remote work goes here (Y
 
 `lvgl-patches/` is a separate series for AERA's LVGL fork
 (`external/lvgl`, android_external_lvgl, pinned at
-017abcbf759c20ee9b91e0bf22e6ee81e04598a1 in AERA's manifest). Apply with
+212fd3a25187f9876356ae66aa13103b002bc322 in AERA's manifest). Apply with
 `git am $(cat lvgl-patches/series)` there (0001, a blend-clip backstop nothing reached once 0002 was in, was dropped in the 2026-10-03 audit); devicelab copies them to
 `aera/build/patches/external/lvgl/`.
 

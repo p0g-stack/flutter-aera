@@ -1,7 +1,7 @@
-From 87cde21ef0c062824a1c904f2d6974b6b29ca99e Mon Sep 17 00:00:00 2001
+From 79448fd35f8bda66c7248efaebc421e1aec3a2c3 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 21:23:17 +0000
-Subject: [PATCH] aera_remote: create the virtual input device when Remote
+Subject: [PATCH 1/3] aera_remote: create the virtual input device when Remote
  starts
 
 The "AERA Remote Input" uinput device was created on the first touch or

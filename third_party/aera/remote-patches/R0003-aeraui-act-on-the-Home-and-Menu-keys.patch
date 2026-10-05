@@ -1,7 +1,7 @@
-From 35ebc5a923584d30372a117515a59bc5c7567abf Mon Sep 17 00:00:00 2001
+From 5e28b1aa901ed09a40be90f8675a54066ae102f4 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:13:42 +0000
-Subject: [PATCH] aeraui: act on the Home and Menu keys
+Subject: [PATCH 3/3] aeraui: act on the Home and Menu keys
 
 AERA Remote's Home and Menu buttons send KEY_HOMEPAGE and KEY_MENU, and
 its virtual device advertises both, but recovery handled only Power,
@@ -18,10 +18,10 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  3 files changed, 29 insertions(+)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index 19f039d..55f8a5e 100644
+index b66938d..d1da762 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
-@@ -638,6 +638,22 @@ public:
+@@ -639,6 +639,22 @@ public:
      }
    }
  
@@ -44,7 +44,7 @@ index 19f039d..55f8a5e 100644
    void NavigateBack(bool feedback = true, bool held = false) {
      // A held Back leaving a pixel plugin passes over everything the plugin
      // would take: whatever it does with Back, or if it stopped answering,
-@@ -3586,6 +3602,8 @@ uint32_t Engine::RunFrame() { return impl_->RunFrame(); }
+@@ -3562,6 +3578,8 @@ uint32_t Engine::RunFrame() { return impl_->RunFrame(); }
  Action Engine::TakeAction() { return impl_->TakeAction(); }
  void Engine::NavigateHome() { impl_->NavigateHome(); }
  void Engine::NavigateBack(bool held) { impl_->NavigateBack(true, held); }
@@ -54,7 +54,7 @@ index 19f039d..55f8a5e 100644
  void Engine::BeginDecryption(int credential_type, bool file_based, int user_id,
                               int pattern_grid_size) {
 diff --git a/aeraui/core/runner.cpp b/aeraui/core/runner.cpp
-index 1b5d8fd..6432e1e 100644
+index 33fbc7e..07872bc 100644
 --- a/aeraui/core/runner.cpp
 +++ b/aeraui/core/runner.cpp
 @@ -362,6 +362,12 @@ bool HandleEvent(Engine& engine, InteractionBoost& performance,

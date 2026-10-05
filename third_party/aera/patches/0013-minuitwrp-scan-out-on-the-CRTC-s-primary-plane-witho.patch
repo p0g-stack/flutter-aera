@@ -1,8 +1,8 @@
-From cde96bce572443271ba6406327e0253286b5627f Mon Sep 17 00:00:00 2001
+From 8184fa7a0b60c91aad38b683a1804c0ac90627b7 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 17:20:22 +0000
-Subject: [PATCH] minuitwrp: scan out on the CRTC's primary plane without an
- SDE topology
+Subject: [PATCH 11/23] minuitwrp: scan out on the CRTC's primary plane without
+ an SDE topology
 
 The DRM backend assumes Qualcomm's SDE driver: it splits the screen across
 DEFAULT_NUM_LMS (2) layer mixers unless the connector's mode_properties
@@ -28,7 +28,7 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  1 file changed, 56 insertions(+), 1 deletion(-)
 
 diff --git a/minuitwrp/graphics_drm.cpp b/minuitwrp/graphics_drm.cpp
-index 6f7346f..eceb53a 100644
+index 0d0a911..d9f072b 100644
 --- a/minuitwrp/graphics_drm.cpp
 +++ b/minuitwrp/graphics_drm.cpp
 @@ -239,6 +239,7 @@ static drmModeCrtc *main_monitor_crtc;
@@ -39,7 +39,7 @@ index 6f7346f..eceb53a 100644
  
  static bool current_blank_state = true;
  static int fb_prop_id;
-@@ -948,6 +949,34 @@ static int update_plane_fb(uint32_t fb_id) {
+@@ -972,6 +973,34 @@ static int update_plane_fb(uint32_t fb_id) {
  
  }
  
@@ -74,7 +74,7 @@ index 6f7346f..eceb53a 100644
  static GRSurface* drm_init(minui_backend* backend __unused) {
    drmModeRes* res = nullptr;
  
-@@ -1010,6 +1039,13 @@ static GRSurface* drm_init(minui_backend* backend __unused) {
+@@ -1034,6 +1063,13 @@ static GRSurface* drm_init(minui_backend* backend __unused) {
      return nullptr;
    }
  
@@ -88,7 +88,7 @@ index 6f7346f..eceb53a 100644
    disable_non_main_crtcs(drm_fd, res, main_monitor_crtc);
  
    main_monitor_crtc->mode = main_monitor_connector->modes[selected_mode];
-@@ -1099,6 +1135,7 @@ static GRSurface* drm_init(minui_backend* backend __unused) {
+@@ -1123,6 +1159,7 @@ static GRSurface* drm_init(minui_backend* backend __unused) {
    conn_res.props_info = static_cast<drmModePropertyRes **>
                           (calloc(conn_res.props->count_props,
                           sizeof(conn_res.props_info)));
@@ -96,7 +96,7 @@ index 6f7346f..eceb53a 100644
    if (!conn_res.props_info)
      return NULL;
    else {
-@@ -1111,14 +1148,32 @@ static GRSurface* drm_init(minui_backend* backend __unused) {
+@@ -1135,14 +1172,32 @@ static GRSurface* drm_init(minui_backend* backend __unused) {
         */
        if (!strcmp(conn_res.props_info[j]->name, "mode_properties")) {
          number_of_lms = get_topology_lm_number(drm_fd, conn_res.props->prop_values[j]);

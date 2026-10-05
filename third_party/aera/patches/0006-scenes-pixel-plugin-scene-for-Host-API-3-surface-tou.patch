@@ -1,8 +1,8 @@
-From 74eee02004eba3897d12ffef96e1856342e171f1 Mon Sep 17 00:00:00 2001
+From 6bc0ceaf70d82771abbf22bbfade90643488a960 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:27:24 +0000
-Subject: [PATCH] scenes: pixel plugin scene for Host API 3 (surface, touch,
- keyboard, Back)
+Subject: [PATCH 06/23] scenes: pixel plugin scene for Host API 3 (surface,
+ touch, keyboard, Back)
 
 Show a pixel plugin full screen below the status bar: size the surface to
 the physical pixels, show presented frames as an ARGB8888 image refreshed
@@ -43,10 +43,10 @@ index 158e148..cab79e8 100644
          "scenes/reboot_scene.cpp",
          "scenes/recorder_scene.cpp",
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index 05928ac..07db3c6 100644
+index 3ff578b..c7de7b1 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
-@@ -820,7 +820,9 @@ public:
+@@ -821,7 +821,9 @@ public:
        return;
      }
      if (BrowserHandlePointer(event.slot, visible_x, visible_y,

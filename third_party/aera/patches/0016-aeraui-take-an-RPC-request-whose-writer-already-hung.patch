@@ -1,7 +1,8 @@
-From 44aaf432c85a88bdccd1f3a315b3d4aa9238754c Mon Sep 17 00:00:00 2001
+From f078c421a0f4ad6607675642e717a840c97abc67 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 20:55:03 +0000
-Subject: [PATCH] aeraui: take an RPC request whose writer already hung up
+Subject: [PATCH 14/23] aeraui: take an RPC request whose writer already hung
+ up
 
 RunFrame polls AERA's RPC input FIFO for POLLIN only. When a frame reads
 a request after its writer has written but before it closes,
@@ -28,10 +29,10 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  1 file changed, 3 insertions(+), 1 deletion(-)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index a82290d..77bf86a 100644
+index 7f57aaa..12ce476 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
-@@ -461,7 +461,9 @@ public:
+@@ -462,7 +462,9 @@ public:
      const int rpc_fd = aera::rpc::Channel::InputFd();
      if (rpc_fd >= 0) {
        pollfd rpc{rpc_fd, POLLIN, 0};

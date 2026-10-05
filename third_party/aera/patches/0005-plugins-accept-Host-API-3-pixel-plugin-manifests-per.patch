@@ -1,8 +1,8 @@
-From 687979d49d7d287522c7a43d709f165c18b79746 Mon Sep 17 00:00:00 2001
+From 6e5c8a723a83c390e8c3df38897178fc77661a94 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:27:24 +0000
-Subject: [PATCH] plugins: accept Host API 3 pixel plugin manifests; per-plugin
- data directory
+Subject: [PATCH 05/23] plugins: accept Host API 3 pixel plugin manifests;
+ per-plugin data directory
 
 Accept protocol 3 manifests whose min_host_api matches, requiring the
 display, touch-input and pixel-surface permissions and allowing
@@ -17,7 +17,7 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  2 files changed, 70 insertions(+), 6 deletions(-)
 
 diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
-index d87b435..035fdb5 100644
+index 32ce562..ce5e11b 100644
 --- a/aeraui/features/plugins/plugin_manager.cpp
 +++ b/aeraui/features/plugins/plugin_manager.cpp
 @@ -22,6 +22,7 @@
@@ -38,7 +38,7 @@ index d87b435..035fdb5 100644
  constexpr uint64_t kMaxCatalog = 1024 * 1024;
  constexpr uint64_t kMaxManifest = 64 * 1024;
  constexpr uint64_t kMaxSignature = 4096;
-@@ -298,15 +302,32 @@ bool ParsePlugin(const std::string &text, Plugin &plugin, std::string &error,
+@@ -299,8 +303,9 @@ bool ParsePlugin(const std::string &text, Plugin &plugin, std::string &error,
        (plugin.id == "streams" && plugin.type == "app-runtime" &&
         plugin.entry == "streams");
    const bool generic_entry = plugin.type == "ui-runtime" &&
@@ -49,6 +49,11 @@ index d87b435..035fdb5 100644
 +      plugin.min_host_api == plugin.protocol_version &&
        plugin.executable == "usr/bin/aera-plugin" &&
        plugin.icon.size() <= 24;
+   const bool theme_extension = plugin.type == "theme-extension" &&
+@@ -311,11 +316,27 @@ bool ParsePlugin(const std::string &text, Plugin &plugin, std::string &error,
+       !plugin.font_family.empty() && plugin.font_family.size() <= 64 &&
+       std::none_of(plugin.font_family.begin(), plugin.font_family.end(),
+                    [](unsigned char c) { return c < 32 || c == 127; });
 +  const bool pixel_entry = generic_entry && plugin.protocol_version == 3;
    const auto has_permission = [&](const char *name) {
      return std::find(plugin.permissions.begin(), plugin.permissions.end(), name) !=
@@ -74,7 +79,7 @@ index d87b435..035fdb5 100644
        (has_permission("display") && has_permission("touch-input") &&
         std::all_of(plugin.permissions.begin(), plugin.permissions.end(),
                     [](const std::string &permission) {
-@@ -927,7 +948,11 @@ bool Remove(const std::string &id, Progress &progress) {
+@@ -943,7 +964,11 @@ bool Remove(const std::string &id, Progress &progress) {
    if (!SafeId(id)) { progress.error = "Invalid plugin identifier."; return false; }
    const bool memory = RemoveTree(std::string(kMemoryRoot) + "/" + id);
    const bool storage = RemoveTree(std::string(kStorageRoot) + "/" + id);
@@ -87,13 +92,17 @@ index d87b435..035fdb5 100644
      progress.error = "One or more plugin files could not be removed."; return false;
    }
    progress.status = "Plugin removed"; progress.value.store(100); return true;
-@@ -1048,10 +1073,41 @@ bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
+@@ -1064,7 +1089,7 @@ bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
  
  bool IsGeneric(const Plugin &plugin) {
    return plugin.type == "ui-runtime" && plugin.entry == "main" &&
 -         plugin.protocol_version == 2 &&
 +         (plugin.protocol_version == 2 || plugin.protocol_version == 3) &&
           plugin.executable == "usr/bin/aera-plugin";
+ }
+ 
+@@ -1085,6 +1110,37 @@ bool IsLaunchable(const Plugin &plugin) {
+       plugin.entry == "recorder" || plugin.entry == "appvault";
  }
  
 +bool IsPixel(const Plugin &plugin) {
@@ -131,7 +140,7 @@ index d87b435..035fdb5 100644
    return std::find(plugin.permissions.begin(), plugin.permissions.end(),
                     permission) != plugin.permissions.end();
 diff --git a/aeraui/features/plugins/plugin_manager.hpp b/aeraui/features/plugins/plugin_manager.hpp
-index 1e7b91e..ade4a79 100644
+index aff2e1d..01748af 100644
 --- a/aeraui/features/plugins/plugin_manager.hpp
 +++ b/aeraui/features/plugins/plugin_manager.hpp
 @@ -11,7 +11,7 @@
@@ -143,13 +152,15 @@ index 1e7b91e..ade4a79 100644
  
  enum class Location {
    kNone = 0,
-@@ -98,7 +98,15 @@ bool IsPackageFile(const std::string &name);
+@@ -99,9 +99,17 @@ bool IsPackageFile(const std::string &name);
  // payload hash is checked by its consumer immediately before extraction/use.
  bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
                      std::string &error);
 +// A Host API 2 declarative plugin or a Host API 3 pixel plugin; both run
 +// usr/bin/aera-plugin from an expanded ui-runtime payload.
  bool IsGeneric(const Plugin &plugin);
+ bool IsThemeExtension(const Plugin &plugin);
+ bool IsLaunchable(const Plugin &plugin);
 +// Host API 3: the plugin draws its own pixels (IsGeneric is also true).
 +bool IsPixel(const Plugin &plugin);
 +// Host API 3's AERA_PLUGIN_DATA: a private directory that survives updates

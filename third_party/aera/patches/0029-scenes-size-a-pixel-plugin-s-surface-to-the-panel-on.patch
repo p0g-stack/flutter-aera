@@ -1,8 +1,8 @@
-From 088dc5efaaf476c147cf92ed9ae4962141604d03 Mon Sep 17 00:00:00 2001
+From 422ae90f74ea97aa5c7ad035a1f4526738146275 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 3 Oct 2026 00:12:48 +0000
-Subject: [PATCH] scenes: size a pixel plugin's surface to the panel on each
- axis
+Subject: [PATCH 23/23] scenes: size a pixel plugin's surface to the panel on
+ each axis
 
 A pixel plugin's surface was AERA's logical view scaled by one factor,
 the panel's long side over the canvas's. With adaptive resolution the

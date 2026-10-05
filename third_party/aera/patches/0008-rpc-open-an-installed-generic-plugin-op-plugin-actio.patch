@@ -1,8 +1,8 @@
-From 1688fdc5d78215e752398bcc7e45e757e16da7ed Mon Sep 17 00:00:00 2001
+From cd33551fca51a98b3a0bc3bf7d435bb1aa0f0327 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 07:02:12 +0000
-Subject: [PATCH] rpc: open an installed generic plugin (op plugin, action
- open)
+Subject: [PATCH 08/23] rpc: open an installed generic plugin (op plugin,
+ action open)
 
 There is no way to start a plugin without tapping it, which rules out
 scripted tests and debugging over adb (attaching a debugger to a plugin
@@ -62,10 +62,10 @@ index 905c7c5..1a827e9 100644
    return Fail(events, "unsupported_operation",
                "This AERA RPC build does not support operation: " + op, 2);
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index 07db3c6..a82290d 100644
+index c7de7b1..7f57aaa 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
-@@ -903,6 +903,16 @@ public:
+@@ -912,6 +912,16 @@ public:
      lock_overlay_ = BuildLockScene(lv_layer_top(), HandleSceneAction, this);
    }
  
@@ -82,7 +82,7 @@ index 07db3c6..a82290d 100644
    void ShowPowerMenu() {
      if (!initialized_ || power_overlay_ != nullptr || suspended_) return;
      CancelEdgeSwipe();
-@@ -3401,6 +3411,7 @@ void Engine::SetPointer(const PointerEvent &event) { impl_->SetPointer(event); }
+@@ -3445,6 +3455,7 @@ void Engine::SetPointer(const PointerEvent &event) { impl_->SetPointer(event); }
  void Engine::SetSuspended(bool suspended) { impl_->SetSuspended(suspended); }
  void Engine::ShowLockScreen() { impl_->ShowLockScreen(); }
  void Engine::ShowPowerMenu() { impl_->ShowPowerMenu(); }
@@ -91,7 +91,7 @@ index 07db3c6..a82290d 100644
  void Engine::ShowScreenshotResult(bool success) {
    impl_->ShowScreenshotResult(success);
 diff --git a/aeraui/core/runner.cpp b/aeraui/core/runner.cpp
-index 593db9f..b79928e 100644
+index 330a518..b23c0ea 100644
 --- a/aeraui/core/runner.cpp
 +++ b/aeraui/core/runner.cpp
 @@ -29,6 +29,7 @@
@@ -171,7 +171,7 @@ index cf256f8..bd6bac4 100644
      void ShowScreenshotResult(bool success);
  
 diff --git a/aeraui/include/aeraui/runner.hpp b/aeraui/include/aeraui/runner.hpp
-index 67610c5..d666252 100644
+index a7ad77c..bedf3cd 100644
 --- a/aeraui/include/aeraui/runner.hpp
 +++ b/aeraui/include/aeraui/runner.hpp
 @@ -5,6 +5,7 @@
@@ -182,8 +182,8 @@ index 67610c5..d666252 100644
  
  namespace aeraui {
  
-@@ -24,6 +25,12 @@ enum class DecryptionResult {
-     kSkipped = 1,
+@@ -28,6 +29,12 @@ enum class DecryptionResult {
+     kTerminalAction = 2,
  };
  
 +enum class PluginLaunchRequestResult {
@@ -195,7 +195,7 @@ index 67610c5..d666252 100644
  enum class ModeTransitionRequestResult {
      kAccepted = 0,
      kAlreadyActive,
-@@ -79,4 +86,9 @@ RunResult RunAeraUiFastboot(const DisplayMetrics& metrics = {});
+@@ -83,4 +90,9 @@ RunResult RunAeraUiFastboot(const DisplayMetrics& metrics = {});
  // the transition backend directly.
  ModeTransitionRequestResult RequestModeTransition(bool toward_fastboot);
  

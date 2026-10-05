@@ -1,8 +1,8 @@
-From 36fecc8482efdf0ecd416b5336042be4bd0a7f4c Mon Sep 17 00:00:00 2001
+From 9c78aa25075c2c88ad25de022eeb74f5679f3753 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:06:14 +0000
-Subject: [PATCH] plugin_api: pause a pixel plugin when its scene is left,
- resume it on return
+Subject: [PATCH 18/23] plugin_api: pause a pixel plugin when its scene is
+ left, resume it on return
 
 A pixel plugin was stopped whenever its scene was left, so going Home or
 through Recents and back cold-started the app. Browser instead keeps its
@@ -29,10 +29,10 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  5 files changed, 203 insertions(+), 17 deletions(-)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index 2c36499..add795e 100644
+index d9b292b..10a2a98 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
-@@ -380,6 +380,7 @@ public:
+@@ -381,6 +381,7 @@ public:
      if (update_thread_.joinable())
        update_thread_.join();
      ShutdownWebRuntime();
@@ -40,7 +40,7 @@ index 2c36499..add795e 100644
      CancelEdgeSwipe();
      lv_anim_delete(this, SetRecentLaunchProgress);
      recent_launch_active_ = false;
-@@ -1243,6 +1244,10 @@ private:
+@@ -1268,6 +1269,10 @@ private:
                         }),
          recent_apps_.end());
      recent_apps_.insert(recent_apps_.begin(), std::move(app));
@@ -51,7 +51,7 @@ index 2c36499..add795e 100644
      if (recent_apps_.size() > 7) recent_apps_.resize(7);
    }
  
-@@ -1598,10 +1603,11 @@ private:
+@@ -1623,10 +1628,11 @@ private:
        auto *clear = widgets::Button(actions, LV_SYMBOL_TRASH "  Clear all",
                                      [this] {
          recent_apps_.clear();

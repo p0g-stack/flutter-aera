@@ -3,7 +3,7 @@
 What flutter-aera relies on from AERA Recovery's pixel plugin host. Host
 API 2 is AERA's published contract. Host API 3 is implemented by our patch
 series for AERA in [`third_party/aera/`](../third_party/aera/README.md),
-against AERA abf3316, and is offered upstream from there; until AERA takes
+against AERA 9281346, and is offered upstream from there; until AERA takes
 it, this file is its contract.
 
 This file, `vendor/aera/protocol_v3.hpp`, the patches and `src/host/`
@@ -14,7 +14,7 @@ and that `protocol_v3.hpp` is what the patches produce.
 
 | File | From | sha256 |
 | --- | --- | --- |
-| `vendor/aera/protocol.hpp` | AERA-Recovery/android_bootable_recovery@abf3316 `aeraui/features/plugin_api/protocol.hpp`, verbatim | `82d7b8df63bed0e68773931e955be119bce76ebda04efeeac03077a28ae56822` |
+| `vendor/aera/protocol.hpp` | AERA-Recovery/android_bootable_recovery@9281346 (unchanged since abf3316) `aeraui/features/plugin_api/protocol.hpp`, verbatim | `82d7b8df63bed0e68773931e955be119bce76ebda04efeeac03077a28ae56822` |
 | `vendor/aera/protocol_v3.hpp` | the same file after `third_party/aera/patches` | `dd8a97407be6643c5a321860ebfa9442df22ea90e7b212185a8ea0b11e1930fc` |
 
 Manifest and payload rules: `aeraui/features/plugins/plugin_manager.cpp`

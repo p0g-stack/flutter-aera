@@ -1,7 +1,7 @@
-From e1c48d3f62eecc21970576cab0640ab7608bd08f Mon Sep 17 00:00:00 2001
+From 088c82cce0a9ed04877963469c0cff055fb79ea5 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:39:30 +0000
-Subject: [PATCH] aeraui: a held Back always leaves a pixel plugin
+Subject: [PATCH 20/23] aeraui: a held Back always leaves a pixel plugin
 
 A pixel plugin takes every Back, as an Android app does, so it can run
 its own navigation. Unlike Browser (Back only while it has history) or a
@@ -19,17 +19,17 @@ a held Back as a Back.
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
 ---
- aeraui/core/engine.cpp               | 40 +++++++++++++++++++++++-----
- aeraui/core/runner.cpp               |  9 ++++++-
- aeraui/features/plugin_api/README.md |  6 ++++-
- aeraui/include/aeraui/engine.hpp     |  6 ++++-
- 4 files changed, 51 insertions(+), 10 deletions(-)
+ aeraui/core/engine.cpp               | 41 ++++++++++++++++++++++------
+ aeraui/core/runner.cpp               |  9 +++++-
+ aeraui/features/plugin_api/README.md |  6 +++-
+ aeraui/include/aeraui/engine.hpp     |  6 +++-
+ 4 files changed, 51 insertions(+), 11 deletions(-)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index add795e..1567ab5 100644
+index 10a2a98..fa29d2f 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
-@@ -644,8 +644,13 @@ public:
+@@ -645,8 +645,13 @@ public:
      }
    }
  
@@ -45,7 +45,7 @@ index add795e..1567ab5 100644
      if (recents_overlay_ != nullptr) {
        DismissRecents();
        return;
-@@ -653,7 +658,10 @@ public:
+@@ -654,7 +659,10 @@ public:
      if (lock_overlay_ != nullptr || !backend_ready_ || decryption_active_ ||
          operation_running_ || nas_running_ || plugin_running_)
        return;
@@ -57,32 +57,34 @@ index add795e..1567ab5 100644
      if (fastboot_mode_) {
        if (current_tool_ == Action::kFormatData) ShowFastboot();
        return;
-@@ -859,6 +867,13 @@ public:
+@@ -862,8 +870,14 @@ public:
            0, swipe_right_edge_ ? swipe_start_x_ - pointer_.x
                                 : pointer_.x - swipe_start_x_);
        swipe_max_inward_ = std::max(swipe_max_inward_, inward);
+-      UpdateEdgeSwipe(inward);
 +      // How long the contact has stayed past the depth that accepts Back:
 +      // released after kBackHoldMs there, it is a held Back.
-+      const int32_t visible_width = landscape_ ? height_ : width_;
+       const int32_t visible_width = landscape_ ? height_ : width_;
 +      if (inward < visible_width / 6)
 +        swipe_held_since_ = 0;
 +      else if (swipe_held_since_ == 0)
 +        swipe_held_since_ = std::max<uint32_t>(1, MonotonicMilliseconds());
-       UpdateEdgeSwipe(inward);
-       return;
-     }
-@@ -872,7 +887,9 @@ public:
-       const bool accepted = swipe_max_inward_ >= visible_width / 6 &&
-                             swipe_max_inward_ > vertical * 2;
++      UpdateEdgeSwipe(inward);
+       if (!edge_contact_captured_ &&
+           swipe_max_inward_ >= visible_width / 6 &&
+           swipe_max_inward_ > vertical * 2) {
+@@ -880,7 +894,9 @@ public:
+       // the contact was still active.
+       const bool accepted = edge_contact_captured_;
        const bool right_edge = swipe_right_edge_;
 -      FinishEdgeSwipe(accepted);
 +      const bool held = accepted && swipe_held_since_ != 0 &&
 +          MonotonicMilliseconds() - swipe_held_since_ >= Engine::kBackHoldMs;
 +      FinishEdgeSwipe(accepted, held);
+       edge_contact_captured_ = false;
        if (accepted) {
          if (pointer_device_ != nullptr) lv_indev_reset(pointer_device_, nullptr);
-         RecoveryVibrate(Haptic::kTouch);
-@@ -2972,8 +2989,10 @@ private:
+@@ -2997,8 +3013,10 @@ private:
      self->gesture_indicator_ = nullptr;
      self->gesture_depth_ = 0;
      const bool navigate_back = self->gesture_navigate_back_;
@@ -94,13 +96,14 @@ index add795e..1567ab5 100644
    }
  
    void BeginEdgeSwipe(bool right_edge) {
-@@ -3027,11 +3046,14 @@ private:
+@@ -3054,12 +3072,15 @@ private:
      lv_obj_invalidate(gesture_indicator_);
    }
  
 -  void FinishEdgeSwipe(bool accepted) {
 +  void FinishEdgeSwipe(bool accepted, bool held = false) {
      swipe_active_ = false;
+     swipe_rejected_ = false;
 +    swipe_held_since_ = 0;
      gesture_navigate_back_ = accepted;
 +    gesture_held_ = accepted && held;
@@ -110,17 +113,17 @@ index add795e..1567ab5 100644
        return;
      }
      lv_anim_delete(this, SetEdgeGestureDepth);
-@@ -3049,7 +3071,9 @@ private:
- 
-   void CancelEdgeSwipe() {
+@@ -3090,7 +3111,9 @@ private:
      swipe_active_ = false;
+     edge_contact_captured_ = false;
+     swipe_rejected_ = false;
 +    swipe_held_since_ = 0;
      gesture_navigate_back_ = false;
 +    gesture_held_ = false;
      lv_anim_delete(this, SetEdgeGestureDepth);
      if (gesture_indicator_ != nullptr) {
        lv_obj_delete(gesture_indicator_);
-@@ -3327,6 +3351,7 @@ private:
+@@ -3369,6 +3392,7 @@ private:
    int32_t swipe_start_y_ = 0;
    int32_t swipe_last_y_ = 0;
    int32_t swipe_max_inward_ = 0;
@@ -128,15 +131,15 @@ index add795e..1567ab5 100644
    int32_t gesture_depth_ = 0;
    int32_t recents_swipe_start_x_ = 0;
    int32_t recents_swipe_last_x_ = 0;
-@@ -3379,6 +3404,7 @@ private:
-   bool swipe_active_ = false;
+@@ -3423,6 +3447,7 @@ private:
+   bool swipe_rejected_ = false;
    bool swipe_right_edge_ = false;
    bool gesture_navigate_back_ = false;
 +  bool gesture_held_ = false;
    bool recents_swipe_active_ = false;
    bool suspended_ = false;
    bool fastboot_mode_ = false;
-@@ -3405,7 +3431,7 @@ void Engine::AbandonForTerminalAction() { impl_.release(); }
+@@ -3449,7 +3474,7 @@ void Engine::AbandonForTerminalAction() { impl_.release(); }
  uint32_t Engine::RunFrame() { return impl_->RunFrame(); }
  Action Engine::TakeAction() { return impl_->TakeAction(); }
  void Engine::NavigateHome() { impl_->NavigateHome(); }
@@ -146,7 +149,7 @@ index add795e..1567ab5 100644
  void Engine::BeginDecryption(int credential_type, bool file_based, int user_id,
                               int pattern_grid_size) {
 diff --git a/aeraui/core/runner.cpp b/aeraui/core/runner.cpp
-index b79928e..1b5d8fd 100644
+index b23c0ea..33fbc7e 100644
 --- a/aeraui/core/runner.cpp
 +++ b/aeraui/core/runner.cpp
 @@ -207,6 +207,7 @@ struct HardwareState {

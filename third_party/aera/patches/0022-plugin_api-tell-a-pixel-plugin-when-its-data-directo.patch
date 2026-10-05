@@ -1,8 +1,8 @@
-From a8e9e1df9eeabc5e6f12c61dcb727476367ada69 Mon Sep 17 00:00:00 2001
+From 11950872380d74d6ac7356ffc526c27bbe668cf1 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:08:57 +0000
-Subject: [PATCH] plugin_api: tell a pixel plugin when its data directory is in
- RAM
+Subject: [PATCH 19/23] plugin_api: tell a pixel plugin when its data directory
+ is in RAM
 
 AERA_PLUGIN_DATA falls back to RAM when storage is not mounted, and a
 plugin had no way to know that what it saves will not survive a reboot.
@@ -62,10 +62,10 @@ index 1f0d2cf..180479a 100644
  
  class Process final {
 diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
-index 035fdb5..c0e053c 100644
+index ce5e11b..012b1d2 100644
 --- a/aeraui/features/plugins/plugin_manager.cpp
 +++ b/aeraui/features/plugins/plugin_manager.cpp
-@@ -1108,6 +1108,11 @@ std::string DataDirectory(const Plugin &plugin) {
+@@ -1141,6 +1141,11 @@ std::string DataDirectory(const Plugin &plugin) {
    return path;
  }
  
@@ -78,10 +78,10 @@ index 035fdb5..c0e053c 100644
    return std::find(plugin.permissions.begin(), plugin.permissions.end(),
                     permission) != plugin.permissions.end();
 diff --git a/aeraui/features/plugins/plugin_manager.hpp b/aeraui/features/plugins/plugin_manager.hpp
-index ade4a79..66a5a69 100644
+index 01748af..6f339f8 100644
 --- a/aeraui/features/plugins/plugin_manager.hpp
 +++ b/aeraui/features/plugins/plugin_manager.hpp
-@@ -107,6 +107,8 @@ bool IsPixel(const Plugin &plugin);
+@@ -110,6 +110,8 @@ bool IsPixel(const Plugin &plugin);
  // but not Remove, on internal storage when it is mounted and in RAM
  // otherwise. Created on demand; empty when it cannot be.
  std::string DataDirectory(const Plugin &plugin);

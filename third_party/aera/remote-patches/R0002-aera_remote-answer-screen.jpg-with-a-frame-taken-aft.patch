@@ -1,8 +1,8 @@
-From d08f0b6a978f014de97d3826ad87c080d585570d Mon Sep 17 00:00:00 2001
+From 09dde4a11bcd0c49416819e6708daa16496acfe5 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 2 Oct 2026 05:23:22 +0000
-Subject: [PATCH] aera_remote: answer /screen.jpg with a frame taken after the
- request
+Subject: [PATCH 2/3] aera_remote: answer /screen.jpg with a frame taken after
+ the request
 
 Remote captures frames only while a client has asked within the last
 four seconds. /screen.jpg returned the newest JPEG at once, so a single
