@@ -1,7 +1,7 @@
-From 478022c07c53db724782eb6384fabd6e1d29bcc8 Mon Sep 17 00:00:00 2001
+From 23f6ca7be1b01c90f39eee18db4ef05fa33ea1fe Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 22:13:42 +0000
-Subject: [PATCH 3/3] aeraui: act on the Home and Menu keys
+Subject: [PATCH] aeraui: act on the Home and Menu keys
 
 AERA Remote's Home and Menu buttons send KEY_HOMEPAGE and KEY_MENU, and
 its virtual device advertises both, but recovery handled only Power,
@@ -18,7 +18,7 @@ Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
  3 files changed, 29 insertions(+)
 
 diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
-index 6e8e029..93e7811 100644
+index 66e6929..62eedc9 100644
 --- a/aeraui/core/engine.cpp
 +++ b/aeraui/core/engine.cpp
 @@ -639,6 +639,22 @@ public:
@@ -44,7 +44,7 @@ index 6e8e029..93e7811 100644
    void NavigateBack(bool feedback = true) {
      if (feedback) RecoveryVibrate(Haptic::kTouch);
      if (recents_overlay_ != nullptr) {
-@@ -3537,6 +3553,8 @@ uint32_t Engine::RunFrame() { return impl_->RunFrame(); }
+@@ -3604,6 +3620,8 @@ uint32_t Engine::RunFrame() { return impl_->RunFrame(); }
  Action Engine::TakeAction() { return impl_->TakeAction(); }
  void Engine::NavigateHome() { impl_->NavigateHome(); }
  void Engine::NavigateBack() { impl_->NavigateBack(); }

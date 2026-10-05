@@ -1,7 +1,7 @@
-From 27f3bc410e322bbbb3785b989fcf01d2d95ffbe0 Mon Sep 17 00:00:00 2001
+From 6c650d3733b648082f3746ecd746445fc82df11c Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 06:16:35 +0000
-Subject: [PATCH 03/22] plugin_api: pixel surface slots for Host API 3
+Subject: [PATCH 03/23] plugin_api: pixel surface slots for Host API 3
 
 A pixel plugin needs memory it can draw into and AERA can show without a
 copy over the control socket.

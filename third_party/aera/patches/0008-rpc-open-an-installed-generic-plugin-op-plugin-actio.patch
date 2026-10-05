@@ -1,7 +1,7 @@
-From fde8cc147be3d774bb0fc701bd39b82e1806a4bd Mon Sep 17 00:00:00 2001
+From cd33551fca51a98b3a0bc3bf7d435bb1aa0f0327 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 1 Oct 2026 07:02:12 +0000
-Subject: [PATCH 08/22] rpc: open an installed generic plugin (op plugin,
+Subject: [PATCH 08/23] rpc: open an installed generic plugin (op plugin,
  action open)
 
 There is no way to start a plugin without tapping it, which rules out
