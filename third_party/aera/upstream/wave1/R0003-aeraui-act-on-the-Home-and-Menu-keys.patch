@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 22:13:42 +0000
+Subject: [PATCH] aeraui: act on the Home and Menu keys
+
+AERA Remote's Home and Menu buttons send KEY_HOMEPAGE and KEY_MENU, and
+its virtual device advertises both, but recovery handled only Power,
+Volume and Back, so a remote viewer could reach Home or Recents only with
+the bottom-edge swipe. Make Home do what the swipe does (dismiss Recents,
+show Home) and Menu open or close Recents when gesture navigation is on.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/core/engine.cpp           | 18 ++++++++++++++++++
+ aeraui/core/runner.cpp           |  6 ++++++
+ aeraui/include/aeraui/engine.hpp |  5 +++++
+ 3 files changed, 29 insertions(+)
+
+diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
+index 3ff578b..22e3a3d 100644
+--- a/aeraui/core/engine.cpp
++++ b/aeraui/core/engine.cpp
+@@ -642,6 +642,22 @@ public:
+     }
+   }
+ 
++  void HomeKey() {
++    if (lock_overlay_ != nullptr || !backend_ready_ || fastboot_mode_ ||
++        decryption_active_)
++      return;
++    if (recents_overlay_ != nullptr) DismissRecents();
++    if (!on_home_) ShowHome();
++  }
++
++  void MenuKey() {
++    if (lock_overlay_ != nullptr || !backend_ready_ || fastboot_mode_ ||
++        decryption_active_ || !RecoveryPreference(Preference::kRecents))
++      return;
++    if (recents_overlay_ != nullptr) DismissRecents();
++    else ShowRecents(false);
++  }
++
+   void NavigateBack(bool feedback = true) {
+     if (feedback) RecoveryVibrate(Haptic::kTouch);
+     if (recents_overlay_ != nullptr) {
+@@ -3430,6 +3446,8 @@ uint32_t Engine::RunFrame() { return impl_->RunFrame(); }
+ Action Engine::TakeAction() { return impl_->TakeAction(); }
+ void Engine::NavigateHome() { impl_->NavigateHome(); }
+ void Engine::NavigateBack() { impl_->NavigateBack(); }
++void Engine::HomeKey() { impl_->HomeKey(); }
++void Engine::MenuKey() { impl_->MenuKey(); }
+ void Engine::SetBackendReady() { impl_->SetBackendReady(); }
+ void Engine::BeginDecryption(int credential_type, bool file_based, int user_id,
+                              int pattern_grid_size) {
+diff --git a/aeraui/core/runner.cpp b/aeraui/core/runner.cpp
+index 330a518..86275ef 100644
+--- a/aeraui/core/runner.cpp
++++ b/aeraui/core/runner.cpp
+@@ -352,6 +352,12 @@ bool HandleEvent(Engine& engine, InteractionBoost& performance,
+     if (event.code == KEY_BACK && event.value == 0 && !hardware.screen_off) {
+         engine.NavigateBack();
+     }
++    if (event.code == KEY_HOMEPAGE && event.value == 0 && !hardware.screen_off) {
++        engine.HomeKey();
++    }
++    if (event.code == KEY_MENU && event.value == 0 && !hardware.screen_off) {
++        engine.MenuKey();
++    }
+     return false;
+ }
+ 
+diff --git a/aeraui/include/aeraui/engine.hpp b/aeraui/include/aeraui/engine.hpp
+index cf256f8..85df0dc 100644
+--- a/aeraui/include/aeraui/engine.hpp
++++ b/aeraui/include/aeraui/engine.hpp
+@@ -118,6 +118,11 @@ class Engine final {
+     // gesture use NavigateBack() to return to the previous native surface.
+     void NavigateHome();
+     void NavigateBack();
++    // The Home and Menu keys (AERA Remote's buttons, KEY_HOMEPAGE and
++    // KEY_MENU) do what the bottom-edge swipe does: Home, and Recents when
++    // gesture navigation is on.
++    void HomeKey();
++    void MenuKey();
+ 
+     // Unlocks workflows after recovery has finished fstab, mount and decrypt
+     // initialization. The boot renderer can run before this point.
+-- 
+2.43.0
+

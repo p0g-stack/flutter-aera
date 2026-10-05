@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 13:55:28 +0000
+Subject: [PATCH] aeraui: build libwebp's SSE2 and SSE4.1 sources
+
+libaera_webp_decoder lists libwebp's NEON sources but not its SSE ones.
+On x86 and x86_64, libwebp's dsp.h defines WEBP_HAVE_SSE2 and
+WEBP_HAVE_SSE41, so cpu.c's runtime dispatch calls VP8DspInitSSE2,
+WebPInitSamplersSSE41 and the other SSE init functions, and recovery
+fails to link for an x86_64 target such as Cuttlefish.
+
+List the SSE sources next to the NEON ones, as libwebp's own build does.
+Each file is guarded by WEBP_USE_SSE2 or WEBP_USE_SSE41 and compiles to an
+empty init stub on ARM, the same way the NEON files do on x86. The
+rescaler's SSE2 file stays out: WEBP_REDUCE_SIZE drops its caller.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/third_party/libwebp/Android.bp | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/aeraui/third_party/libwebp/Android.bp b/aeraui/third_party/libwebp/Android.bp
+index ff19884..0f2059f 100644
+--- a/aeraui/third_party/libwebp/Android.bp
++++ b/aeraui/third_party/libwebp/Android.bp
+@@ -27,19 +27,30 @@ cc_library_static {
+         "src/dec/webp_dec.c",
+         "src/dsp/alpha_processing.c",
+         "src/dsp/alpha_processing_neon.c",
++        "src/dsp/alpha_processing_sse2.c",
++        "src/dsp/alpha_processing_sse41.c",
+         "src/dsp/cpu.c",
+         "src/dsp/dec.c",
+         "src/dsp/dec_clip_tables.c",
+         "src/dsp/dec_neon.c",
++        "src/dsp/dec_sse2.c",
++        "src/dsp/dec_sse41.c",
+         "src/dsp/filters.c",
+         "src/dsp/filters_neon.c",
++        "src/dsp/filters_sse2.c",
+         "src/dsp/lossless.c",
+         "src/dsp/lossless_neon.c",
++        "src/dsp/lossless_sse2.c",
++        "src/dsp/lossless_sse41.c",
+         "src/dsp/rescaler.c",
+         "src/dsp/upsampling.c",
+         "src/dsp/upsampling_neon.c",
++        "src/dsp/upsampling_sse2.c",
++        "src/dsp/upsampling_sse41.c",
+         "src/dsp/yuv.c",
+         "src/dsp/yuv_neon.c",
++        "src/dsp/yuv_sse2.c",
++        "src/dsp/yuv_sse41.c",
+         "src/utils/bit_reader_utils.c",
+         "src/utils/color_cache_utils.c",
+         "src/utils/filters_utils.c",
+-- 
+2.43.0
+

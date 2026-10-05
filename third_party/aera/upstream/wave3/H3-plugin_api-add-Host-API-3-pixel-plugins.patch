@@ -1,0 +1,2717 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 5 Oct 2026 06:19:44 +0000
+Subject: [PATCH] plugin_api: add Host API 3 pixel plugins
+
+Host API 3 lets a generic plugin draw its own pixels. The plugin gets a
+sealed memfd of frame slots on fd 3 (AERA_SURFACE_FD) and a SURFACE
+message with its size, presents slots with PRESENT and gets them back
+with FRAME_DONE; touches, keys and the keyboard come over the existing
+control socket. A plugin opts in with protocol_version 3 and the
+pixel-surface permission in its manifest, and gets a private data
+directory (AERA_PLUGIN_DATA) that survives updates and goes with the
+plugin.
+
+The pixel plugin scene shows it full screen. It keeps a plugin running
+across a rotation (a new SURFACE on the same memfd), pauses it when its
+scene is left and resumes it from Recents, tells it AERA's light or dark
+appearance, lets it pick files through the shared file picker, and lets
+taps near the side edges reach it unless they swipe inward. The RPC can
+open an installed plugin (op plugin, action open) for debugging over adb.
+Tests and the Host API 3 section of plugin_api/README.md are included.
+
+Squashed from p0g-stack/flutter-aera third_party/aera/patches 0001-0009,
+0015, 0019-0022 and 0029; it needs the shared file picker (0018) first.
+---
+ aera_rpc/aera_engine.cpp                     |  21 +
+ aeraui/Android.bp                            |   2 +
+ aeraui/core/engine.cpp                       |  25 +-
+ aeraui/core/runner.cpp                       |  26 +
+ aeraui/core/status_bar.cpp                   |  67 +-
+ aeraui/features/plugin_api/README.md         |  75 ++
+ aeraui/features/plugin_api/launcher.cpp      |  51 +-
+ aeraui/features/plugin_api/launcher.hpp      |  18 +-
+ aeraui/features/plugin_api/operations.cpp    |   7 +
+ aeraui/features/plugin_api/protocol.hpp      |  70 +-
+ aeraui/features/plugin_api/session.cpp       |  77 +-
+ aeraui/features/plugin_api/session.hpp       |  12 +-
+ aeraui/features/plugin_api/surface.cpp       | 121 +++
+ aeraui/features/plugin_api/surface.hpp       |  86 ++
+ aeraui/features/plugins/plugin_manager.cpp   |  71 +-
+ aeraui/features/plugins/plugin_manager.hpp   |  12 +-
+ aeraui/include/aeraui/engine.hpp             |   4 +
+ aeraui/include/aeraui/runner.hpp             |  12 +
+ aeraui/scenes/generic_plugin_scene.cpp       |   6 +
+ aeraui/scenes/pixel_plugin_scene.cpp         | 920 +++++++++++++++++++
+ aeraui/scenes/scene.hpp                      |  13 +
+ aeraui/tests/CMakeLists.txt                  |  14 +
+ aeraui/tests/plugin_api_pixel_host_check.cpp | 181 ++++
+ aeraui/tests/plugin_api_session_test.cpp     |  56 +-
+ aeraui/tests/plugin_api_surface_test.cpp     |  83 ++
+ 25 files changed, 1964 insertions(+), 66 deletions(-)
+ create mode 100644 aeraui/features/plugin_api/surface.cpp
+ create mode 100644 aeraui/features/plugin_api/surface.hpp
+ create mode 100644 aeraui/scenes/pixel_plugin_scene.cpp
+ create mode 100644 aeraui/tests/plugin_api_pixel_host_check.cpp
+ create mode 100644 aeraui/tests/plugin_api_surface_test.cpp
+
+diff --git a/aera_rpc/aera_engine.cpp b/aera_rpc/aera_engine.cpp
+index 905c7c5..1a827e9 100644
+--- a/aera_rpc/aera_engine.cpp
++++ b/aera_rpc/aera_engine.cpp
+@@ -289,6 +289,26 @@ int Transition(const Request &request, EventSink &events) {
+   return Fail(events, "transition_failed", "Could not queue the transition");
+ }
+ 
++int Plugin(const Request &request, EventSink &events) {
++  const std::string action = Text(request.arguments, "action", "open");
++  const std::string id = Text(request.arguments, "id");
++  if (action != "open")
++    return Fail(events, "invalid_plugin_action", "Unknown plugin action: " + action, 2);
++  if (id.empty()) return Fail(events, "missing_plugin", "plugin open requires an id", 2);
++  switch (aeraui::RequestPluginLaunch(id)) {
++    case aeraui::PluginLaunchRequestResult::kAccepted:
++      events.Log("Opening " + id + "\n");
++      return 0;
++    case aeraui::PluginLaunchRequestResult::kNotInstalled:
++      return Fail(events, "plugin_not_installed",
++                  id + " is not an installed Host API 2 or 3 plugin");
++    case aeraui::PluginLaunchRequestResult::kUnavailable:
++      return Fail(events, "plugin_unavailable",
++                  "The native AERA recovery interface is not ready");
++  }
++  return Fail(events, "plugin_failed", "Could not queue the plugin");
++}
++
+ int Log(EventSink &events) {
+   std::ifstream input("/tmp/recovery.log");
+   if (!input) return Fail(events, "log_unavailable", "The recovery log is not available");
+@@ -372,6 +392,7 @@ int Execute(const Request &request, EventSink &events) {
+   if (op == "reboot") return Reboot(request, events);
+   if (op == "transition") return Transition(request, events);
+   if (op == "log") return Log(events);
++  if (op == "plugin") return Plugin(request, events);
+   if (op == "mirror") return Mirror(request, events);
+   return Fail(events, "unsupported_operation",
+               "This AERA RPC build does not support operation: " + op, 2);
+diff --git a/aeraui/Android.bp b/aeraui/Android.bp
+index c19017d..b85d5a2 100644
+--- a/aeraui/Android.bp
++++ b/aeraui/Android.bp
+@@ -43,6 +43,7 @@ cc_library_static {
+         "features/media/session.cpp",
+         "features/plugin_api/launcher.cpp",
+         "features/plugin_api/session.cpp",
++        "features/plugin_api/surface.cpp",
+         "features/plugins/plugin_manager.cpp",
+         "features/recorder/service.cpp",
+         "features/retroarch/launcher.cpp",
+@@ -71,6 +72,7 @@ cc_library_static {
+         "scenes/media_scene.cpp",
+         "scenes/nas_scene.cpp",
+         "scenes/operation_scene.cpp",
++        "scenes/pixel_plugin_scene.cpp",
+         "scenes/plugin_scene.cpp",
+         "scenes/reboot_scene.cpp",
+         "scenes/recorder_scene.cpp",
+diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
+index 3ff578b..1a661ba 100644
+--- a/aeraui/core/engine.cpp
++++ b/aeraui/core/engine.cpp
+@@ -381,6 +381,7 @@ public:
+     if (update_thread_.joinable())
+       update_thread_.join();
+     ShutdownWebRuntime();
++    ShutdownPixelPlugins();
+     CancelEdgeSwipe();
+     lv_anim_delete(this, SetRecentLaunchProgress);
+     recent_launch_active_ = false;
+@@ -821,7 +822,9 @@ public:
+       return;
+     }
+     if (BrowserHandlePointer(event.slot, visible_x, visible_y,
+-                             event.pressed)) {
++                             event.pressed) ||
++        PixelPluginHandlePointer(event.slot, visible_x, visible_y,
++                                 event.pressed)) {
+       CancelEdgeSwipe();
+       pointer_.pressed = false;
+       if (pointer_device_ != nullptr) lv_indev_reset(pointer_device_, nullptr);
+@@ -910,6 +913,16 @@ public:
+     lock_overlay_ = BuildLockScene(lv_layer_top(), HandleSceneAction, this);
+   }
+ 
++  void OpenPlugin(const std::string &id) {
++    if (lock_overlay_ != nullptr || !backend_ready_ || decryption_active_ ||
++        operation_running_ || nas_running_ || plugin_running_ ||
++        fastboot_mode_)
++      return;
++    if (recents_overlay_ != nullptr) DismissRecents();
++    SetSelectedPluginId(id);
++    HandleSceneAction(Action::kPluginApp, this);
++  }
++
+   void ShowPowerMenu() {
+     if (!initialized_ || power_overlay_ != nullptr || suspended_) return;
+     CancelEdgeSwipe();
+@@ -1254,6 +1267,10 @@ private:
+                        }),
+         recent_apps_.end());
+     recent_apps_.insert(recent_apps_.begin(), std::move(app));
++    // A pixel plugin that drops out of Recents stops.
++    for (size_t index = 7; index < recent_apps_.size(); ++index)
++      if (recent_apps_[index].action == Action::kPluginApp)
++        ShutdownPixelPlugin(recent_apps_[index].plugin_id);
+     if (recent_apps_.size() > 7) recent_apps_.resize(7);
+   }
+ 
+@@ -1609,10 +1626,11 @@ private:
+       auto *clear = widgets::Button(actions, LV_SYMBOL_TRASH "  Clear all",
+                                     [this] {
+         recent_apps_.clear();
+-        // Browser is the one app runtime intentionally kept alive between
++        // Browser and pixel plugins are the app runtimes kept alive between
+         // scenes. Other app workers are owned by their scene and stop when
+         // ShowHome replaces that scene.
+         ShutdownWebRuntime();
++        ShutdownPixelPlugins();
+         ShowHome();
+       });
+       lv_obj_set_size(clear, action_width, action_height);
+@@ -2281,7 +2299,7 @@ private:
+       __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                           "display orientation changed to %s",
+                           self->landscape_ ? "landscape" : "portrait");
+-      if (action == Action::kToggleRotation)
++      if (action == Action::kToggleRotation && !PixelPluginActive())
+         self->ShowHome();
+       return;
+     }
+@@ -3443,6 +3461,7 @@ void Engine::SetPointer(const PointerEvent &event) { impl_->SetPointer(event); }
+ void Engine::SetSuspended(bool suspended) { impl_->SetSuspended(suspended); }
+ void Engine::ShowLockScreen() { impl_->ShowLockScreen(); }
+ void Engine::ShowPowerMenu() { impl_->ShowPowerMenu(); }
++void Engine::OpenPlugin(const std::string &id) { impl_->OpenPlugin(id); }
+ void Engine::ShowVolume(int percent) { impl_->ShowVolume(percent); }
+ void Engine::ShowScreenshotResult(bool success) {
+   impl_->ShowScreenshotResult(success);
+diff --git a/aeraui/core/runner.cpp b/aeraui/core/runner.cpp
+index 330a518..b23c0ea 100644
+--- a/aeraui/core/runner.cpp
++++ b/aeraui/core/runner.cpp
+@@ -29,6 +29,7 @@
+ #include "aeraui/platform/aera_screen_timer.hpp"
+ #include "aeraui/status_bar.hpp"
+ #include "../components/power_transition.hpp"
++#include "../features/plugins/plugin_manager.hpp"
+ 
+ namespace aeraui {
+ namespace {
+@@ -184,6 +185,8 @@ std::atomic<bool> gFileBasedEncryption{false};
+ std::atomic<int> gUiMode{0};
+ std::atomic<int> gModeTransitionRequest{0};
+ std::atomic<bool> gModeTransitionBusy{false};
++std::mutex gPluginLaunchMutex;
++std::string gPluginLaunch;
+ std::mutex gEarlyMutex;
+ std::mutex gDecryptMutex;
+ std::condition_variable gDecryptCondition;
+@@ -392,6 +395,18 @@ ModeTransitionRequestResult RequestModeTransition(bool toward_fastboot) {
+     return ModeTransitionRequestResult::kAccepted;
+ }
+ 
++PluginLaunchRequestResult RequestPluginLaunch(const std::string& id) {
++    if (gUiMode.load(std::memory_order_acquire) != 1 ||
++        !gBackendReady.load(std::memory_order_acquire))
++        return PluginLaunchRequestResult::kUnavailable;
++    plugins::Plugin plugin;
++    if (!plugins::FindInstalled(id, plugin) || !plugins::IsGeneric(plugin))
++        return PluginLaunchRequestResult::kNotInstalled;
++    std::lock_guard<std::mutex> lock(gPluginLaunchMutex);
++    gPluginLaunch = id;
++    return PluginLaunchRequestResult::kAccepted;
++}
++
+ RunResult RunLoop(bool fastboot_mode = false,
+                   const DisplayMetrics& metrics = {},
+                   bool resume_recovery = false) {
+@@ -485,6 +500,17 @@ RunResult RunLoop(bool fastboot_mode = false,
+                                     toward_fastboot ? "fastboot" : "recovery");
+             }
+         }
++        std::string plugin_launch;
++        {
++            std::lock_guard<std::mutex> lock(gPluginLaunchMutex);
++            plugin_launch.swap(gPluginLaunch);
++        }
++        if (!plugin_launch.empty() && !fastboot_mode) {
++            engine.OpenPlugin(plugin_launch);
++            performance.BoostFor(3000);
++            __android_log_print(ANDROID_LOG_INFO, kLogTag,
++                                "CLI requested plugin %s", plugin_launch.c_str());
++        }
+         const int wait_ms = static_cast<int>(engine.RunFrame());
+         // The display backend may still own/import the current GPU buffer
+         // while an input event is being dispatched. Capture only here, after
+diff --git a/aeraui/core/status_bar.cpp b/aeraui/core/status_bar.cpp
+index 6d6ebd3..a7fbe82 100644
+--- a/aeraui/core/status_bar.cpp
++++ b/aeraui/core/status_bar.cpp
+@@ -103,6 +103,32 @@ void SetShadeVisible(StatusState *state, int visible) {
+   lv_obj_set_y(state->sheet, state->shade_visible - state->shade_height);
+ }
+ 
++// Drops the state's references to the shade's widgets; the caller deletes
++// the shade.
++void ForgetShade(StatusState *state) {
++  state->shade = nullptr;
++  state->sheet = nullptr;
++  state->shade_wifi = nullptr;
++  state->shade_wifi_detail = nullptr;
++  state->shade_rotation = nullptr;
++  state->shade_rotation_detail = nullptr;
++  state->shade_flashlight = nullptr;
++  state->shade_flashlight_detail = nullptr;
++  state->shade_reboot = nullptr;
++  state->shade_reboot_detail = nullptr;
++  state->shade_recorder = nullptr;
++  state->shade_recorder_detail = nullptr;
++  state->shade_update = nullptr;
++  state->shade_update_title = nullptr;
++  state->shade_update_detail = nullptr;
++  state->shade_download = nullptr;
++  state->shade_download_title = nullptr;
++  state->shade_download_detail = nullptr;
++  state->shade_download_progress = nullptr;
++  state->brightness_value = nullptr;
++  state->brightness_slider = nullptr;
++}
++
+ void AnimateShade(StatusState *state, bool open) {
+   if (state == nullptr || state->shade == nullptr) return;
+   if (!open) {
+@@ -119,27 +145,7 @@ void AnimateShade(StatusState *state, bool open) {
+       lv_obj_set_y(static_cast<lv_obj_t *>(target), value);
+     });
+     lv_anim_start(&slide);
+-    state->shade = nullptr;
+-    state->sheet = nullptr;
+-    state->shade_wifi = nullptr;
+-    state->shade_wifi_detail = nullptr;
+-    state->shade_rotation = nullptr;
+-    state->shade_rotation_detail = nullptr;
+-    state->shade_flashlight = nullptr;
+-    state->shade_flashlight_detail = nullptr;
+-    state->shade_reboot = nullptr;
+-    state->shade_reboot_detail = nullptr;
+-    state->shade_recorder = nullptr;
+-    state->shade_recorder_detail = nullptr;
+-    state->shade_update = nullptr;
+-    state->shade_update_title = nullptr;
+-    state->shade_update_detail = nullptr;
+-    state->shade_download = nullptr;
+-    state->shade_download_title = nullptr;
+-    state->shade_download_detail = nullptr;
+-    state->shade_download_progress = nullptr;
+-    state->brightness_value = nullptr;
+-    state->brightness_slider = nullptr;
++    ForgetShade(state);
+     lv_obj_delete_delayed(closing, 250);
+     return;
+   }
+@@ -772,6 +778,24 @@ bool StatusBarShadeOpen() {
+   return gOpenShade != nullptr;
+ }
+ 
++// A screen that changes size keeps its scene (a pixel plugin across a
++// rotation started from the shade): an open shade is laid out again for the
++// new size and stays open.
++void ScreenResized(lv_event_t *event) {
++  auto *state = static_cast<StatusState *>(lv_event_get_user_data(event));
++  if (state == nullptr || state->shade == nullptr) return;
++  lv_anim_delete(state, nullptr);
++  // The rotation that resized the screen may come from a tile in this very
++  // shade, so it goes after the event that is running.
++  lv_obj_t *shade = state->shade;
++  ForgetShade(state);
++  lv_obj_add_flag(shade, LV_OBJ_FLAG_HIDDEN);
++  lv_obj_delete_async(shade);
++  state->dragging = false;
++  BuildShade(state);
++  SetShadeVisible(state, state->shade_height);
++}
++
+ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
+                      void *context, StatusBarAction action, bool soft_surface) {
+   auto *state = new StatusState;
+@@ -780,6 +804,7 @@ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
+   state->context = context;
+   state->action = action;
+   lv_obj_add_event_cb(screen, DeleteState, LV_EVENT_DELETE, state);
++  lv_obj_add_event_cb(screen, ScreenResized, LV_EVENT_SIZE_CHANGED, state);
+ 
+   lv_obj_t *bar = lv_obj_create(screen);
+   state->bar = bar;
+diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
+index 6aa416a..f7b012c 100644
+--- a/aeraui/features/plugin_api/README.md
++++ b/aeraui/features/plugin_api/README.md
+@@ -67,3 +67,78 @@ without changing the Host API 2 wire format.
+ `AERA-settings-backup-plugin` is the reference implementation. It proves a new
+ ID can render and request backup/restore without being added to recovery's
+ launcher source.
++
++## Host API 3: pixel plugins
++
++A manifest with `protocol_version` 3 and `min_host_api` 3 (permissions
++`display`, `touch-input` and `pixel-surface`; optionally `gpu-acceleration`,
++`network`, `audio-output`) declares a plugin that draws its own pixels, such
++as a Flutter app. The runtime layout, verification and process model are
++Host API 2's; `scenes/pixel_plugin_scene.cpp` replaces the declarative page.
++
++- Launch: `--aera-host-api=3`, `AERA_HOST_API=3`, `AERA_SURFACE_FD=3`,
++  `AERA_APPEARANCE` (`light` or `dark`, AERA's surface mode) and
++  `AERA_PLUGIN_DATA`, a private directory that survives updates
++  (`/sdcard/AERA/plugin-data/<id>`, or RAM when storage is not mounted, and
++  then `AERA_PLUGIN_DATA_VOLATILE=1`: nothing saved survives a reboot).
++- Handshake: the worker's `HELLO` must offer version 3 (`value` 3, `flags`
++  3); AERA answers `HELLO_ACK` with `value` 3 and `flags`
++  `kFeatureBackNavigation | kFeaturePixelSurface | kFeatureKeyboardInset |
++  kFeatureFilePicker`,
++  then `SURFACE`, then `LIFECYCLE/RESUME`. Version 3 packets carry 3 in the
++  header.
++- Surface: fd 3 is a sealed memfd of `slots` BGRA8888 top-down frames.
++  `SURFACE` gives width (`value`), height (`flags`), stride in bytes
++  (`request_id`), title `BGRA8888` and text `slots=N scale=S refresh=HZ`
++  (scale from `ro.sf.lcd_density`). The size is the panel's pixels for the
++  area below the status bar.
++- Rotation: the plugin keeps running. AERA sends a new `SURFACE` with the
++  rotated size on the same fd, which it sized for either orientation at
++  launch. Each `SURFACE` starts a generation (0 for the first): `PRESENT`
++  carries the generation it was drawn for in `flags`, and a frame of an
++  earlier generation is returned with `FRAME_DONE` unshown. After a new
++  `SURFACE` every slot is the plugin's again, and nothing is shown until a
++  frame of the new generation arrives.
++- Lifecycle: like Browser, a running plugin outlives its scene. `LIFECYCLE`
++  `value` 1 resume (on screen, taking input), 4 inactive (on screen, but
++  the status shade, a sheet or the file picker takes the input; resume
++  follows), 2 pause (its scene was left for Home, Recents or another app;
++  nothing is shown and no `FRAME_DONE` comes, so drawing stalls) and 3 stop
++  (it is ending; the process group is then terminated). After a pause AERA
++  sends only `SURFACE` then `RESUME` when the plugin is opened again (every
++  slot is the plugin's again, in the current orientation), or `STOP` and
++  `CLOSE` when it ends: when it sends `CLOSE` itself, when Recents is
++  cleared or drops it, or when an update replaces it. A plugin that ignores
++  inactive still behaves correctly. These map to Qt's ApplicationActive,
++  ApplicationInactive, ApplicationHidden then ApplicationSuspended and
++  aboutToQuit, to Flutter's resumed, inactive, hidden then paused and
++  detached, and to SDL's background events.
++- Frames: the worker writes a slot it owns and sends `PRESENT` (`request_id`
++  sequence, never 0 or repeated; `value` slot; `flags` the surface
++  generation). `FRAME_DONE` returns a slot:
++  at once when a newer `PRESENT` supersedes a frame never shown, otherwise
++  when a newer frame has replaced it on screen. The frame on screen stays
++  AERA's. `PRESENT` is outside the 128 messages per second limit.
++- Input: `TOUCH_DOWN`/`MOVE`/`UP` (`request_id` pointer, `value` x, `flags`
++  y, surface pixels); side edges and the bottom edge stay AERA's gestures.
++  `BACK` is AERA's Back; the worker leaves with `CLOSE`.
++- Keyboard: `KEYBOARD_SHOW` (`value` 0 text or 2 digits, `flags` 1 for
++  multiline) and `KEYBOARD_HIDE` show AERA's keyboard, which sends `KEY`
++  (`value` code point; 8 backspace, 13 Enter, and OK on a single-line
++  field). `KEYBOARD_INSET` gives the keyboard's height over the surface in
++  pixels on every show, hide and resize.
++- Files (`kFeatureFilePicker`): `REQUEST_OPERATION` with `value` 8
++  (`kPickFiles`) and a non-zero `request_id` opens AERA's file picker over
++  the surface. `flags` is the mode (0 one file, 1 several, 2 a folder, 3 a
++  name to save as), `title` the folder to start in (empty: the current
++  storage), `text` the extensions to show (`zip,img`; empty: all) or, to
++  save, the suggested name. It browses like Files and needs no permission:
++  the pick is the user's consent, and the plugin is root already. Each
++  chosen path comes back as an `OPERATION_RESULT` (`value` 1, `text` the
++  absolute path, `flags` 1 while more follow). Closing the picker answers
++  `value` 0 with empty `text`; a refusal (one picker at a time) answers
++  `value` 0 with the reason. The other host operations stay with Host API
++  2's declarative pages; Host API 2 page messages end the session.
++
++`tests/plugin_api_pixel_host_check.cpp` runs a real pixel plugin through
++the launcher, session and surface without LVGL.
+diff --git a/aeraui/features/plugin_api/launcher.cpp b/aeraui/features/plugin_api/launcher.cpp
+index 4b007e5..de7f8b1 100644
+--- a/aeraui/features/plugin_api/launcher.cpp
++++ b/aeraui/features/plugin_api/launcher.cpp
+@@ -1,6 +1,9 @@
+ /* SPDX-License-Identifier: Apache-2.0 */
+ #include "launcher.hpp"
+ 
++#include "protocol.hpp"
++
++#include <aeraui/backend.hpp>
+ #include <aeraui/i18n.hpp>
+ 
+ #include <cerrno>
+@@ -16,8 +19,14 @@
+ 
+ namespace aeraui::plugin_api {
+ bool Process::Start(const std::string &runtime, int &control_fd,
+-                    std::string &error) {
++                    std::string &error, const LaunchOptions &options) {
+   control_fd = -1;
++  const bool v3 = options.host_api == 3;
++  if ((options.host_api != 2 && !v3) || (v3 && options.surface_fd < 0) ||
++      (!v3 && options.surface_fd >= 0)) {
++    error = "The plugin launch options are invalid.";
++    return false;
++  }
+   if (pid_ >= 0 || runtime.size() != 19 ||
+       runtime.compare(0, 13, "/tmp/aera-p2-")) {
+     error = "The verified API 2 runtime path is invalid.";
+@@ -39,6 +48,15 @@ bool Process::Start(const std::string &runtime, int &control_fd,
+   const std::string locale = i18n::CurrentLanguage();
+   const std::string locale_env = "AERA_LOCALE=" + locale;
+   const std::string lang_env = "LANG=" + locale + ".UTF-8";
++  const std::string api_argument =
++      "--aera-host-api=" + std::to_string(options.host_api);
++  const std::string api_env =
++      "AERA_HOST_API=" + std::to_string(options.host_api);
++  const std::string data_env = "AERA_PLUGIN_DATA=" + options.data_dir;
++  // Host API 3 apps follow AERA's light or dark surface, as desktop apps
++  // follow the system colour scheme.
++  const char *appearance_env =
++      RecoveryLightMode() ? "AERA_APPEARANCE=light" : "AERA_APPEARANCE=dark";
+   struct stat loader_info{}, program_info{};
+   if (lstat(program.c_str(), &program_info) != 0 ||
+       !S_ISREG(program_info.st_mode) || program_info.st_uid != 0 ||
+@@ -65,11 +83,24 @@ bool Process::Start(const std::string &runtime, int &control_fd,
+     error = "Could not protect the plugin channel.";
+     return false;
+   }
++  // Like the control channel, keep the surface above the fixed child fds so
++  // the dup2 calls below cannot clobber each other.
++  const int child_surface =
++      v3 ? fcntl(options.surface_fd, F_DUPFD_CLOEXEC, 10) : -1;
++  if (v3 && child_surface < 0) {
++    close(child_control);
++    close(channels[0]);
++    close(channels[1]);
++    error = "Could not share the plugin surface.";
++    return false;
++  }
+   const pid_t child = fork();
+   if (child == 0) {
+     close(3);
++    if (v3 && dup2(child_surface, kSurfaceFd) < 0) _exit(78);
+     if (dup2(child_control, 4) < 0) _exit(78);
+     close(child_control);
++    if (v3) close(child_surface);
+     if (setpgid(0, 0) != 0 || chdir(runtime.c_str()) != 0 ||
+         syscall(SYS_close_range, 5U, ~0U, 0) != 0) {
+       _exit(78);
+@@ -79,7 +110,9 @@ bool Process::Start(const std::string &runtime, int &control_fd,
+         const_cast<char *>("--library-path"),
+         const_cast<char *>(libraries.c_str()),
+         const_cast<char *>(program.c_str()),
+-        const_cast<char *>("--aera-host-api=2"), nullptr};
++        const_cast<char *>(api_argument.c_str()), nullptr};
++    // Host API 3 adds AERA_SURFACE_FD and AERA_PLUGIN_DATA; a Host API 2
++    // environment is unchanged.
+     char *const environment[] = {
+         const_cast<char *>(path.c_str()),
+         const_cast<char *>("HOME=/tmp"),
+@@ -87,21 +120,29 @@ bool Process::Start(const std::string &runtime, int &control_fd,
+         const_cast<char *>(lang_env.c_str()),
+         const_cast<char *>(locale_env.c_str()),
+         const_cast<char *>("AERA_PLUGIN_FD=4"),
+-        const_cast<char *>("AERA_HOST_API=2"),
++        const_cast<char *>(api_env.c_str()),
+         const_cast<char *>(plugin_root.c_str()),
+-        const_cast<char *>(data_dirs.c_str()), nullptr};
++        const_cast<char *>(data_dirs.c_str()),
++        v3 ? const_cast<char *>("AERA_SURFACE_FD=3") : nullptr,
++        v3 ? const_cast<char *>(appearance_env) : nullptr,
++        v3 && !options.data_dir.empty()
++            ? const_cast<char *>(data_env.c_str()) : nullptr,
++        options.data_volatile
++            ? const_cast<char *>("AERA_PLUGIN_DATA_VOLATILE=1") : nullptr,
++        nullptr};
+     // Most API 2 plugins are intentionally static, keeping their package small
+     // and self-contained. Execute those directly. A dynamic plugin whose ELF
+     // interpreter is not present in recovery returns here with ENOENT; only
+     // then fall back to its verified, root-owned packaged musl loader.
+     char *const direct_arguments[] = {
+         const_cast<char *>(program.c_str()),
+-        const_cast<char *>("--aera-host-api=2"), nullptr};
++        const_cast<char *>(api_argument.c_str()), nullptr};
+     execve(program.c_str(), direct_arguments, environment);
+     if (loader_trusted) execve(loader.c_str(), arguments, environment);
+     _exit(78);
+   }
+   close(child_control);
++  if (child_surface >= 0) close(child_surface);
+   close(channels[1]);
+   if (child < 0) {
+     close(channels[0]);
+diff --git a/aeraui/features/plugin_api/launcher.hpp b/aeraui/features/plugin_api/launcher.hpp
+index c1efdb8..180479a 100644
+--- a/aeraui/features/plugin_api/launcher.hpp
++++ b/aeraui/features/plugin_api/launcher.hpp
+@@ -1,17 +1,33 @@
+ /* SPDX-License-Identifier: Apache-2.0 */
+ #pragma once
+ 
++#include <cstdint>
+ #include <string>
+ #include <sys/types.h>
+ 
+ namespace aeraui::plugin_api {
++// Host API 3 additions. The defaults launch a Host API 2 plugin exactly as
++// before.
++struct LaunchOptions {
++  uint32_t host_api = 2;
++  // Host API 3's pixel surface, handed to the plugin as fd 3.
++  int surface_fd = -1;
++  // A persistent private directory, exported as AERA_PLUGIN_DATA.
++  std::string data_dir;
++  // data_dir is in RAM (storage was not mounted): exported as
++  // AERA_PLUGIN_DATA_VOLATILE=1, so an app can warn that nothing it saves
++  // survives a reboot.
++  bool data_volatile = false;
++};
++
+ class Process final {
+  public:
+   ~Process() { Stop(); }
+   Process() = default;
+   Process(const Process &) = delete;
+   Process &operator=(const Process &) = delete;
+-  bool Start(const std::string &runtime, int &control_fd, std::string &error);
++  bool Start(const std::string &runtime, int &control_fd, std::string &error,
++             const LaunchOptions &options = {});
+   bool Running();
+   void Stop();
+  private:
+diff --git a/aeraui/features/plugin_api/operations.cpp b/aeraui/features/plugin_api/operations.cpp
+index 123a214..f909114 100644
+--- a/aeraui/features/plugin_api/operations.cpp
++++ b/aeraui/features/plugin_api/operations.cpp
+@@ -440,6 +440,9 @@ bool OperationAllowed(const plugins::Plugin& plugin, Operation operation) {
+     case Operation::kStopMirror:
+     case Operation::kStartWifiMirror:
+       return plugins::HasPermission(plugin, "screen-mirror");
++    case Operation::kPickFiles:
++      // Pixel plugins only, answered by their scene without a prompt.
++      return false;
+   }
+   return false;
+ }
+@@ -546,6 +549,8 @@ const char* OperationTitle(Operation operation) {
+       return "Stop AERA Mirror?";
+     case Operation::kStartWifiMirror:
+       return "Start Wi-Fi Mirror?";
++    case Operation::kPickFiles:
++      break;
+   }
+   return "Run plugin operation?";
+ }
+@@ -574,6 +579,8 @@ const char* OperationPrompt(Operation operation) {
+     case Operation::kStartWifiMirror:
+       return "AERA will share the recovery display and input on the connected Wi-Fi "
+              "network. Enter the phone address shown afterward in any browser.";
++    case Operation::kPickFiles:
++      break;
+   }
+   return "The plugin requested an unknown operation.";
+ }
+diff --git a/aeraui/features/plugin_api/protocol.hpp b/aeraui/features/plugin_api/protocol.hpp
+index 7fdcb62..fa28bd0 100644
+--- a/aeraui/features/plugin_api/protocol.hpp
++++ b/aeraui/features/plugin_api/protocol.hpp
+@@ -8,6 +8,10 @@ namespace aeraui::plugin_api {
+ 
+ constexpr uint32_t kMagic = 0x41325049U;  // A2PI
+ constexpr uint32_t kProtocolVersion = 2;
++// Host API 3 adds a GPU pixel surface for plugins that draw their own UI.
++// Messages carry the negotiated version; API 2 plugins never see API 3 kinds.
++constexpr uint32_t kProtocolVersion3 = 3;
++constexpr uint32_t kMaxProtocolVersion = kProtocolVersion3;
+ constexpr uint32_t kMaxButtons = 12;
+ constexpr uint32_t kMaxMetrics = 64;
+ constexpr uint32_t kMaxSections = 16;
+@@ -15,6 +19,14 @@ constexpr uint32_t kMaxSections = 16;
+ enum Features : uint32_t {
+   kFeatureMetrics = 1U << 0,
+   kFeatureBackNavigation = 1U << 1,
++  // Host API 3: a pixel surface on fd 3 (AERA_SURFACE_FD), SURFACE/PRESENT/
++  // FRAME_DONE, touch, keys, Back and keyboard requests.
++  kFeaturePixelSurface = 1U << 2,
++  // Host API 3: KEYBOARD_INSET whenever AERA's keyboard shows, hides or
++  // resizes over the surface.
++  kFeatureKeyboardInset = 1U << 3,
++  // Host API 3: REQUEST_OPERATION kPickFiles opens AERA's file picker.
++  kFeatureFilePicker = 1U << 4,
+ };
+ 
+ enum class Kind : uint32_t {
+@@ -29,13 +41,37 @@ enum class Kind : uint32_t {
+   kAddMetric,
+   kUpdateMetric,
+   kSetBackAction,
++  // Host API 3, plugin to host.
++  kPresent,       // request_id sequence (non-zero), value slot
++  kKeyboardShow,  // value Purpose, flags 1 for multiline
++  kKeyboardHide,
+   kHelloAck = 64,
+   kAction,
+   kLifecycle,
+   kOperationResult,
++  // Host API 3, host to plugin.
++  kSurface,        // value width, flags height, request_id stride, title
++                   // "BGRA8888", text "slots=N scale=S refresh=HZ"
++  kFrameDone,      // request_id sequence; its slot belongs to the plugin again
++  kTouchDown,      // request_id pointer, value x, flags y, surface pixels
++  kTouchMove,
++  kTouchUp,
++  kKey,            // value Unicode code point; 8 backspace, 13 Enter or OK
++  kBack,
++  kKeyboardInset,  // value keyboard height over the surface in pixels, 0 hidden
+ };
+ 
+-enum class Lifecycle : uint32_t { kResume = 1, kPause, kStop };
++// Host API 3 keyboard purposes, as AERA Browser's keyboard has them.
++enum class Purpose : uint32_t { kText = 0, kDigits = 2 };
++constexpr char kSurfaceFormat[] = "BGRA8888";
++constexpr int kSurfaceFd = 3;
++constexpr uint32_t kMaxSurfaceSlots = 4;
++
++// Host API 3 adds kInactive (visible, but a shade, sheet or picker takes the
++// input) and pauses a plugin whose scene is left instead of stopping it:
++// after kPause the host sends only a new SURFACE then kResume, kStop or
++// kClose. A plugin that ignores kInactive still behaves correctly.
++enum class Lifecycle : uint32_t { kResume = 1, kPause, kStop, kInactive };
+ // Operation numbers are part of the public Host API 2 wire contract. Never
+ // renumber an existing entry: independently released plugins send these raw
+ // values over the socket.
+@@ -47,7 +83,17 @@ enum class Operation : uint32_t {
+   kStartMirror = 5,
+   kStopMirror = 6,
+   kStartWifiMirror = 7,
++  // Host API 3 (kFeatureFilePicker): the user picks files, a folder or a
++  // place to save in AERA's picker. `flags` is a PickMode, `title` the
++  // folder to start in (empty: the current storage), `text` the file
++  // extensions to show ("zip,img"; empty: all), or in kSave the suggested
++  // name. Each chosen path comes back as its own OPERATION_RESULT (`value`
++  // 1, `text` the absolute path, `flags` 1 while more follow); a closed
++  // picker answers `value` 0 with empty `text`, a refusal `value` 0 with
++  // the reason.
++  kPickFiles = 8,
+ };
++enum class PickMode : uint32_t { kFile = 0, kFiles, kFolder, kSave };
+ enum Flags : uint32_t {
+   kPrimary = 1U << 0,
+   kDestructive = 1U << 1,
+@@ -78,16 +124,24 @@ inline bool StringsValid(const Message &message) {
+   return memchr(message.title, '\0', sizeof(message.title)) != nullptr &&
+          memchr(message.text, '\0', sizeof(message.text)) != nullptr;
+ }
+-inline bool WorkerKind(Kind kind) {
+-  return kind >= Kind::kHello && kind <= Kind::kSetBackAction;
++inline bool WorkerKind(Kind kind, uint32_t version = kProtocolVersion) {
++  return kind >= Kind::kHello &&
++         kind <= (version >= kProtocolVersion3 ? Kind::kKeyboardHide
++                                               : Kind::kSetBackAction);
+ }
+-inline bool HostKind(Kind kind) {
+-  return kind >= Kind::kHelloAck && kind <= Kind::kOperationResult;
++inline bool HostKind(Kind kind, uint32_t version = kProtocolVersion) {
++  return kind >= Kind::kHelloAck &&
++         kind <= (version >= kProtocolVersion3 ? Kind::kKeyboardInset
++                                               : Kind::kOperationResult);
+ }
+-inline bool Valid(const Message &message, bool from_worker) {
+-  return message.magic == kMagic && message.version == kProtocolVersion &&
++// `version` is the negotiated protocol version. Before negotiation the host
++// accepts a HELLO carrying any version it supports.
++inline bool Valid(const Message &message, bool from_worker,
++                  uint32_t version = kProtocolVersion) {
++  return message.magic == kMagic && message.version == version &&
+          StringsValid(message) &&
+-         (from_worker ? WorkerKind(message.kind) : HostKind(message.kind));
++         (from_worker ? WorkerKind(message.kind, version)
++                      : HostKind(message.kind, version));
+ }
+ 
+ }  // namespace aeraui::plugin_api
+diff --git a/aeraui/features/plugin_api/session.cpp b/aeraui/features/plugin_api/session.cpp
+index 699954f..22d0787 100644
+--- a/aeraui/features/plugin_api/session.cpp
++++ b/aeraui/features/plugin_api/session.cpp
+@@ -7,6 +7,7 @@
+ #include <sys/socket.h>
+ #include <time.h>
+ #include <unistd.h>
++#include <utility>
+ 
+ namespace aeraui::plugin_api {
+ namespace {
+@@ -17,8 +18,14 @@ uint64_t NowMs() {
+ }
+ }  // namespace
+ 
+-bool Session::Adopt(int control_fd) {
++bool Session::Adopt(int control_fd, uint32_t max_version,
++                    std::vector<Message> after_ack) {
+   Close();
++  if (max_version < kProtocolVersion || max_version > kMaxProtocolVersion) {
++    if (control_fd >= 0) close(control_fd);
++    status_ = "Invalid AERA Host API version.";
++    return false;
++  }
+   int type = 0;
+   socklen_t length = sizeof(type);
+   if (control_fd < 0 ||
+@@ -36,6 +43,9 @@ bool Session::Adopt(int control_fd) {
+   }
+   control_ = control_fd;
+   negotiated_ = false;
++  max_version_ = max_version;
++  version_ = kProtocolVersion;
++  after_ack_ = std::move(after_ack);
+   rate_window_ms_ = NowMs();
+   rate_messages_ = 0;
+   status_ = "Waiting for plugin handshake";
+@@ -43,7 +53,7 @@ bool Session::Adopt(int control_fd) {
+ }
+ 
+ bool Session::Write(const Message &message) {
+-  if (!Connected() || !Valid(message, false)) return false;
++  if (!Connected() || !Valid(message, false, version_)) return false;
+   const ssize_t count = send(control_, &message, sizeof(message),
+                              MSG_DONTWAIT | MSG_NOSIGNAL);
+   if (count == static_cast<ssize_t>(sizeof(message))) return true;
+@@ -54,6 +64,7 @@ bool Session::Write(const Message &message) {
+ bool Session::Send(Kind kind, uint32_t request_id, uint32_t value,
+                    uint32_t flags, const char *title, const char *text) {
+   Message message;
++  message.version = version_;
+   message.kind = kind;
+   message.request_id = request_id;
+   message.value = value;
+@@ -63,6 +74,11 @@ bool Session::Send(Kind kind, uint32_t request_id, uint32_t value,
+   return Write(message);
+ }
+ 
++bool Session::Send(Message message) {
++  message.version = version_;
++  return Write(message);
++}
++
+ std::vector<Message> Session::Poll() {
+   std::vector<Message> messages;
+   for (unsigned packet = 0; packet < 24 && Connected(); ++packet) {
+@@ -71,34 +87,55 @@ std::vector<Message> Session::Poll() {
+                                MSG_DONTWAIT | MSG_TRUNC);
+     if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+     if (count < 0 && errno == EINTR) continue;
++    // Before negotiation a HELLO may carry any version this scene offers.
++    const uint32_t expected = negotiated_ ? version_ : message.version;
+     if (count != static_cast<ssize_t>(sizeof(message)) ||
+-        !Valid(message, true)) {
++        (!negotiated_ && (message.version < kProtocolVersion ||
++                          message.version > max_version_)) ||
++        !Valid(message, true, expected)) {
+       Fail("The plugin closed or sent an invalid message.");
+       break;
+     }
+-    const uint64_t now = NowMs();
+-    if (now - rate_window_ms_ >= 1000) {
+-      rate_window_ms_ = now;
+-      rate_messages_ = 0;
+-    }
+-    if (++rate_messages_ > 128) {
+-      Fail("The plugin exceeded the message rate limit.");
+-      break;
++    // PRESENT is bounded by slot ownership (at most one per slot until
++    // FRAME_DONE), so frames do not count against the control rate limit.
++    if (message.kind != Kind::kPresent) {
++      const uint64_t now = NowMs();
++      if (now - rate_window_ms_ >= 1000) {
++        rate_window_ms_ = now;
++        rate_messages_ = 0;
++      }
++      if (++rate_messages_ > 128) {
++        Fail("The plugin exceeded the message rate limit.");
++        break;
++      }
+     }
+     if (!negotiated_) {
+-      // HELLO advertises the inclusive [minimum, maximum] protocol range.
++      // HELLO advertises the inclusive [minimum, maximum] protocol range; the
++      // scene offers exactly max_version_ (a declarative scene speaks 2, a
++      // pixel scene 3).
+       if (message.kind != Kind::kHello || message.value == 0 ||
+-          message.value > message.flags || message.value > kProtocolVersion ||
+-          message.flags < kProtocolVersion) {
+-        Fail("The plugin does not support AERA Host API 2.");
++          message.value > message.flags || message.value > max_version_ ||
++          message.flags < max_version_) {
++        Fail(max_version_ >= kProtocolVersion3
++                 ? "The plugin does not support AERA Host API 3."
++                 : "The plugin does not support AERA Host API 2.");
+         break;
+       }
+       negotiated_ = true;
++      version_ = max_version_;
+       status_ = "Plugin connected";
+-      if (!Send(Kind::kHelloAck, 0, kProtocolVersion,
+-                kFeatureMetrics | kFeatureBackNavigation) ||
+-          !Send(Kind::kLifecycle, 0,
+-                static_cast<uint32_t>(Lifecycle::kResume))) break;
++      const uint32_t features = version_ >= kProtocolVersion3
++          ? kFeatureBackNavigation | kFeaturePixelSurface |
++                kFeatureKeyboardInset | kFeatureFilePicker
++          : kFeatureMetrics | kFeatureBackNavigation;
++      bool sent = Send(Kind::kHelloAck, 0, version_, features);
++      for (auto &extra : after_ack_) {
++        extra.version = version_;
++        sent = sent && Write(extra);
++      }
++      after_ack_.clear();
++      if (!sent || !Send(Kind::kLifecycle, 0,
++                         static_cast<uint32_t>(Lifecycle::kResume))) break;
+       continue;
+     }
+     if (message.kind == Kind::kHello) {
+@@ -121,6 +158,8 @@ void Session::Close() {
+   if (control_ >= 0) close(control_);
+   control_ = -1;
+   negotiated_ = false;
++  version_ = kProtocolVersion;
++  after_ack_.clear();
+   rate_window_ms_ = 0;
+   rate_messages_ = 0;
+ }
+diff --git a/aeraui/features/plugin_api/session.hpp b/aeraui/features/plugin_api/session.hpp
+index 9ca3eb3..1048f9d 100644
+--- a/aeraui/features/plugin_api/session.hpp
++++ b/aeraui/features/plugin_api/session.hpp
+@@ -12,13 +12,20 @@ namespace aeraui::plugin_api {
+ class Session final {
+  public:
+   ~Session() { Close(); }
+-  bool Adopt(int control_fd);
++  // `max_version` is the highest protocol this scene offers: 2 for the
++  // declarative surface, 3 for the pixel surface. `after_ack` is sent right
++  // after HELLO_ACK and before LIFECYCLE/RESUME (Host API 3's SURFACE).
++  bool Adopt(int control_fd, uint32_t max_version = kProtocolVersion,
++             std::vector<Message> after_ack = {});
+   std::vector<Message> Poll();
+   bool Send(Kind kind, uint32_t request_id = 0, uint32_t value = 0,
+             uint32_t flags = 0, const char *title = nullptr,
+             const char *text = nullptr);
++  // Sends a prepared host message (SURFACE) at the negotiated version.
++  bool Send(Message message);
+   bool Connected() const { return control_ >= 0; }
+   bool Negotiated() const { return negotiated_; }
++  uint32_t Version() const { return version_; }
+   const std::string &Status() const { return status_; }
+   void Close();
+ 
+@@ -27,6 +34,9 @@ class Session final {
+   bool Write(const Message &message);
+   int control_ = -1;
+   bool negotiated_ = false;
++  uint32_t max_version_ = kProtocolVersion;
++  uint32_t version_ = kProtocolVersion;
++  std::vector<Message> after_ack_;
+   uint64_t rate_window_ms_ = 0;
+   uint32_t rate_messages_ = 0;
+   std::string status_;
+diff --git a/aeraui/features/plugin_api/surface.cpp b/aeraui/features/plugin_api/surface.cpp
+new file mode 100644
+index 0000000..3b78795
+--- /dev/null
++++ b/aeraui/features/plugin_api/surface.cpp
+@@ -0,0 +1,121 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include "surface.hpp"
++
++#include <algorithm>
++#include <cstdio>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++namespace aeraui::plugin_api {
++
++bool SurfaceGeometry::Valid() const {
++  return width >= 1 && width <= 8192 && height >= 1 && height <= 8192 &&
++         stride >= width * 4 && stride % 4 == 0 && slots >= 2 &&
++         slots <= kMaxSurfaceSlots && scale >= 0.5 && scale <= 8.0 &&
++         refresh_hz >= 1.0 && refresh_hz <= 240.0;
++}
++
++bool Surface::Create(const SurfaceGeometry &geometry, uint64_t capacity) {
++  Close();
++  if (!geometry.Valid()) return false;
++  capacity = std::max(capacity, geometry.TotalBytes());
++  const int fd = memfd_create("aera-plugin-surface",
++                              MFD_CLOEXEC | MFD_ALLOW_SEALING);
++  if (fd < 0) return false;
++  if (ftruncate(fd, static_cast<off_t>(capacity)) != 0 ||
++      fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL) != 0) {
++    close(fd);
++    return false;
++  }
++  void *pixels = mmap(nullptr, capacity, PROT_READ, MAP_SHARED, fd, 0);
++  if (pixels == MAP_FAILED) {
++    close(fd);
++    return false;
++  }
++  geometry_ = geometry;
++  capacity_ = capacity;
++  generation_ = 0;
++  fd_ = fd;
++  pixels_ = static_cast<uint8_t *>(pixels);
++  slots_.assign(geometry.slots, Slot{});
++  pending_ = latched_ = shown_ = -1;
++  last_sequence_ = 0;
++  return true;
++}
++
++bool Surface::Reshape(const SurfaceGeometry &geometry) {
++  if (!pixels_ || !geometry.Valid() || geometry.TotalBytes() > capacity_ ||
++      geometry.slots != geometry_.slots)
++    return false;
++  geometry_ = geometry;
++  slots_.assign(geometry.slots, Slot{});
++  pending_ = latched_ = shown_ = -1;
++  ++generation_;
++  return true;
++}
++
++void Surface::Close() {
++  if (pixels_) munmap(pixels_, capacity_);
++  if (fd_ >= 0) close(fd_);
++  pixels_ = nullptr;
++  fd_ = -1;
++  slots_.clear();
++  pending_ = latched_ = shown_ = -1;
++}
++
++Message Surface::SurfaceMessage() const {
++  Message message;
++  message.kind = Kind::kSurface;
++  message.request_id = geometry_.stride;
++  message.value = geometry_.width;
++  message.flags = geometry_.height;
++  snprintf(message.title, sizeof(message.title), "%s", kSurfaceFormat);
++  snprintf(message.text, sizeof(message.text), "slots=%u scale=%g refresh=%g",
++           geometry_.slots, geometry_.scale, geometry_.refresh_hz);
++  return message;
++}
++
++bool Surface::Present(uint32_t sequence, uint32_t slot, uint32_t generation,
++                      std::vector<uint32_t> &released) {
++  if (!pixels_ || slot >= slots_.size() || sequence == 0 ||
++      sequence == last_sequence_ || slots_[slot].owner != Owner::kPlugin)
++    return false;
++  if (generation != generation_) {
++    // Drawn for an earlier SURFACE (the plugin had not seen the new one
++    // yet): its pixels do not fit, so it goes straight back.
++    last_sequence_ = sequence;
++    released.push_back(sequence);
++    return true;
++  }
++  if (pending_ >= 0) {
++    // Superseded before it was ever latched: give it straight back.
++    released.push_back(slots_[pending_].sequence);
++    slots_[pending_] = Slot{};
++  }
++  slots_[slot] = {Owner::kPending, sequence};
++  pending_ = static_cast<int>(slot);
++  last_sequence_ = sequence;
++  return true;
++}
++
++const uint8_t *Surface::LatchNext() {
++  if (pending_ < 0 || latched_ >= 0) return nullptr;
++  latched_ = pending_;
++  pending_ = -1;
++  slots_[latched_].owner = Owner::kLatched;
++  return Pixels(latched_);
++}
++
++void Surface::RefreshDone(std::vector<uint32_t> &released) {
++  if (latched_ < 0) return;
++  if (shown_ >= 0) {
++    released.push_back(slots_[shown_].sequence);
++    slots_[shown_] = Slot{};
++  }
++  shown_ = latched_;
++  latched_ = -1;
++  slots_[shown_].owner = Owner::kShown;
++}
++
++}  // namespace aeraui::plugin_api
+diff --git a/aeraui/features/plugin_api/surface.hpp b/aeraui/features/plugin_api/surface.hpp
+new file mode 100644
+index 0000000..76d2e63
+--- /dev/null
++++ b/aeraui/features/plugin_api/surface.hpp
+@@ -0,0 +1,86 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#pragma once
++
++#include "protocol.hpp"
++
++#include <cstdint>
++#include <vector>
++
++namespace aeraui::plugin_api {
++
++struct SurfaceGeometry {
++  uint32_t width = 0;
++  uint32_t height = 0;
++  uint32_t stride = 0;  // bytes per row
++  uint32_t slots = 3;
++  double scale = 1.0;   // physical pixels per logical pixel for the plugin
++  double refresh_hz = 60.0;
++  uint64_t FrameBytes() const { return uint64_t{stride} * height; }
++  uint64_t TotalBytes() const { return FrameBytes() * slots; }
++  bool Valid() const;
++};
++
++// Host API 3's pixel surface: a sealed memfd of `slots` BGRA8888 top-down
++// frames that the plugin writes and AERA reads. Each slot belongs to exactly
++// one side. The plugin hands one over with PRESENT; AERA hands it back with
++// FRAME_DONE once a newer frame has replaced it on screen, or at once if a
++// newer frame arrived before it was ever shown. The slot on screen stays
++// AERA's, because LVGL may redraw from it at any time.
++//
++// No LVGL here, so the state machine is unit-tested on its own.
++class Surface final {
++ public:
++  ~Surface() { Close(); }
++  Surface() = default;
++  Surface(const Surface &) = delete;
++  Surface &operator=(const Surface &) = delete;
++
++  // Creates and maps the frames. PluginFd() is what the plugin gets on fd 3.
++  // `capacity` (bytes, at least the geometry's) sizes the memfd for every
++  // geometry Reshape() may later switch to.
++  bool Create(const SurfaceGeometry &geometry, uint64_t capacity = 0);
++  // Switches to a new geometry within the capacity, e.g. after a rotation,
++  // and starts a new surface generation: every slot is the plugin's again
++  // and no frame is shown until one of the new generation arrives. Send
++  // SurfaceMessage() after it.
++  bool Reshape(const SurfaceGeometry &geometry);
++  uint32_t Generation() const { return generation_; }
++  void Close();
++  int PluginFd() const { return fd_; }
++  const SurfaceGeometry &Geometry() const { return geometry_; }
++  Message SurfaceMessage() const;
++
++  // A PRESENT from the plugin. False for a protocol violation (unknown slot,
++  // a slot AERA holds, sequence 0 or reused). `released` receives sequences
++  // to answer with FRAME_DONE right away (a skipped, never shown frame, or
++  // one drawn for an earlier `generation` than the current SURFACE's).
++  bool Present(uint32_t sequence, uint32_t slot, uint32_t generation,
++               std::vector<uint32_t> &released);
++  // The newest presented frame not yet on screen, latched for the next
++  // refresh; nullptr if there is none.
++  const uint8_t *LatchNext();
++  // The refresh that showed the latched frame has finished. `released`
++  // receives the sequence of the frame it replaced.
++  void RefreshDone(std::vector<uint32_t> &released);
++  bool HasFrame() const { return shown_ >= 0; }
++
++ private:
++  enum class Owner : uint8_t { kPlugin, kPending, kLatched, kShown };
++  struct Slot {
++    Owner owner = Owner::kPlugin;
++    uint32_t sequence = 0;
++  };
++  const uint8_t *Pixels(int slot) const {
++    return pixels_ + static_cast<uint64_t>(slot) * geometry_.FrameBytes();
++  }
++  SurfaceGeometry geometry_{};
++  uint64_t capacity_ = 0;
++  uint32_t generation_ = 0;
++  int fd_ = -1;
++  uint8_t *pixels_ = nullptr;
++  std::vector<Slot> slots_;
++  int pending_ = -1, latched_ = -1, shown_ = -1;
++  uint32_t last_sequence_ = 0;
++};
++
++}  // namespace aeraui::plugin_api
+diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
+index 32ce562..012b1d2 100644
+--- a/aeraui/features/plugins/plugin_manager.cpp
++++ b/aeraui/features/plugins/plugin_manager.cpp
+@@ -22,6 +22,7 @@
+ #include <sstream>
+ #include <sys/resource.h>
+ #include <sys/stat.h>
++#include <sys/statfs.h>
+ #include <sys/types.h>
+ #include <sys/wait.h>
+ #include <unistd.h>
+@@ -37,6 +38,9 @@ constexpr char kCatalogSignatureUrl[] =
+ constexpr char kCacheRoot[] = "/tmp/aera-plugin-store";
+ constexpr char kStorageRoot[] = "/sdcard/AERA/plugins";
+ constexpr char kMemoryRoot[] = "/tmp/aera/plugins";
++// Kept apart from the install roots, which an update replaces wholesale.
++constexpr char kStorageDataRoot[] = "/sdcard/AERA/plugin-data";
++constexpr char kMemoryDataRoot[] = "/tmp/aera/plugin-data";
+ constexpr uint64_t kMaxCatalog = 1024 * 1024;
+ constexpr uint64_t kMaxManifest = 64 * 1024;
+ constexpr uint64_t kMaxSignature = 4096;
+@@ -299,8 +303,9 @@ bool ParsePlugin(const std::string &text, Plugin &plugin, std::string &error,
+       (plugin.id == "streams" && plugin.type == "app-runtime" &&
+        plugin.entry == "streams");
+   const bool generic_entry = plugin.type == "ui-runtime" &&
+-      plugin.entry == "main" && plugin.protocol_version == 2 &&
+-      plugin.min_host_api == 2 &&
++      plugin.entry == "main" &&
++      (plugin.protocol_version == 2 || plugin.protocol_version == 3) &&
++      plugin.min_host_api == plugin.protocol_version &&
+       plugin.executable == "usr/bin/aera-plugin" &&
+       plugin.icon.size() <= 24;
+   const bool theme_extension = plugin.type == "theme-extension" &&
+@@ -311,11 +316,27 @@ bool ParsePlugin(const std::string &text, Plugin &plugin, std::string &error,
+       !plugin.font_family.empty() && plugin.font_family.size() <= 64 &&
+       std::none_of(plugin.font_family.begin(), plugin.font_family.end(),
+                    [](unsigned char c) { return c < 32 || c == 127; });
++  const bool pixel_entry = generic_entry && plugin.protocol_version == 3;
+   const auto has_permission = [&](const char *name) {
+     return std::find(plugin.permissions.begin(), plugin.permissions.end(), name) !=
+            plugin.permissions.end();
+   };
+-  const bool permissions_ok = !generic_entry ||
++  // Host API 3 pixel plugins draw and take input through their own surface;
++  // host operations stay with the declarative API.
++  const bool pixel_permissions_ok = !pixel_entry ||
++      (has_permission("display") && has_permission("touch-input") &&
++       has_permission("pixel-surface") &&
++       std::all_of(plugin.permissions.begin(), plugin.permissions.end(),
++                   [](const std::string &permission) {
++                     return permission == "display" ||
++                            permission == "touch-input" ||
++                            permission == "pixel-surface" ||
++                            permission == "gpu-acceleration" ||
++                            permission == "network" ||
++                            permission == "audio-output";
++                   }));
++  const bool permissions_ok = pixel_entry ? pixel_permissions_ok :
++      !generic_entry ||
+       (has_permission("display") && has_permission("touch-input") &&
+        std::all_of(plugin.permissions.begin(), plugin.permissions.end(),
+                    [](const std::string &permission) {
+@@ -943,7 +964,11 @@ bool Remove(const std::string &id, Progress &progress) {
+   if (!SafeId(id)) { progress.error = "Invalid plugin identifier."; return false; }
+   const bool memory = RemoveTree(std::string(kMemoryRoot) + "/" + id);
+   const bool storage = RemoveTree(std::string(kStorageRoot) + "/" + id);
+-  if (!memory || !storage) {
++  // The plugin's data goes with it, as an app's does on Android; data on
++  // storage that is not mounted now stays behind.
++  const bool data = RemoveTree(std::string(kMemoryDataRoot) + "/" + id) &&
++                    RemoveTree(std::string(kStorageDataRoot) + "/" + id);
++  if (!memory || !storage || !data) {
+     progress.error = "One or more plugin files could not be removed."; return false;
+   }
+   progress.status = "Plugin removed"; progress.value.store(100); return true;
+@@ -1064,7 +1089,7 @@ bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
+ 
+ bool IsGeneric(const Plugin &plugin) {
+   return plugin.type == "ui-runtime" && plugin.entry == "main" &&
+-         plugin.protocol_version == 2 &&
++         (plugin.protocol_version == 2 || plugin.protocol_version == 3) &&
+          plugin.executable == "usr/bin/aera-plugin";
+ }
+ 
+@@ -1085,6 +1110,42 @@ bool IsLaunchable(const Plugin &plugin) {
+       plugin.entry == "recorder" || plugin.entry == "appvault";
+ }
+ 
++bool IsPixel(const Plugin &plugin) {
++  return IsGeneric(plugin) && plugin.protocol_version == 3;
++}
++
++// /sdcard/AERA can exist while /data is not mounted: then it is a folder in
++// recovery's own RAM root, and nothing written there survives a reboot.
++static bool PersistentStorage(const char *path) {
++  struct stat storage{};
++  struct stat root{};
++  struct statfs filesystem{};
++  if (stat(path, &storage) != 0 || !S_ISDIR(storage.st_mode) ||
++      stat("/", &root) != 0 || statfs(path, &filesystem) != 0)
++    return false;
++  constexpr decltype(filesystem.f_type) kTmpfs = 0x01021994;
++  constexpr decltype(filesystem.f_type) kRamfs = 0x858458f6;
++  return storage.st_dev != root.st_dev && filesystem.f_type != kTmpfs &&
++         filesystem.f_type != kRamfs;
++}
++
++std::string DataDirectory(const Plugin &plugin) {
++  if (!SafeId(plugin.id)) return {};
++  const bool on_storage = PersistentStorage("/sdcard/AERA");
++  const std::string root = on_storage ? kStorageDataRoot : kMemoryDataRoot;
++  const std::string path = root + "/" + plugin.id;
++  if (!EnsureDirectory(root)) return {};
++  if (mkdir(path.c_str(), 0700) != 0 && errno != EEXIST) return {};
++  struct stat info{};
++  if (lstat(path.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return {};
++  return path;
++}
++
++bool DataDirectoryVolatile(const std::string &path) {
++  const std::string root = std::string(kMemoryDataRoot) + "/";
++  return path.compare(0, root.size(), root) == 0;
++}
++
+ bool HasPermission(const Plugin &plugin, const std::string &permission) {
+   return std::find(plugin.permissions.begin(), plugin.permissions.end(),
+                    permission) != plugin.permissions.end();
+diff --git a/aeraui/features/plugins/plugin_manager.hpp b/aeraui/features/plugins/plugin_manager.hpp
+index aff2e1d..6f339f8 100644
+--- a/aeraui/features/plugins/plugin_manager.hpp
++++ b/aeraui/features/plugins/plugin_manager.hpp
+@@ -11,7 +11,7 @@
+ 
+ namespace aeraui::plugins {
+ 
+-constexpr uint32_t kHostApi = 2;
++constexpr uint32_t kHostApi = 3;
+ 
+ enum class Location {
+   kNone = 0,
+@@ -99,9 +99,19 @@ bool IsPackageFile(const std::string &name);
+ // payload hash is checked by its consumer immediately before extraction/use.
+ bool ResolvePayload(const std::string &id, Plugin &plugin, std::string &path,
+                     std::string &error);
++// A Host API 2 declarative plugin or a Host API 3 pixel plugin; both run
++// usr/bin/aera-plugin from an expanded ui-runtime payload.
+ bool IsGeneric(const Plugin &plugin);
+ bool IsThemeExtension(const Plugin &plugin);
+ bool IsLaunchable(const Plugin &plugin);
++// Host API 3: the plugin draws its own pixels (IsGeneric is also true).
++bool IsPixel(const Plugin &plugin);
++// Host API 3's AERA_PLUGIN_DATA: a private directory that survives updates
++// but not Remove, on internal storage when it is mounted and in RAM
++// otherwise. Created on demand; empty when it cannot be.
++std::string DataDirectory(const Plugin &plugin);
++// Whether a DataDirectory() path is the RAM one, lost at reboot.
++bool DataDirectoryVolatile(const std::string &path);
+ bool HasPermission(const Plugin &plugin, const std::string &permission);
+ 
+ const char *LocationLabel(Location location);
+diff --git a/aeraui/include/aeraui/engine.hpp b/aeraui/include/aeraui/engine.hpp
+index cf256f8..bd6bac4 100644
+--- a/aeraui/include/aeraui/engine.hpp
++++ b/aeraui/include/aeraui/engine.hpp
+@@ -5,6 +5,7 @@
+ #pragma once
+ 
+ #include <cstdint>
++#include <string>
+ #include <memory>
+ 
+ namespace aeraui {
+@@ -142,6 +143,9 @@ class Engine final {
+     void SetSuspended(bool suspended);
+     void ShowLockScreen();
+     void ShowPowerMenu();
++
++    // Opens an installed generic plugin as the launcher does.
++    void OpenPlugin(const std::string& id);
+     void ShowVolume(int percent);
+     void ShowScreenshotResult(bool success);
+ 
+diff --git a/aeraui/include/aeraui/runner.hpp b/aeraui/include/aeraui/runner.hpp
+index a7ad77c..bedf3cd 100644
+--- a/aeraui/include/aeraui/runner.hpp
++++ b/aeraui/include/aeraui/runner.hpp
+@@ -5,6 +5,7 @@
+ #pragma once
+ 
+ #include <cstdint>
++#include <string>
+ 
+ namespace aeraui {
+ 
+@@ -28,6 +29,12 @@ enum class DecryptionResult {
+     kTerminalAction = 2,
+ };
+ 
++enum class PluginLaunchRequestResult {
++    kAccepted = 0,
++    kNotInstalled,
++    kUnavailable,
++};
++
+ enum class ModeTransitionRequestResult {
+     kAccepted = 0,
+     kAlreadyActive,
+@@ -83,4 +90,9 @@ RunResult RunAeraUiFastboot(const DisplayMetrics& metrics = {});
+ // the transition backend directly.
+ ModeTransitionRequestResult RequestModeTransition(bool toward_fastboot);
+ 
++// Queues opening an installed Host API 2 or 3 plugin on the native UI thread,
++// as tapping it in the launcher does. For developers over adb (AERA RPC
++// "plugin"); the plugin runs exactly as when started from the UI.
++PluginLaunchRequestResult RequestPluginLaunch(const std::string& id);
++
+ }  // namespace aeraui
+diff --git a/aeraui/scenes/generic_plugin_scene.cpp b/aeraui/scenes/generic_plugin_scene.cpp
+index 22c1439..fcf8e7b 100644
+--- a/aeraui/scenes/generic_plugin_scene.cpp
++++ b/aeraui/scenes/generic_plugin_scene.cpp
+@@ -580,6 +580,12 @@ void BuildGenericPluginScene(lv_obj_t *screen, const std::string &id,
+     delete scene;
+     return;
+   }
++  if (plugins::IsPixel(scene->plugin)) {
++    const plugins::Plugin plugin = scene->plugin;
++    delete scene;
++    BuildPixelPluginScene(screen, plugin, callback, context);
++    return;
++  }
+   lv_obj_add_event_cb(screen, [](lv_event_t *event) {
+     delete static_cast<GenericScene *>(lv_event_get_user_data(event));
+   }, LV_EVENT_DELETE, scene);
+diff --git a/aeraui/scenes/pixel_plugin_scene.cpp b/aeraui/scenes/pixel_plugin_scene.cpp
+new file mode 100644
+index 0000000..2993517
+--- /dev/null
++++ b/aeraui/scenes/pixel_plugin_scene.cpp
+@@ -0,0 +1,920 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++// Host API 3: a plugin that draws its own pixels into a shared surface, with
++// AERA forwarding touch, its keyboard and Back. Everything else (runtime
++// verification, process isolation, the bounded control channel) is Host API
++// 2's, unchanged.
++//
++// Like Browser, a running plugin outlives its scene: leaving it (Home,
++// Recents, another app) pauses the plugin and opening it again resumes it
++// where it was. It stops when it closes itself, when Recents is cleared or
++// drops it, or when it fails.
++#include "scene.hpp"
++
++#include "browser/runtime.hpp"
++#include "file_picker.hpp"
++#include "phone_keyboard.hpp"
++#include "plugin_api/launcher.hpp"
++#include "plugin_api/protocol.hpp"
++#include "plugin_api/session.hpp"
++#include "plugin_api/surface.hpp"
++#include "plugins/plugin_manager.hpp"
++#include "ui_components.hpp"
++#include "src/misc/cache/instance/lv_image_cache.h"
++
++#include <aeraui/status_bar.hpp>
++#include <linux/types.h>
++#include <minuitwrp/minui.h>
++
++#include <algorithm>
++#include <cmath>
++#include <cstdlib>
++#include <cstring>
++#include <deque>
++#include <map>
++#include <string>
++#include <sys/system_properties.h>
++#include <thread>
++#include <time.h>
++#include <vector>
++
++namespace aeraui {
++namespace {
++using namespace design;
++using namespace widgets;
++
++constexpr int kMaxPointers = 10;
++// OPERATION_RESULTs sent per tick while a pick's paths go out, so a large
++// selection never fills the control socket.
++constexpr int kPickResultsPerTick = 8;
++// A selection is at most this many files.
++constexpr size_t kMaxPickedFiles = 256;
++
++uint64_t NowMs() {
++  timespec now{};
++  clock_gettime(CLOCK_MONOTONIC, &now);
++  return static_cast<uint64_t>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
++}
++
++struct PixelScene {
++  lv_obj_t *screen = nullptr;
++  lv_display_t *display = nullptr;
++  lv_obj_t *loading = nullptr, *title = nullptr, *detail = nullptr;
++  lv_obj_t *progress = nullptr;
++  lv_obj_t *viewport = nullptr, *image = nullptr, *keyboard = nullptr;
++  lv_image_dsc_t descriptor{};
++  ActionCallback callback = nullptr;
++  void *context = nullptr;
++  plugins::Plugin plugin;
++  web::Preparation preparation;
++  plugin_api::Process process;
++  plugin_api::Session session;
++  plugin_api::Surface surface;
++  std::thread worker;
++  lv_timer_t *timer = nullptr;
++  // The viewport in AERA's logical coordinates, and surface pixels per
++  // logical unit across and down (the panel is usually smaller than AERA's
++  // 1440 columns, and its shape need not be the canvas's exactly).
++  int view_left = 0, view_top = 0, view_width = 0, view_height = 0;
++  double pixels_per_unit_x = 1.0, pixels_per_unit_y = 1.0;
++  bool touch_pressed[kMaxPointers]{};
++  bool touch_ignored[kMaxPointers]{};
++  // A first contact that landed in a side-edge zone, not yet known to be
++  // AERA's Back swipe or a touch for the plugin.
++  bool edge_pending = false;
++  int edge_x = 0;
++  int edge_y = 0;
++  bool keyboard_multiline = false;
++  // The open kPickFiles picker and its request, and chosen paths not yet
++  // sent.
++  lv_obj_t *picker = nullptr;
++  uint32_t pick_request = 0;
++  std::deque<std::string> picked;
++  uint32_t keyboard_inset = 0;
++  bool frame_waiting_for_refresh = false;
++  bool showing = false;
++  bool launched = false;
++  bool stopped = false;
++  bool leaving = false;
++  // LIFECYCLE sent last: paused while no scene shows the plugin, inactive
++  // while a shade, sheet or the picker covers it.
++  bool paused = false;
++  bool inactive = false;
++  // Stop instead of pausing when the scene is left (Recents cleared).
++  bool discard = false;
++  uint64_t launched_ms = 0;
++
++  ~PixelScene();
++};
++
++// The scene on screen, if it is a pixel plugin's.
++PixelScene *gPixelScene = nullptr;
++// Every running plugin by id, on screen or paused.
++std::map<std::string, PixelScene *> gRunning;
++
++void PixelRefreshReady(lv_event_t *event);
++
++PixelScene::~PixelScene() {
++  if (gPixelScene == this) gPixelScene = nullptr;
++  const auto running = gRunning.find(plugin.id);
++  if (running != gRunning.end() && running->second == this)
++    gRunning.erase(running);
++  if (timer) lv_timer_delete(timer);
++  if (display)
++    lv_display_remove_event_cb_with_user_data(display, PixelRefreshReady,
++                                              this);
++  // The picker overlay outlives the scene until its screen is deleted.
++  if (picker) file_picker::Forget(picker);
++  preparation.cancel.store(true);
++  if (worker.joinable()) worker.join();
++  if (session.Connected()) {
++    session.Send(plugin_api::Kind::kLifecycle, 0,
++                 static_cast<uint32_t>(plugin_api::Lifecycle::kStop));
++    session.Send(plugin_api::Kind::kClose);
++  }
++  session.Close();
++  process.Stop();
++  // The image may still point into the mapping until LVGL forgets it.
++  if (image) lv_image_set_src(image, nullptr);
++  lv_image_cache_drop(&descriptor);
++  surface.Close();
++  web::RemoveRuntime(preparation.directory);
++}
++
++void SetStatus(PixelScene *scene, const char *title, const std::string &detail) {
++  if (scene->loading) lv_obj_remove_flag(scene->loading, LV_OBJ_FLAG_HIDDEN);
++  if (scene->title) i18n::BindLabel(scene->title, title);
++  if (scene->detail) i18n::BindLabel(scene->detail, detail.c_str());
++}
++
++// Android's own density, so a plugin lays out as apps do on this phone.
++double DeviceScale(int surface_width) {
++  char value[PROP_VALUE_MAX]{};
++  if (__system_property_get("ro.sf.lcd_density", value) > 0) {
++    const long density = strtol(value, nullptr, 10);
++    if (density >= 80 && density <= 1280) return density / 160.0;
++  }
++  // A typical phone is about 411 logical pixels wide.
++  return std::clamp(std::round(surface_width / 411.0 * 4) / 4, 1.0, 4.0);
++}
++
++// A Sheet or other transient modal over the surface owns input.
++bool SheetVisible(lv_obj_t *screen) {
++  for (uint32_t index = 0; index < lv_obj_get_child_count(screen); ++index) {
++    auto *child = lv_obj_get_child(screen, static_cast<int32_t>(index));
++    if (lv_obj_get_user_data(child) == &kModalMarker &&
++        !lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) return true;
++  }
++  return false;
++}
++
++void SendFrameDone(PixelScene *scene, const std::vector<uint32_t> &released) {
++  for (const uint32_t sequence : released)
++    scene->session.Send(plugin_api::Kind::kFrameDone, sequence);
++}
++
++void PixelRefreshReady(lv_event_t *event) {
++  auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
++  if (!scene->frame_waiting_for_refresh) return;
++  scene->frame_waiting_for_refresh = false;
++  std::vector<uint32_t> released;
++  scene->surface.RefreshDone(released);
++  if (scene->session.Connected()) SendFrameDone(scene, released);
++}
++
++uint32_t KeyboardInset(PixelScene *scene) {
++  if (!scene->keyboard || lv_obj_has_flag(scene->keyboard, LV_OBJ_FLAG_HIDDEN))
++    return 0;
++  lv_obj_update_layout(scene->keyboard);
++  lv_area_t area{};
++  lv_obj_get_coords(scene->keyboard, &area);
++  const int covered = scene->view_top + scene->view_height - area.y1;
++  if (covered <= 0) return 0;
++  return static_cast<uint32_t>(std::lround(
++      std::min(covered, scene->view_height) * scene->pixels_per_unit_y));
++}
++
++void SendKeyboardInset(PixelScene *scene) {
++  const uint32_t inset = KeyboardInset(scene);
++  if (inset == scene->keyboard_inset) return;
++  scene->keyboard_inset = inset;
++  if (scene->session.Negotiated())
++    scene->session.Send(plugin_api::Kind::kKeyboardInset, 0, inset);
++}
++
++void ReleaseTouches(PixelScene *scene) {
++  for (int slot = 0; slot < kMaxPointers; ++slot) {
++    if (scene->touch_pressed[slot] && scene->session.Negotiated())
++      scene->session.Send(plugin_api::Kind::kTouchUp,
++                          static_cast<uint32_t>(slot), 0, 0);
++    scene->touch_pressed[slot] = false;
++    scene->touch_ignored[slot] = false;
++  }
++  scene->edge_pending = false;
++}
++
++void HideKeyboard(PixelScene *scene) {
++  if (!scene->keyboard) return;
++  lv_obj_add_flag(scene->keyboard, LV_OBJ_FLAG_HIDDEN);
++  SendKeyboardInset(scene);
++}
++
++void ShowKeyboard(PixelScene *scene, uint32_t purpose, bool multiline) {
++  if (!scene->keyboard) return;
++  ReleaseTouches(scene);
++  scene->keyboard_multiline = multiline;
++  lv_keyboard_set_mode(scene->keyboard,
++      purpose == static_cast<uint32_t>(plugin_api::Purpose::kDigits)
++          ? LV_KEYBOARD_MODE_NUMBER : LV_KEYBOARD_MODE_TEXT_LOWER);
++  lv_obj_remove_flag(scene->keyboard, LV_OBJ_FLAG_HIDDEN);
++  lv_obj_move_foreground(scene->keyboard);
++  SendKeyboardInset(scene);
++}
++
++// One key as a Unicode code point; 0 for keyboard UI (mode switches).
++uint32_t KeyCode(const char *key) {
++  if (!strcmp(key, LV_SYMBOL_BACKSPACE)) return 8;
++  if (!strcmp(key, LV_SYMBOL_NEW_LINE)) return 13;
++  const auto *bytes = reinterpret_cast<const unsigned char *>(key);
++  const size_t length = strlen(key);
++  if (length == 1) return bytes[0] >= 32 && bytes[0] < 127 ? bytes[0] : 0;
++  // A single UTF-8 character that is not an LVGL symbol (those live in the
++  // private use area).
++  uint32_t code = 0;
++  size_t expected = 0;
++  if ((bytes[0] & 0xe0) == 0xc0) { code = bytes[0] & 0x1f; expected = 2; }
++  else if ((bytes[0] & 0xf0) == 0xe0) { code = bytes[0] & 0x0f; expected = 3; }
++  else if ((bytes[0] & 0xf8) == 0xf0) { code = bytes[0] & 0x07; expected = 4; }
++  if (expected == 0 || length != expected) return 0;
++  for (size_t i = 1; i < length; ++i) {
++    if ((bytes[i] & 0xc0) != 0x80) return 0;
++    code = (code << 6) | (bytes[i] & 0x3f);
++  }
++  if (code >= 0xe000 && code <= 0xf8ff) return 0;
++  return code;
++}
++
++// Leaves the scene once the plugin is gone, outside of any LVGL callback that
++// still holds the scene.
++void Leave(PixelScene *scene) {
++  if (scene->leaving) return;
++  scene->leaving = true;
++  if (scene->viewport) lv_obj_set_user_data(scene->viewport, nullptr);
++  auto callback = scene->callback;
++  auto *context = scene->context;
++  lv_async_call([](void *data) {
++    auto *pair = static_cast<std::pair<ActionCallback, void *> *>(data);
++    pair->first(Action::kBack, pair->second);
++    delete pair;
++  }, new std::pair<ActionCallback, void *>(callback, context));
++}
++
++void ClosePicker(PixelScene *scene) {
++  if (!scene->picker) return;
++  file_picker::Forget(scene->picker);
++  file_picker::Dismiss(scene->picker);
++  scene->picker = nullptr;
++  scene->picked.clear();
++}
++
++void Stop(PixelScene *scene, const char *title, const std::string &detail) {
++  if (scene->stopped) return;
++  scene->stopped = true;
++  const auto running = gRunning.find(scene->plugin.id);
++  if (running != gRunning.end() && running->second == scene)
++    gRunning.erase(running);
++  // A paused plugin has no scene to report to.
++  if (!scene->screen) {
++    lv_async_call([](void *data) { delete static_cast<PixelScene *>(data); },
++                  scene);
++    return;
++  }
++  ClosePicker(scene);
++  scene->session.Close();
++  scene->process.Stop();
++  if (scene->viewport) {
++    lv_obj_set_user_data(scene->viewport, nullptr);
++    lv_obj_add_flag(scene->viewport, LV_OBJ_FLAG_HIDDEN);
++  }
++  scene->showing = false;
++  HideKeyboard(scene);
++  SetStatus(scene, title, detail);
++}
++
++// kPickFiles: the pick itself is the user's consent, so no permission or
++// prompt is involved, as with a file dialog on a desktop.
++void StartPick(PixelScene *scene, const plugin_api::Message &message) {
++  auto refuse = [&](const char *reason) {
++    scene->session.Send(plugin_api::Kind::kOperationResult,
++                        message.request_id, 0, 0, nullptr, reason);
++  };
++  if (message.request_id == 0) return refuse("Unsupported host operation.");
++  if (!scene->screen) return refuse("The plugin is not on screen.");
++  if (scene->picker || !scene->picked.empty())
++    return refuse("A file picker is already open.");
++  if (message.flags > static_cast<uint32_t>(plugin_api::PickMode::kSave))
++    return refuse("Unknown file picker mode.");
++  const auto mode = static_cast<plugin_api::PickMode>(message.flags);
++  file_picker::Request request;
++  request.mode = mode == plugin_api::PickMode::kFiles ? file_picker::Mode::kFiles
++      : mode == plugin_api::PickMode::kFolder ? file_picker::Mode::kFolder
++      : mode == plugin_api::PickMode::kSave ? file_picker::Mode::kSave
++                                            : file_picker::Mode::kFile;
++  request.start = message.title;
++  request.max_path = sizeof(message.text);
++  request.max_count = kMaxPickedFiles;
++  if (mode == plugin_api::PickMode::kSave) {
++    request.suggested_name = message.text;
++  } else {
++    std::string extension;
++    for (const char *c = message.text;; ++c) {
++      if (*c == ',' || *c == ' ' || *c == '\0') {
++        if (!extension.empty()) request.extensions.push_back(extension);
++        extension.clear();
++        if (*c == '\0') break;
++      } else if (*c != '.' || !extension.empty()) {
++        extension += static_cast<char>(tolower(static_cast<unsigned char>(*c)));
++      }
++    }
++  }
++  ReleaseTouches(scene);
++  HideKeyboard(scene);
++  scene->pick_request = message.request_id;
++  scene->picker = file_picker::Show(scene->screen, std::move(request),
++      [scene](std::vector<std::string> paths) {
++        scene->picker = nullptr;
++        scene->picked.assign(paths.begin(), paths.end());
++      },
++      [scene] {
++        scene->picker = nullptr;
++        if (scene->session.Negotiated())
++          scene->session.Send(plugin_api::Kind::kOperationResult,
++                              scene->pick_request, 0, 0);
++      });
++}
++
++void SendPicked(PixelScene *scene) {
++  for (int sent = 0; sent < kPickResultsPerTick && !scene->picked.empty();
++       ++sent) {
++    const std::string path = std::move(scene->picked.front());
++    scene->picked.pop_front();
++    if (!scene->session.Send(plugin_api::Kind::kOperationResult,
++                             scene->pick_request, 1,
++                             scene->picked.empty() ? 0 : 1, nullptr,
++                             path.c_str()))
++      return;
++  }
++}
++
++void HandleMessage(PixelScene *scene, const plugin_api::Message &message) {
++  switch (message.kind) {
++    case plugin_api::Kind::kPresent: {
++      std::vector<uint32_t> released;
++      if (!scene->surface.Present(message.request_id, message.value,
++                                  message.flags, released)) {
++        Stop(scene, "Plugin stopped",
++             "The plugin presented a frame it does not own.");
++        return;
++      }
++      // While paused the plugin's frames wait for the next SURFACE, which
++      // gives every slot back.
++      if (!scene->paused) SendFrameDone(scene, released);
++      break;
++    }
++    case plugin_api::Kind::kKeyboardShow:
++      // Unknown purposes get the text keyboard.
++      ShowKeyboard(scene, message.value, message.flags & 1U);
++      break;
++    case plugin_api::Kind::kKeyboardHide:
++      HideKeyboard(scene);
++      break;
++    case plugin_api::Kind::kSetStatus:
++      // Shown only while there is no frame yet (start-up and failures).
++      if (!scene->showing && scene->detail)
++        i18n::BindLabel(scene->detail, message.text);
++      break;
++    case plugin_api::Kind::kClose: {
++      const bool on_screen = scene->screen != nullptr;
++      Stop(scene, "Plugin closed", "");
++      if (on_screen) Leave(scene);
++      break;
++    }
++    case plugin_api::Kind::kRequestOperation:
++      if (message.value ==
++          static_cast<uint32_t>(plugin_api::Operation::kPickFiles)) {
++        StartPick(scene, message);
++        break;
++      }
++      // The other host operations stay with the declarative API.
++      scene->session.Send(plugin_api::Kind::kOperationResult,
++                          message.request_id, 0, 0, nullptr,
++                          "Unsupported host operation.");
++      break;
++    default:
++      // Host API 2's page messages have no meaning on a pixel surface.
++      Stop(scene, "Plugin stopped",
++           "The plugin sent a message Host API 3 does not allow.");
++      break;
++  }
++}
++
++void ShowNextFrame(PixelScene *scene) {
++  if (!scene->image || scene->frame_waiting_for_refresh) return;
++  const uint8_t *pixels = scene->surface.LatchNext();
++  if (!pixels) return;
++  scene->descriptor.data = pixels;
++  lv_image_cache_drop(&scene->descriptor);
++  lv_image_set_src(scene->image, &scene->descriptor);
++  lv_obj_invalidate(scene->image);
++  scene->frame_waiting_for_refresh = true;
++  if (!scene->showing) {
++    scene->showing = true;
++    lv_obj_add_flag(scene->loading, LV_OBJ_FLAG_HIDDEN);
++    lv_obj_remove_flag(scene->viewport, LV_OBJ_FLAG_HIDDEN);
++  }
++}
++
++bool Launch(PixelScene *scene) {
++  plugin_api::LaunchOptions options;
++  options.host_api = plugin_api::kProtocolVersion3;
++  options.surface_fd = scene->surface.PluginFd();
++  options.data_dir = plugins::DataDirectory(scene->plugin);
++  options.data_volatile = plugins::DataDirectoryVolatile(options.data_dir);
++  int control = -1;
++  std::string error;
++  if (!scene->process.Start(scene->preparation.directory, control, error,
++                            options)) {
++    Stop(scene, "Plugin unavailable", error);
++    return false;
++  }
++  if (!scene->session.Adopt(control, plugin_api::kProtocolVersion3,
++                            {scene->surface.SurfaceMessage()})) {
++    Stop(scene, "Plugin unavailable", scene->session.Status());
++    return false;
++  }
++  return true;
++}
++
++void Tick(lv_timer_t *timer) {
++  auto *scene = static_cast<PixelScene *>(lv_timer_get_user_data(timer));
++  if (scene->stopped) return;
++  if (!scene->preparation.done.load(std::memory_order_acquire)) {
++    if (scene->progress)
++      lv_bar_set_value(scene->progress, scene->preparation.progress.load(),
++                       LV_ANIM_OFF);
++    return;
++  }
++  if (!scene->preparation.verified) {
++    Stop(scene, "Plugin unavailable", scene->preparation.error);
++    return;
++  }
++  if (!scene->launched) {
++    scene->launched = true;
++    scene->launched_ms = NowMs();
++    lv_bar_set_value(scene->progress, 100, LV_ANIM_ON);
++    i18n::BindLabel(scene->detail, "Starting");
++    if (!Launch(scene)) return;
++  }
++  const bool was_negotiated = scene->session.Negotiated();
++  for (const auto &message : scene->session.Poll()) {
++    HandleMessage(scene, message);
++    if (scene->stopped) return;
++  }
++  if (!was_negotiated && scene->session.Negotiated() &&
++      scene->viewport) {
++    // Back now belongs to the plugin, as on Android.
++    lv_obj_set_user_data(scene->viewport, &kPersistentModalMarker);
++    scene->keyboard_inset = 0;
++    SendKeyboardInset(scene);
++  }
++  if (!scene->session.Connected()) {
++    Stop(scene, "Plugin stopped", scene->session.Status());
++    return;
++  }
++  if (!scene->session.Negotiated() && NowMs() - scene->launched_ms > 5000) {
++    Stop(scene, "Plugin unavailable", "Plugin handshake timed out");
++    return;
++  }
++  SendPicked(scene);
++  ShowNextFrame(scene);
++  // Still visible but not taking input: a plugin that ignores INACTIVE
++  // keeps working, it just gets no touches meanwhile.
++  if (scene->screen && scene->session.Negotiated() && !scene->paused) {
++    const bool covered = scene->picker || StatusBarShadeOpen() ||
++                         SheetVisible(scene->screen);
++    if (covered != scene->inactive) {
++      scene->inactive = covered;
++      scene->session.Send(plugin_api::Kind::kLifecycle, 0,
++          static_cast<uint32_t>(covered ? plugin_api::Lifecycle::kInactive
++                                        : plugin_api::Lifecycle::kResume));
++    }
++  }
++  if (!scene->process.Running()) {
++    Stop(scene, "Plugin stopped",
++         "Plugin process exited; its resources were reclaimed");
++  }
++}
++
++// Sends a touch at screen point (x, y), mapped to surface pixels.
++bool SendTouch(PixelScene *s, plugin_api::Kind kind, int slot, int x, int y) {
++  const int px = std::clamp(static_cast<int>(std::lround(
++      (x - s->view_left) * s->pixels_per_unit_x)), 0,
++      static_cast<int>(s->surface.Geometry().width) - 1);
++  const int py = std::clamp(static_cast<int>(std::lround(
++      (y - s->view_top) * s->pixels_per_unit_y)), 0,
++      static_cast<int>(s->surface.Geometry().height) - 1);
++  return s->session.Send(kind, static_cast<uint32_t>(slot),
++                         static_cast<uint32_t>(px), static_cast<uint32_t>(py));
++}
++
++// The surface for the area below the status bar, in panel pixels.
++plugin_api::SurfaceGeometry ViewGeometry(PixelScene *scene) {
++  plugin_api::SurfaceGeometry geometry;
++  geometry.width = static_cast<uint32_t>(
++      std::lround(scene->view_width * scene->pixels_per_unit_x));
++  geometry.height = static_cast<uint32_t>(
++      std::lround(scene->view_height * scene->pixels_per_unit_y));
++  geometry.stride = geometry.width * 4;
++  geometry.slots = 3;
++  geometry.scale = DeviceScale(static_cast<int>(
++      std::min(geometry.width, geometry.height)));
++  geometry.refresh_hz = 60.0;
++  return geometry;
++}
++
++// Places the viewport, image and keyboard for the screen's current
++// orientation and returns the surface geometry that fits it.
++plugin_api::SurfaceGeometry Layout(PixelScene *scene) {
++  lv_obj_t *screen = scene->screen;
++  // Full width below the status bar; the dock is hidden on app surfaces.
++  scene->view_left = 0;
++  scene->view_top = StatusBarHeight();
++  scene->view_width = lv_obj_get_width(screen);
++  scene->view_height = lv_obj_get_height(screen) - scene->view_top;
++  // Each axis of the canvas maps onto the same axis of the panel, so the
++  // surface is exactly as wide and as tall as the glass that shows it.
++  const int screen_width = lv_obj_get_width(screen);
++  const int screen_height = lv_obj_get_height(screen);
++  const int panel_short = std::min(gr_fb_width(), gr_fb_height());
++  const int panel_long = std::max(gr_fb_width(), gr_fb_height());
++  const bool landscape = screen_width > screen_height;
++  const int panel_width = landscape ? panel_long : panel_short;
++  const int panel_height = landscape ? panel_short : panel_long;
++  scene->pixels_per_unit_x = screen_width > 0 && panel_width > 0
++      ? std::min(1.0, static_cast<double>(panel_width) / screen_width) : 1.0;
++  scene->pixels_per_unit_y = screen_height > 0 && panel_height > 0
++      ? std::min(1.0, static_cast<double>(panel_height) / screen_height)
++      : 1.0;
++  const plugin_api::SurfaceGeometry geometry = ViewGeometry(scene);
++  if (scene->viewport) {
++    lv_obj_set_pos(scene->viewport, scene->view_left, scene->view_top);
++    lv_obj_set_size(scene->viewport, scene->view_width, scene->view_height);
++  }
++  if (scene->image) {
++    lv_image_set_scale_x(scene->image, static_cast<uint32_t>(
++        (scene->view_width * 256 + geometry.width / 2) / geometry.width));
++    lv_image_set_scale_y(scene->image, static_cast<uint32_t>(
++        (scene->view_height * 256 + geometry.height / 2) / geometry.height));
++  }
++  scene->descriptor.header.w = geometry.width;
++  scene->descriptor.header.h = geometry.height;
++  scene->descriptor.header.stride = geometry.stride;
++  scene->descriptor.data_size = static_cast<uint32_t>(geometry.FrameBytes());
++  if (scene->keyboard) {
++    const bool landscape = Landscape(screen);
++    lv_obj_set_size(scene->keyboard, landscape ? 2408 : scene->view_width,
++                    landscape ? 720 : 760);
++    lv_obj_align(scene->keyboard, landscape ? LV_ALIGN_BOTTOM_RIGHT
++                                            : LV_ALIGN_BOTTOM_MID, 0, 0);
++  }
++  return geometry;
++}
++
++// AERA rotated: keep the plugin running and give it a surface of the new
++// shape in the same memory (sized for both orientations at the start).
++void Rotate(PixelScene *scene) {
++  const auto geometry = Layout(scene);
++  if (geometry.width == scene->surface.Geometry().width &&
++      geometry.height == scene->surface.Geometry().height)
++    return;
++  ReleaseTouches(scene);
++  // Nothing of the old shape stays on screen.
++  scene->frame_waiting_for_refresh = false;
++  if (scene->image) lv_image_set_src(scene->image, nullptr);
++  lv_image_cache_drop(&scene->descriptor);
++  if (!scene->surface.Reshape(geometry)) {
++    Stop(scene, "Plugin stopped", "Could not resize the plugin's display surface.");
++    return;
++  }
++  if (scene->showing && scene->viewport) {
++    scene->showing = false;
++    lv_obj_add_flag(scene->viewport, LV_OBJ_FLAG_HIDDEN);
++  }
++  if (scene->session.Negotiated()) {
++    scene->session.Send(scene->surface.SurfaceMessage());
++    scene->keyboard_inset = UINT32_MAX;
++    SendKeyboardInset(scene);
++  }
++}
++
++// Lets go of the scene's screen and widgets. A plugin that is kept first
++// gets what it is waiting for: a closed picker, the paths already chosen,
++// its touches.
++void Release(PixelScene *scene, bool keep) {
++  if (gPixelScene == scene) gPixelScene = nullptr;
++  if (scene->display)
++    lv_display_remove_event_cb_with_user_data(scene->display,
++                                              PixelRefreshReady, scene);
++  if (keep) {
++    if (scene->picker) {
++      file_picker::Forget(scene->picker);
++      scene->picker = nullptr;
++      scene->session.Send(plugin_api::Kind::kOperationResult,
++                          scene->pick_request, 0, 0);
++    }
++    while (!scene->picked.empty()) SendPicked(scene);
++    ReleaseTouches(scene);
++    scene->keyboard_inset = UINT32_MAX;
++  }
++  if (scene->image) lv_image_set_src(scene->image, nullptr);
++  lv_image_cache_drop(&scene->descriptor);
++  scene->screen = nullptr;
++  scene->display = nullptr;
++  scene->loading = scene->title = scene->detail = scene->progress = nullptr;
++  scene->viewport = scene->image = scene->keyboard = nullptr;
++  scene->frame_waiting_for_refresh = false;
++  scene->showing = false;
++}
++
++// The scene is going away. A running plugin is paused and kept, as Browser
++// is; one that is stopped, still starting or being discarded goes with it.
++void Detach(PixelScene *scene) {
++  const auto running = gRunning.find(scene->plugin.id);
++  const bool keep = !scene->stopped && !scene->leaving && !scene->discard &&
++                    scene->session.Connected() && scene->session.Negotiated() &&
++                    running != gRunning.end() && running->second == scene;
++  Release(scene, keep);
++  if (!keep) {
++    delete scene;
++    return;
++  }
++  // From here AERA sends only RESUME (with a new SURFACE first), STOP or
++  // CLOSE, and no FRAME_DONE: the plugin's rendering stalls by itself.
++  scene->inactive = false;
++  scene->paused = true;
++  scene->session.Send(plugin_api::Kind::kLifecycle, 0,
++                      static_cast<uint32_t>(plugin_api::Lifecycle::kPause));
++}
++
++// Opens a paused plugin's scene again: a new SURFACE (every slot is the
++// plugin's again, in the current orientation), its keyboard inset, RESUME.
++void Resume(PixelScene *scene) {
++  const auto geometry = Layout(scene);
++  if (!scene->surface.Reshape(geometry)) {
++    Stop(scene, "Plugin stopped",
++         "Could not resize the plugin's display surface.");
++    return;
++  }
++  scene->paused = false;
++  lv_bar_set_value(scene->progress, 100, LV_ANIM_OFF);
++  i18n::BindLabel(scene->detail, "");
++  // Back belongs to the plugin, as on Android.
++  lv_obj_set_user_data(scene->viewport, &kPersistentModalMarker);
++  scene->session.Send(scene->surface.SurfaceMessage());
++  SendKeyboardInset(scene);
++  scene->session.Send(plugin_api::Kind::kLifecycle, 0,
++                      static_cast<uint32_t>(plugin_api::Lifecycle::kResume));
++}
++}  // namespace
++
++void ShutdownPixelPlugin(const std::string &id) {
++  const auto running = gRunning.find(id);
++  if (running == gRunning.end()) return;
++  PixelScene *scene = running->second;
++  // The one on screen stops when its scene is left; a paused one now.
++  if (scene->screen) scene->discard = true;
++  else delete scene;
++}
++
++void ShutdownPixelPlugins() {
++  std::vector<std::string> ids;
++  for (const auto &running : gRunning) ids.push_back(running.first);
++  for (const auto &id : ids) ShutdownPixelPlugin(id);
++}
++
++bool PixelPluginActive() {
++  return gPixelScene && !gPixelScene->stopped;
++}
++
++
++bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed) {
++  auto *s = gPixelScene;
++  if (!s || slot < 0 || slot >= kMaxPointers || !s->showing || s->stopped ||
++      !s->session.Negotiated())
++    return false;
++  if (StatusBarShadeOpen() || SheetVisible(s->screen)) {
++    ReleaseTouches(s);
++    return false;
++  }
++  const bool inside = x >= s->view_left && y >= s->view_top &&
++      x < s->view_left + s->view_width && y < s->view_top + s->view_height;
++  if (s->touch_ignored[slot]) {
++    if (!pressed) s->touch_ignored[slot] = false;
++    return false;
++  }
++  // A first contact in a side-edge zone may be AERA's Back swipe, which the
++  // engine tracks while we return false. Decide by movement, as Android's
++  // edge Back does: once it moves inward past the touch slop, mostly
++  // horizontally, it is Back and stays AERA's; a tap, or a contact that
++  // moves along the edge, is the plugin's and starts where it landed.
++  const int screen_width = lv_obj_get_width(s->screen);
++  const int edge = std::max(72, screen_width / 20);
++  if (slot == 0 && s->edge_pending) {
++    const int inward = s->edge_x <= edge ? x - s->edge_x : s->edge_x - x;
++    const int along = std::abs(y - s->edge_y);
++    const int slop = std::max(16, edge / 3);
++    if (pressed && inward <= slop && along <= slop) return false;
++    s->edge_pending = false;
++    if (pressed && inward > along) {
++      s->touch_ignored[slot] = true;
++      return false;
++    }
++    // Claim the contact: the engine cancels its edge swipe when we return
++    // true. Deliver the press where it landed, then this event.
++    if (!SendTouch(s, plugin_api::Kind::kTouchDown, slot, s->edge_x, s->edge_y))
++      return false;
++    s->touch_pressed[slot] = true;
++  }
++  const bool was_pressed = s->touch_pressed[slot];
++  if (pressed && !was_pressed) {
++    bool on_keyboard = false;
++    if (s->keyboard && !lv_obj_has_flag(s->keyboard, LV_OBJ_FLAG_HIDDEN)) {
++      lv_area_t area{};
++      lv_obj_get_coords(s->keyboard, &area);
++      on_keyboard = x >= area.x1 && x <= area.x2 && y >= area.y1 &&
++                    y <= area.y2;
++    }
++    if (!inside || on_keyboard) {
++      s->touch_ignored[slot] = true;
++      return false;
++    }
++    if (slot == 0 && (x <= edge || x >= screen_width - edge)) {
++      s->edge_pending = true;
++      s->edge_x = x;
++      s->edge_y = y;
++      return false;
++    }
++  } else if (!was_pressed) {
++    return false;
++  }
++  const auto kind = !pressed ? plugin_api::Kind::kTouchUp
++      : was_pressed ? plugin_api::Kind::kTouchMove
++                    : plugin_api::Kind::kTouchDown;
++  SendTouch(s, kind, slot, x, y);
++  s->touch_pressed[slot] = pressed;
++  return true;
++}
++
++void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
++                           ActionCallback callback, void *context) {
++  // The same plugin still running and paused resumes; an updated one starts
++  // afresh.
++  PixelScene *scene = nullptr;
++  const auto running = gRunning.find(plugin.id);
++  if (running != gRunning.end()) {
++    PixelScene *current = running->second;
++    const bool same = !current->stopped && !current->leaving &&
++        !current->discard && current->session.Negotiated() &&
++        current->plugin.payload_sha256 == plugin.payload_sha256;
++    if (same && current->screen) {
++      // Opened again while its scene is still up (its own Recents card): it
++      // moves to the new screen, and the old one goes without pausing it.
++      lv_obj_remove_event_cb_with_user_data(current->screen, nullptr, current);
++      Release(current, true);
++    }
++    if (same) scene = current;
++    else if (!current->screen) delete current;
++  }
++  const bool resume = scene != nullptr;
++  if (!scene) {
++    scene = new PixelScene;
++    scene->plugin = plugin;
++    gRunning[plugin.id] = scene;
++  }
++  gPixelScene = scene;
++  scene->screen = screen;
++  scene->display = lv_obj_get_display(screen);
++  scene->callback = callback;
++  scene->context = context;
++  scene->leaving = false;
++  lv_obj_add_event_cb(screen, [](lv_event_t *event) {
++    Detach(static_cast<PixelScene *>(lv_event_get_user_data(event)));
++  }, LV_EVENT_DELETE, scene);
++  MainBackground(screen);
++  AttachStatusBar(screen, callback, context, StatusBarAction::kNone, true);
++
++  // The view's size, for the loading panel; widgets are placed below.
++  Layout(scene);
++
++  scene->viewport = lv_obj_create(screen);
++  Clear(scene->viewport);
++  lv_obj_remove_flag(scene->viewport, LV_OBJ_FLAG_CLICKABLE);
++  lv_obj_add_flag(scene->viewport, LV_OBJ_FLAG_HIDDEN);
++  lv_obj_add_event_cb(scene->viewport, [](lv_event_t *event) {
++    auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
++    if (scene->session.Negotiated()) {
++      ReleaseTouches(scene);
++      scene->session.Send(plugin_api::Kind::kBack);
++    }
++  }, LV_EVENT_CANCEL, scene);
++  scene->image = lv_image_create(scene->viewport);
++  lv_image_set_pivot(scene->image, 0, 0);
++  lv_obj_remove_flag(scene->image, LV_OBJ_FLAG_CLICKABLE);
++  scene->descriptor.header.magic = LV_IMAGE_HEADER_MAGIC;
++  // BGRA bytes are LVGL's ARGB8888. USER1 selects the OpenGL renderer's
++  // streaming-texture path, as for Browser.
++  scene->descriptor.header.cf = LV_COLOR_FORMAT_ARGB8888;
++  scene->descriptor.header.flags =
++      LV_IMAGE_FLAGS_MODIFIABLE | LV_IMAGE_FLAGS_USER1;
++
++  scene->loading = lv_obj_create(screen);
++  Panel(scene->loading, 44, kMainPanel);
++  lv_obj_set_size(scene->loading, std::min(1312, scene->view_width - 128),
++                  720);
++  lv_obj_align(scene->loading, LV_ALIGN_CENTER, 0, 0);
++  scene->title = Label(scene->loading, plugin.name.c_str(),
++                       &lv_font_montserrat_48, kText);
++  lv_obj_set_width(scene->title, std::min(1150, scene->view_width - 240));
++  lv_obj_set_style_text_align(scene->title, LV_TEXT_ALIGN_CENTER, 0);
++  lv_obj_align(scene->title, LV_ALIGN_TOP_MID, 0, 120);
++  scene->detail = Label(scene->loading,
++      "Verifying the plugin runtime and expanding it into private RAM.",
++      &lv_font_montserrat_32, kMutedStrong);
++  lv_obj_set_width(scene->detail, std::min(1080, scene->view_width - 240));
++  lv_obj_set_style_text_align(scene->detail, LV_TEXT_ALIGN_CENTER, 0);
++  lv_obj_set_style_text_line_space(scene->detail, 16, 0);
++  lv_obj_align(scene->detail, LV_ALIGN_TOP_MID, 0, 240);
++  scene->progress = lv_bar_create(scene->loading);
++  lv_obj_set_size(scene->progress, std::min(1020, scene->view_width - 300),
++                  16);
++  lv_obj_align(scene->progress, LV_ALIGN_TOP_MID, 0, 520);
++  lv_obj_set_style_bg_color(scene->progress, kAccent, LV_PART_INDICATOR);
++  Navigation(screen, Action::kNone, callback, context, true);
++
++  scene->keyboard = lv_keyboard_create(screen);
++  lv_obj_set_user_data(scene->keyboard, &kPersistentModalMarker);
++  phone_keyboard::Apply(scene->keyboard);
++  lv_obj_add_flag(scene->keyboard, LV_OBJ_FLAG_HIDDEN);
++  lv_obj_add_event_cb(scene->keyboard, [](lv_event_t *event) {
++    auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
++    const auto code = lv_event_get_code(event);
++    if (code == LV_EVENT_CANCEL) {
++      HideKeyboard(scene);
++    } else if (code == LV_EVENT_READY) {
++      // OK submits a single-line field, as Enter would.
++      if (!scene->keyboard_multiline && scene->session.Negotiated())
++        scene->session.Send(plugin_api::Kind::kKey, 0, 13);
++      HideKeyboard(scene);
++    } else if (code == LV_EVENT_VALUE_CHANGED &&
++               scene->session.Negotiated()) {
++      const auto selected = lv_buttonmatrix_get_selected_button(
++          scene->keyboard);
++      const char *key = lv_buttonmatrix_get_button_text(scene->keyboard,
++                                                        selected);
++      const uint32_t code_point = key ? KeyCode(key) : 0;
++      if (code_point)
++        scene->session.Send(plugin_api::Kind::kKey, 0, code_point);
++    }
++  }, LV_EVENT_ALL, scene);
++
++  lv_display_add_event_cb(scene->display, PixelRefreshReady,
++                          LV_EVENT_REFR_READY, scene);
++  lv_obj_add_event_cb(screen, [](lv_event_t *event) {
++    auto *scene = static_cast<PixelScene *>(lv_event_get_user_data(event));
++    if (!scene->stopped) Rotate(scene);
++  }, LV_EVENT_SIZE_CHANGED, scene);
++  if (resume) {
++    Resume(scene);
++    return;
++  }
++
++  const plugin_api::SurfaceGeometry geometry = Layout(scene);
++  // Room for the surface in either orientation, so a rotation keeps the
++  // plugin and its memory (pages are only allocated as they are drawn).
++  const uint64_t long_side = static_cast<uint64_t>(std::lround(
++      std::max(lv_obj_get_width(screen), lv_obj_get_height(screen)) *
++      std::max(scene->pixels_per_unit_x, scene->pixels_per_unit_y)));
++  if (!scene->surface.Create(geometry,
++                             long_side * long_side * 4 * geometry.slots)) {
++    Stop(scene, "Plugin unavailable",
++         "Could not create the plugin's display surface.");
++    return;
++  }
++  scene->worker = std::thread([scene] {
++    web::PreparePluginRuntime(scene->preparation, scene->plugin.id.c_str(),
++                              scene->plugin.type.c_str(),
++                              scene->plugin.entry.c_str());
++  });
++  scene->timer = lv_timer_create(Tick, 4, scene);
++}
++
++}  // namespace aeraui
+diff --git a/aeraui/scenes/scene.hpp b/aeraui/scenes/scene.hpp
+index 32d040d..8dac254 100644
+--- a/aeraui/scenes/scene.hpp
++++ b/aeraui/scenes/scene.hpp
+@@ -147,6 +147,19 @@ void SetSelectedPluginId(const std::string &id);
+ std::string GetSelectedPluginId();
+ void BuildGenericPluginScene(lv_obj_t *screen, const std::string &id,
+                              ActionCallback callback, void *context);
++// Host API 3: BuildGenericPluginScene routes pixel plugins here.
++void BuildPixelPluginScene(lv_obj_t *screen, const plugins::Plugin &plugin,
++                           ActionCallback callback, void *context);
++// Consumes touch slots that start on a pixel plugin's surface and forwards
++// them as Host API 3 touches; edges stay AERA's gestures.
++bool PixelPluginHandlePointer(int slot, int x, int y, bool pressed);
++// A pixel plugin is running; it follows a rotation in place instead of AERA
++// returning Home.
++bool PixelPluginActive();
++// Stops a running (possibly paused) pixel plugin, or all of them; the one on
++// screen stops when its scene is left.
++void ShutdownPixelPlugin(const std::string &id);
++void ShutdownPixelPlugins();
+ void BuildRootManagerScene(lv_obj_t *screen, ActionCallback callback,
+                            void *context);
+ void BuildAboutScene(lv_obj_t *screen, ActionCallback callback, void *context);
+diff --git a/aeraui/tests/CMakeLists.txt b/aeraui/tests/CMakeLists.txt
+index 2683cb1..45c6af1 100644
+--- a/aeraui/tests/CMakeLists.txt
++++ b/aeraui/tests/CMakeLists.txt
+@@ -46,6 +46,20 @@ target_include_directories(plugin_api_session_test PRIVATE ..
+   ../features)
+ target_compile_options(plugin_api_session_test PRIVATE -UNDEBUG)
+ add_test(NAME plugin_api_negotiation_and_limits COMMAND plugin_api_session_test)
++add_executable(plugin_api_surface_test plugin_api_surface_test.cpp
++  ../features/plugin_api/surface.cpp)
++target_include_directories(plugin_api_surface_test PRIVATE .. ../features)
++target_compile_options(plugin_api_surface_test PRIVATE -UNDEBUG)
++add_test(NAME plugin_api_pixel_surface_slots COMMAND plugin_api_surface_test)
++# Needs root and an expanded pixel plugin runtime, so it is not an add_test:
++#   plugin_api_pixel_host_check RUNTIME_TREE OUT_DIR
++add_executable(plugin_api_pixel_host_check plugin_api_pixel_host_check.cpp
++  ../features/plugin_api/launcher.cpp ../features/plugin_api/session.cpp
++  ../features/plugin_api/surface.cpp)
++target_include_directories(plugin_api_pixel_host_check PRIVATE .. ../include
++  ../features)
++target_compile_options(plugin_api_pixel_host_check PRIVATE -UNDEBUG)
++target_link_libraries(plugin_api_pixel_host_check PRIVATE lvgl)
+ add_executable(sideload_ui_test sideload_ui_test.cpp
+   ../localization/fonts/aera_fallback.cpp ../localization/i18n.cpp
+   ../localization/catalog/catalog_generated.cpp
+diff --git a/aeraui/tests/plugin_api_pixel_host_check.cpp b/aeraui/tests/plugin_api_pixel_host_check.cpp
+new file mode 100644
+index 0000000..164bfca
+--- /dev/null
++++ b/aeraui/tests/plugin_api_pixel_host_check.cpp
+@@ -0,0 +1,181 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++// Runs a real Host API 3 plugin through AERA's own launcher, session and
++// pixel surface, playing the pixel scene's part without LVGL: one refresh
++// every 16 ms, touches in surface pixels, Back.
++//
++//   plugin_api_pixel_host_check RUNTIME_TREE OUT_DIR
++//
++// RUNTIME_TREE is an expanded ui-runtime payload (usr/bin/aera-plugin ...).
++// Written for flutter-aera's counter app: it taps the floating button three
++// times, checks the picture changed, then presses Back on the root route and
++// expects the plugin to CLOSE. Frames are written as PPM files.
++#include "plugin_api/launcher.hpp"
++#include "plugin_api/session.hpp"
++#include "plugin_api/surface.hpp"
++
++#include <cassert>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <sys/stat.h>
++#include <thread>
++#include <vector>
++
++namespace aeraui {
++namespace i18n {
++const char *CurrentLanguage() { return "en"; }
++}  // namespace i18n
++bool RecoveryLightMode() { return true; }
++}  // namespace aeraui
++
++using namespace aeraui::plugin_api;
++using Clock = std::chrono::steady_clock;
++
++namespace {
++std::vector<uint8_t> gShown;
++
++void WritePpm(const std::string &path, const SurfaceGeometry &g,
++              const std::vector<uint8_t> &bgra) {
++  FILE *file = fopen(path.c_str(), "wb");
++  assert(file);
++  fprintf(file, "P6\n%u %u\n255\n", g.width, g.height);
++  std::vector<uint8_t> row(g.width * 3);
++  for (uint32_t y = 0; y < g.height; ++y) {
++    const uint8_t *in = bgra.data() + uint64_t{y} * g.stride;
++    for (uint32_t x = 0; x < g.width; ++x) {
++      row[x * 3] = in[x * 4 + 2];
++      row[x * 3 + 1] = in[x * 4 + 1];
++      row[x * 3 + 2] = in[x * 4];
++    }
++    fwrite(row.data(), 1, row.size(), file);
++  }
++  fclose(file);
++}
++
++struct Host {
++  Surface surface;
++  Session session;
++  const uint8_t *latched = nullptr;
++  unsigned presents = 0, shown = 0;
++  bool closed = false;
++
++  // One iteration of the scene's timer and the display's refresh.
++  void Tick() {
++    for (const auto &message : session.Poll()) {
++      if (message.kind == Kind::kPresent) {
++        std::vector<uint32_t> released;
++        assert(surface.Present(message.request_id, message.value, message.flags, released));
++        for (uint32_t sequence : released)
++          session.Send(Kind::kFrameDone, sequence);
++        ++presents;
++      } else if (message.kind == Kind::kClose) {
++        closed = true;
++      } else if (message.kind == Kind::kKeyboardShow ||
++                 message.kind == Kind::kKeyboardHide) {
++        printf("host: keyboard %s\n",
++               message.kind == Kind::kKeyboardShow ? "show" : "hide");
++      } else {
++        printf("host: kind %u\n", static_cast<unsigned>(message.kind));
++      }
++    }
++    // REFR_READY for the frame latched last tick, then latch the next.
++    if (latched) {
++      std::vector<uint32_t> released;
++      surface.RefreshDone(released);
++      for (uint32_t sequence : released)
++        session.Send(Kind::kFrameDone, sequence);
++      gShown.assign(latched, latched + surface.Geometry().FrameBytes());
++      ++shown;
++      latched = nullptr;
++    }
++    latched = surface.LatchNext();
++  }
++
++  void RunFor(int ms) {
++    const auto end = Clock::now() + std::chrono::milliseconds(ms);
++    while (Clock::now() < end && session.Connected() && !closed) {
++      Tick();
++      std::this_thread::sleep_for(std::chrono::milliseconds(16));
++    }
++  }
++
++  void Tap(uint32_t x, uint32_t y) {
++    session.Send(Kind::kTouchDown, 0, x, y);
++    RunFor(50);
++    session.Send(Kind::kTouchUp, 0, x, y);
++    RunFor(250);
++  }
++};
++}  // namespace
++
++int main(int argc, char **argv) {
++  if (argc != 3) {
++    fprintf(stderr, "usage: %s RUNTIME_TREE OUT_DIR\n", argv[0]);
++    return 2;
++  }
++  const std::string out = argv[2];
++  // The launcher only accepts AERA's private RAM runtime layout.
++  char runtime[] = "/tmp/aera-p2-XXXXXX";
++  assert(mkdtemp(runtime));
++  const std::string copy = std::string("cp -R --preserve=mode ") + argv[1] + "/. " + runtime;
++  assert(system(copy.c_str()) == 0);
++  assert(chmod(runtime, 0700) == 0);
++  const std::string data = out + "/plugin-data";
++  assert(system(("mkdir -p " + data).c_str()) == 0);
++
++  Host host;
++  SurfaceGeometry g;
++  g.width = 1080;
++  g.height = 2400;
++  g.stride = g.width * 4;
++  g.slots = 3;
++  g.scale = 2.75;
++  assert(host.surface.Create(g));
++
++  Process process;
++  LaunchOptions options;
++  options.host_api = kProtocolVersion3;
++  options.surface_fd = host.surface.PluginFd();
++  options.data_dir = data;
++  int control = -1;
++  std::string error;
++  if (!process.Start(runtime, control, error, options)) {
++    fprintf(stderr, "launch: %s\n", error.c_str());
++    return 1;
++  }
++  assert(host.session.Adopt(control, kProtocolVersion3,
++                            {host.surface.SurfaceMessage()}));
++
++  const auto started = Clock::now();
++  while (host.shown == 0 && host.session.Connected() &&
++         Clock::now() - started < std::chrono::seconds(60))
++    host.RunFor(100);
++  assert(host.session.Negotiated() && host.session.Version() == 3);
++  assert(host.shown > 0);
++  printf("host: first frame after %lld ms\n",
++         static_cast<long long>(
++             std::chrono::duration_cast<std::chrono::milliseconds>(
++                 Clock::now() - started).count()));
++  host.RunFor(1000);
++  const auto before = gShown;
++  WritePpm(out + "/start.ppm", g, before);
++  for (int i = 0; i < 3; ++i) host.Tap(980, 2250);
++  host.RunFor(1000);
++  WritePpm(out + "/after.ppm", g, gShown);
++  assert(gShown != before);
++  printf("host: %u presents, %u refreshes\n", host.presents, host.shown);
++
++  // Back on the root route: Flutter pops the app, which closes the plugin.
++  host.session.Send(Kind::kBack);
++  host.RunFor(3000);
++  assert(host.closed);
++  host.session.Send(Kind::kLifecycle, 0,
++                    static_cast<uint32_t>(Lifecycle::kStop));
++  host.session.Close();
++  process.Stop();
++  assert(system((std::string("rm -rf ") + runtime).c_str()) == 0);
++  printf("PIXEL_HOST_OK\n");
++  return 0;
++}
+diff --git a/aeraui/tests/plugin_api_session_test.cpp b/aeraui/tests/plugin_api_session_test.cpp
+index 18bbc8c..b191f42 100644
+--- a/aeraui/tests/plugin_api_session_test.cpp
++++ b/aeraui/tests/plugin_api_session_test.cpp
+@@ -18,11 +18,23 @@ static void SendWorker(int fd, Kind kind, uint32_t request = 0,
+          static_cast<ssize_t>(sizeof(message)));
+ }
+ 
+-static Message ReceiveHost(int fd) {
++static void SendWorker3(int fd, Kind kind, uint32_t request = 0,
++                        uint32_t value = 0, uint32_t flags = 0) {
++  Message message;
++  message.version = kProtocolVersion3;
++  message.kind = kind;
++  message.request_id = request;
++  message.value = value;
++  message.flags = flags;
++  assert(send(fd, &message, sizeof(message), MSG_NOSIGNAL) ==
++         static_cast<ssize_t>(sizeof(message)));
++}
++
++static Message ReceiveHost(int fd, uint32_t version = kProtocolVersion) {
+   Message message;
+   assert(recv(fd, &message, sizeof(message), MSG_WAITALL) ==
+          static_cast<ssize_t>(sizeof(message)));
+-  assert(Valid(message, false));
++  assert(Valid(message, false, version));
+   return message;
+ }
+ 
+@@ -39,6 +51,7 @@ int main() {
+   assert(hello.value == kProtocolVersion);
+   assert((hello.flags & kFeatureMetrics) != 0);
+   assert((hello.flags & kFeatureBackNavigation) != 0);
++  assert((hello.flags & kFeatureFilePicker) == 0);
+   const Message resume = ReceiveHost(pair[1]);
+   assert(resume.kind == Kind::kLifecycle);
+   assert(resume.value == static_cast<uint32_t>(Lifecycle::kResume));
+@@ -76,4 +89,43 @@ int main() {
+   }
+   assert(!session.Connected());
+   close(pair[1]);
++
++  // Host API 3: the pixel scene offers exactly version 3 and sends SURFACE
++  // between HELLO_ACK and RESUME.
++  assert(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
++  Message surface;
++  surface.kind = Kind::kSurface;
++  surface.value = 1080;
++  surface.flags = 2400;
++  assert(session.Adopt(pair[0], kProtocolVersion3, {surface}));
++  SendWorker3(pair[1], Kind::kHello, 0, 3, 3);
++  assert(session.Poll().empty());
++  assert(session.Negotiated() && session.Version() == kProtocolVersion3);
++  const Message ack3 = ReceiveHost(pair[1], kProtocolVersion3);
++  assert(ack3.kind == Kind::kHelloAck && ack3.value == kProtocolVersion3);
++  assert((ack3.flags & kFeaturePixelSurface) != 0);
++  assert((ack3.flags & kFeatureKeyboardInset) != 0);
++  assert((ack3.flags & kFeatureFilePicker) != 0);
++  const Message surface3 = ReceiveHost(pair[1], kProtocolVersion3);
++  assert(surface3.kind == Kind::kSurface && surface3.value == 1080);
++  assert(ReceiveHost(pair[1], kProtocolVersion3).kind == Kind::kLifecycle);
++  // Frames are outside the control rate limit.
++  for (unsigned index = 0; index < 300 && session.Connected(); ++index) {
++    SendWorker3(pair[1], Kind::kPresent, index + 1, 0);
++    (void)session.Poll();
++  }
++  assert(session.Connected());
++  // A v2 kind number past v3's range is still refused.
++  SendWorker3(pair[1], static_cast<Kind>(99));
++  (void)session.Poll();
++  assert(!session.Connected());
++  close(pair[1]);
++
++  // A Host API 2 plugin cannot open a pixel scene.
++  assert(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
++  assert(session.Adopt(pair[0], kProtocolVersion3));
++  SendWorker(pair[1], Kind::kHello, 0, 2, 2);
++  assert(session.Poll().empty());
++  assert(!session.Connected());
++  close(pair[1]);
+ }
+diff --git a/aeraui/tests/plugin_api_surface_test.cpp b/aeraui/tests/plugin_api_surface_test.cpp
+new file mode 100644
+index 0000000..924bd2b
+--- /dev/null
++++ b/aeraui/tests/plugin_api_surface_test.cpp
+@@ -0,0 +1,83 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include "plugin_api/surface.hpp"
++
++#include <cassert>
++#include <cstring>
++#include <sys/mman.h>
++#include <unistd.h>
++#include <vector>
++
++using namespace aeraui::plugin_api;
++
++int main() {
++  SurfaceGeometry g;
++  g.width = 4; g.height = 2; g.stride = 16; g.slots = 3; g.scale = 3.5;
++  Surface surface;
++  assert(surface.Create(g));
++  // The plugin writes through its own mapping of fd 3.
++  auto *plugin = static_cast<uint8_t *>(mmap(nullptr, g.TotalBytes(),
++      PROT_READ | PROT_WRITE, MAP_SHARED, surface.PluginFd(), 0));
++  assert(plugin != MAP_FAILED);
++  // Sealed: the plugin cannot shrink the frames under AERA.
++  assert(ftruncate(surface.PluginFd(), 1) != 0);
++
++  const Message m = surface.SurfaceMessage();
++  assert(m.kind == Kind::kSurface && m.value == 4 && m.flags == 2 &&
++         m.request_id == 16 && !strcmp(m.title, "BGRA8888") &&
++         !strcmp(m.text, "slots=3 scale=3.5 refresh=60"));
++
++  std::vector<uint32_t> released;
++  assert(!surface.Present(0, 0, 0, released));   // sequence 0
++  assert(!surface.Present(1, 3, 0, released));   // no such slot
++  memset(plugin, 0x11, g.FrameBytes());
++  assert(surface.Present(1, 0, 0, released) && released.empty());
++  assert(!surface.Present(2, 0, 0, released));   // slot 0 is AERA's now
++  assert(!surface.Present(1, 1, 0, released));   // sequence reused
++  const uint8_t *frame = surface.LatchNext();
++  assert(frame && frame[0] == 0x11 && !surface.LatchNext());
++  surface.RefreshDone(released);
++  assert(released.empty() && surface.HasFrame());  // first frame replaces none
++
++  // Two frames before a refresh: the older one is skipped and returned.
++  assert(surface.Present(2, 1, 0, released) && released.empty());
++  assert(surface.Present(3, 2, 0, released));
++  assert(released == std::vector<uint32_t>{2});
++  released.clear();
++  assert(surface.Present(4, 1, 0, released));     // slot 1 was given back
++  assert(released == std::vector<uint32_t>{3});
++  released.clear();
++  assert(surface.LatchNext() != nullptr);
++  surface.RefreshDone(released);
++  assert(released == std::vector<uint32_t>{1});  // frame 1 left the screen
++  released.clear();
++
++  // Rotation: a new geometry within the capacity starts generation 1. Every
++  // slot is the plugin's again and nothing is shown until a new frame.
++  SurfaceGeometry rotated = g;
++  rotated.width = 2; rotated.height = 4; rotated.stride = 8;
++  assert(surface.Reshape(rotated) && surface.Generation() == 1);
++  assert(!surface.HasFrame() && !surface.LatchNext());
++  const Message r = surface.SurfaceMessage();
++  assert(r.value == 2 && r.flags == 4 && r.request_id == 8);
++  // A frame drawn for the old SURFACE goes straight back, unshown.
++  assert(surface.Present(5, 0, 0, released));
++  assert(released == std::vector<uint32_t>{5} && !surface.LatchNext());
++  released.clear();
++  assert(surface.Present(6, 0, 1, released) && released.empty());
++  assert(surface.LatchNext() != nullptr);
++  // Larger than the memfd, or another slot count: refused.
++  SurfaceGeometry big = g;
++  big.width = 64; big.stride = 256;
++  assert(!surface.Reshape(big));
++  SurfaceGeometry fewer = rotated;
++  fewer.slots = 2;
++  assert(!surface.Reshape(fewer));
++
++  // A capacity sized for both orientations.
++  Surface roomy;
++  SurfaceGeometry tall = g;
++  tall.width = 2; tall.height = 6; tall.stride = 8;
++  assert(roomy.Create(g, 6 * 6 * 4 * 3));
++  assert(roomy.Reshape(tall));
++  return 0;
++}
+-- 
+2.43.0
+

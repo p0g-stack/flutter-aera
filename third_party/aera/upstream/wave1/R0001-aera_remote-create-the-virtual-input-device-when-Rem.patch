@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 21:23:17 +0000
+Subject: [PATCH] aera_remote: create the virtual input device when Remote
+ starts
+
+The "AERA Remote Input" uinput device was created on the first touch or
+key a client sent. Recovery's input reader (minuitwrp events.cpp) only
+notices new devices when it rechecks /dev/input's mtime, at most every
+two seconds, so the down event of that first touch was written to a
+device nobody had opened yet and only the release arrived. A first tap
+was lost, and a quick second tap could land as an unmatched release
+plus a press elsewhere.
+
+Create the device in Start(), before the access code is shown, so the
+reader has picked it up by the time a client has connected. Touch() and
+Key() still create it on demand if that early attempt fails.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aera_remote/aera_remote.cpp | 1 +
+ aera_remote/input.cpp       | 6 ++++++
+ aera_remote/input.hpp       | 4 ++++
+ 3 files changed, 11 insertions(+)
+
+diff --git a/aera_remote/aera_remote.cpp b/aera_remote/aera_remote.cpp
+index d407e32..20014c4 100644
+--- a/aera_remote/aera_remote.cpp
++++ b/aera_remote/aera_remote.cpp
+@@ -387,6 +387,7 @@ bool Start(int port) {
+     return false;
+   }
+ 
++  input::Prepare();
+   g_access_code = GenerateCode();
+   g_listener = listener;
+   g_port = port;
+diff --git a/aera_remote/input.cpp b/aera_remote/input.cpp
+index c46c62f..6b5d701 100644
+--- a/aera_remote/input.cpp
++++ b/aera_remote/input.cpp
+@@ -118,6 +118,12 @@ int KeyCode(const std::string& name) {
+ 
+ }  // namespace
+ 
++bool Prepare() {
++  auto& device = Shared();
++  std::lock_guard<std::mutex> guard(device.lock);
++  return Open(&device);
++}
++
+ bool Touch(const std::string& action, int x, int y) {
+   auto& device = Shared();
+   std::lock_guard<std::mutex> guard(device.lock);
+diff --git a/aera_remote/input.hpp b/aera_remote/input.hpp
+index 98fc555..57b726f 100644
+--- a/aera_remote/input.hpp
++++ b/aera_remote/input.hpp
+@@ -5,6 +5,10 @@
+ 
+ namespace aera::remote::input {
+ 
++// Creates the virtual input device ahead of the first event, so recovery's
++// input reader has opened it by the time a touch arrives. Touch() and Key()
++// still create it on demand when this fails.
++bool Prepare();
+ bool Touch(const std::string& action, int x, int y);
+ bool Key(const std::string& name);
+ void Shutdown();
+-- 
+2.43.0
+
