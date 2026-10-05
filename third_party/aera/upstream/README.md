@@ -4,14 +4,43 @@ Patches prepared for AERA-Recovery/android_bootable_recovery (branch
 `aera-16.0`, head 92813466) and android_external_lvgl (`aera-16.0`, head
 212fd3a). Each was checked with `git am` on that head; "standalone" means
 it applies alone. Subjects follow upstream's `area: lowercase imperative`.
-The author is still `Claude <noreply@anthropic.com>` and the bodies keep
-their existing trailers: the human author and any disclosure line are
-Yuv's decision, set before sending.
+The files here keep `Claude <noreply@anthropic.com>` and their old
+trailers; the submitted commits were re-authored as
+`1vivy <1vivy@tutanota.com>` with `Assisted-by: Claude Opus 5.5` in
+place of the `Co-Authored-By`/`Claude-Session` lines (same patch-ids).
 
 Hardware status: **a56b3ac** = same patch-id as in image
 aera-infiniti-arm64-a56b3ac-ca015146c92db600, tested on the Infiniti.
 **1793c04** = only in aera-infiniti-arm64-1793c04-508a5ee16d19acf7, not
 yet tested on hardware.
+
+## Submitted 2026-10-05
+
+From the forks p0g-stack/android_bootable_recovery and
+p0g-stack/android_external_lvgl, one branch per patch on the heads above.
+Upstream picks PRs by hand, so a picked patch shows up as a new upstream
+commit, not a merge: drop it from the series at the next re-pin.
+
+| Patch | Pull request |
+| --- | --- |
+| 0010 | [android_bootable_recovery#4](https://github.com/AERA-Recovery/android_bootable_recovery/pull/4) |
+| 0013 | [android_bootable_recovery#5](https://github.com/AERA-Recovery/android_bootable_recovery/pull/5) |
+| 0014 | [android_bootable_recovery#6](https://github.com/AERA-Recovery/android_bootable_recovery/pull/6) |
+| 0016 | [android_bootable_recovery#7](https://github.com/AERA-Recovery/android_bootable_recovery/pull/7) |
+| 0025 | [android_bootable_recovery#8](https://github.com/AERA-Recovery/android_bootable_recovery/pull/8) |
+| 0026 | [android_bootable_recovery#9](https://github.com/AERA-Recovery/android_bootable_recovery/pull/9) |
+| R0001 | [android_bootable_recovery#10](https://github.com/AERA-Recovery/android_bootable_recovery/pull/10) |
+| R0002 | [android_bootable_recovery#11](https://github.com/AERA-Recovery/android_bootable_recovery/pull/11) |
+| R0003 | [android_bootable_recovery#12](https://github.com/AERA-Recovery/android_bootable_recovery/pull/12) (body: not yet run on hardware) |
+| C0001 | [android_bootable_recovery#13](https://github.com/AERA-Recovery/android_bootable_recovery/pull/13) |
+| 0018 | [android_bootable_recovery#14](https://github.com/AERA-Recovery/android_bootable_recovery/pull/14) |
+| F0001 | [android_bootable_recovery#15](https://github.com/AERA-Recovery/android_bootable_recovery/pull/15) (body: syntax-checked only, not built or run) |
+| H3 | [android_bootable_recovery#16](https://github.com/AERA-Recovery/android_bootable_recovery/pull/16) (stacked on #14; body from wave3/pr-body.md) |
+| lvgl 0002 | [android_external_lvgl#6](https://github.com/AERA-Recovery/android_external_lvgl/pull/6) |
+| lvgl 0003 | [android_external_lvgl#7](https://github.com/AERA-Recovery/android_external_lvgl/pull/7) |
+
+Owed upstream: hardware results for #12 (image 1793c04) and #15 (its
+standalone form), posted on those PRs.
 
 ## wave1/ (standalone fixes)
 
