@@ -1,6 +1,6 @@
-# Draft issue: Host API 3, plugins that draw their own pixels
+# Draft PR body: Host API 3, plugins that draw their own pixels
 
-**Where:** AERA-Recovery/android_bootable_recovery, issue before any PR.
+**Where:** the H3 pull request on AERA-Recovery/android_bootable_recovery.
 
 **What:** Host API 2 plugins describe a declarative UI that AERA draws.
 Some apps need to draw their own frames: a Flutter app, a game, a

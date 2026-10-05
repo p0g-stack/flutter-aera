@@ -35,12 +35,12 @@ yet tested on hardware.
 | 0018 aeraui: add a shared file picker with Telegram as its first caller | patches/0018 (subject reworded) | a56b3ac | standalone, compiles |
 | F0001 aeraui: start the Recents swipe on movement, not on touch-down | refinement-patches/F0001, fresh export | 1793c04 ran it with pixel plugins; this standalone form (no pixel-plugin branch) is new and untested | standalone, compiles |
 
-## wave3/ (design issue first)
+## wave3/
 
 | File | Source | Hardware | Apply on head |
 | --- | --- | --- | --- |
 | H3 plugin_api: add Host API 3 pixel plugins | patches/0001-0009, 0015, 0019-0022, 0029 squashed | a56b3ac (every part has the same patch-id) | on head + wave2 0018; tree equals the series |
-| design-issue.md | draft issue text | | |
+| pr-body.md | H3's PR body (draft) | | |
 
 ## lvgl/ (android_external_lvgl; 0003 is also a candidate for lvgl/lvgl)
 
