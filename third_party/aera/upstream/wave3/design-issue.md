@@ -31,11 +31,7 @@ Host API 2.
 OnePlus 15 (Adreno 840, Turnip + zink) and on Cuttlefish.
 
 **Questions for maintainers:**
-1. Is a pixel surface something AERA wants for plugins at all, or only
-   for built-in scenes?
-2. Message numbers: kinds 12-14 and 68-75 are taken in H3. Fine, or
+1. Message numbers: kinds 12-14 and 68-75 are taken in H3. Fine, or
    reserve a range?
-3. Should the data directory and the file picker go in separately
+2. Should the data directory and the file picker go in separately
    first?
-4. One squashed PR (H3, about 2000 lines with tests and docs) or the
-   15 smaller patches it was made from?
