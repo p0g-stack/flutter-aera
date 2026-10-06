@@ -35,8 +35,15 @@ plugin on every image: hold a Home card (frames before, held and after),
 fastboot transition and back, and power menu -> Recovery (checks that
 the device actually rebooted). Results:
 
-- image with lvgl#6/#7: (Cuttlefish run pending)
-- image without them: (Cuttlefish run pending)
+- image with lvgl#6/#7 (Cuttlefish, twice, runs 37518177513 and
+  37523748507): the held Files card shrinks toward its top-left corner
+  (right and bottom edges move in, left and top stay); after the fastboot
+  transition recovery draws nothing more, stops answering, and spins one
+  core at 100% (201 of 200 ticks in 2 s); the power menu never shows and
+  the device never reboots
+- an older image without any LVGL patch (run 37518367652): the fastboot
+  transition runs, recovery restarts into fastboot and comes back, and
+  the UI keeps drawing
 - image with only the new 0001: (needs a new image)
 
 Any patch offered again comes with its stock-UI run.
