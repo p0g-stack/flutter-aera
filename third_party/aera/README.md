@@ -32,12 +32,12 @@ Apply with `git am $(cat patches/series)` on a checkout of the pin, then
 `remote-patches/` (below), in that order. Devicelab copies the `*.patch`
 files of each to `aera/build/patches/bootable/recovery/`; the `C`, `F` and
 `R` names sort after the numbered ones in that order. Each extra series
-applies on `patches/` alone. Use `git am -3` (devicelab's build.sh does):
-the files are byte for byte the set image
-aera-infiniti-arm64-1793c04-508a5ee16d19acf7 was built from (its release
-asset aera-patches-508a5ee16d19acf7.tgz), so their patch-ids match that
-image, and F0001's context still names lines 0024 had, which only a
-three-way am resolves.
+applies on `patches/` alone, with plain `git am`. F0001 was re-exported
+on 2026-10-06 with context from the tree it applies to (same added and
+removed lines as in image aera-infiniti-arm64-1793c04-508a5ee16d19acf7,
+different patch-id): the old file's context still named lines of the
+dropped 0024, which needed a three-way am, and that fails on the shallow
+checkouts devicelab's GitHub build uses.
 
 | Patch | What |
 | --- | --- |
