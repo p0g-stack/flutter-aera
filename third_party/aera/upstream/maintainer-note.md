@@ -44,6 +44,14 @@ the device actually rebooted). Results:
 - an older image without any LVGL patch (run 37518367652): the fastboot
   transition runs, recovery restarts into fastboot and comes back, and
   the UI keeps drawing
-- image with only the new 0001: (needs a new image)
+- image with only the new 0001 (run 37533988207): the held Files card
+  keeps its size and place and only changes colour; the fastboot
+  transition animates and the UI keeps drawing and answering (recovery
+  idle, 5 of 200 ticks); the power menu opens and Recovery logs
+  "Rebooting...". Cuttlefish itself did not restart afterwards (uptime
+  kept rising), which we read as the virtual device, not AERA: with
+  lvgl#6 it never got as far as "Rebooting...". The crash 0001 is for
+  (Recents card of a paused plugin, twice) and a rotation both pass with
+  recovery in the same process and no segfault
 
 Any patch offered again comes with its stock-UI run.
