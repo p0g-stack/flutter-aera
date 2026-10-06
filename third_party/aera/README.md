@@ -95,13 +95,22 @@ It needs nothing from `refinement-patches/` today. AERA Remote work goes here (Y
 `lvgl-patches/` is a separate series for AERA's LVGL fork
 (`external/lvgl`, android_external_lvgl, pinned at
 212fd3a25187f9876356ae66aa13103b002bc322 in AERA's manifest). Apply with
-`git am $(cat lvgl-patches/series)` there (0001, a blend-clip backstop nothing reached once 0002 was in, was dropped in the 2026-10-03 audit); devicelab copies them to
+`git am $(cat lvgl-patches/series)` there; devicelab copies them to
 `aera/build/patches/external/lvgl/`.
 
 | Patch | What |
 | --- | --- |
-| 0002 | `lv_conf.h`: `LV_DRAW_TRANSFORM_USE_MATRIX 0`. Neither of AERA's renderers applies a draw task's matrix, so transforms were never drawn and the widened clip let shrunk, off-screen objects blend outside the display buffer (the D10/D12 crash). Transforms now go through layers and scale as the styles ask (pressed buttons, tiles and cards shrink slightly; enlarged icons are drawn enlarged) |
-| 0003 | `src/draw/lv_draw.c`: a layer larger than the whole `LV_DRAW_LAYER_MAX_MEMORY` budget is allocated when no other layer holds memory, instead of being left for later forever. With 0002 transforms use layers, and on an adaptive-resolution screen (logical 1440x2696) a Recents card shrunk on press needs more than AERA's 4 MiB: tapping it hung recovery (devicelab D13) |
+| 0001 | `src/draw/sw/blend/lv_draw_sw_blend.c`: clip every software blend to the target layer's buffer. AERA's LVGL enables `LV_DRAW_TRANSFORM_USE_MATRIX`, which neither of its renderers applies, so `refr_obj_matrix()` widens the clip area of a shrunk object without drawing it shrunk; an off-screen part then blended outside the display buffer (the D10/D12 crash). Transforms stay drawn at 100%, as stock AERA's UI expects |
+
+Dropped 2026-10-06: 0002 (`LV_DRAW_TRANSFORM_USE_MATRIX 0`) and 0003
+(oversized layer when none is held). 0002 made every `transform_scale`
+style in AERA's own UI visible for the first time (pressed buttons, mode
+and power transitions, enlarged icons), all tuned for a renderer that
+ignores them: AERA's maintainer saw pressed buttons drawn far smaller and
+misaligned, and mode transitions and reboot not happening, with no plugin
+involved. 0003 only mattered because 0002 sent transforms through layers.
+0001 (dropped in the 2026-10-03 audit as unreachable with 0002 in) is
+back as the crash fix.
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as

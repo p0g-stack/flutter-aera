@@ -36,8 +36,21 @@ commit, not a merge: drop it from the series at the next re-pin.
 | 0018 | [android_bootable_recovery#14](https://github.com/AERA-Recovery/android_bootable_recovery/pull/14) |
 | F0001 | [android_bootable_recovery#15](https://github.com/AERA-Recovery/android_bootable_recovery/pull/15) (body: syntax-checked only, not built or run) |
 | H3 | [android_bootable_recovery#16](https://github.com/AERA-Recovery/android_bootable_recovery/pull/16) (stacked on #14; body from wave3/pr-body.md) |
-| lvgl 0002 | [android_external_lvgl#6](https://github.com/AERA-Recovery/android_external_lvgl/pull/6) |
-| lvgl 0003 | [android_external_lvgl#7](https://github.com/AERA-Recovery/android_external_lvgl/pull/7) |
+| lvgl 0002 | [android_external_lvgl#6](https://github.com/AERA-Recovery/android_external_lvgl/pull/6) (withdrawn 2026-10-06, see below) |
+| lvgl 0003 | [android_external_lvgl#7](https://github.com/AERA-Recovery/android_external_lvgl/pull/7) (withdrawn 2026-10-06) |
+
+All 15 were rejected on 2026-10-06 as untested: on the maintainer's build
+AERA's own UI regressed (pressed buttons drawn far smaller and misaligned,
+mode transitions and reboot not happening). The cause is lvgl 0002: it
+turns `LV_DRAW_TRANSFORM_USE_MATRIX` off, so every `transform_scale` in
+AERA's UI, tuned for renderers that ignore it, is drawn for the first
+time and transform layers appear in the transitions. lvgl 0002 and 0003
+are withdrawn; lvgl 0001 below replaces them. The recovery patches do not
+touch drawing, the power menu or reboot (read for the stock path:
+0010/0014 packaging, 0013 only without an SDE topology, 0016 RPC, 0025
+touch slots, 0026 software renderer in landscape, R0001-R0003 Remote and
+keys), and every hardware run listed here had lvgl 0002 in it.
+See [maintainer-note.md](maintainer-note.md).
 
 Owed upstream: hardware results for #12 (image 1793c04) and #15 (its
 standalone form), posted on those PRs.
@@ -71,12 +84,11 @@ standalone form), posted on those PRs.
 | H3 plugin_api: add Host API 3 pixel plugins | patches/0001-0009, 0015, 0019-0022, 0029 squashed | a56b3ac (every part has the same patch-id) | on head + wave2 0018; tree equals the series |
 | pr-body.md | H3's PR body (draft) | | |
 
-## lvgl/ (android_external_lvgl; 0003 is also a candidate for lvgl/lvgl)
+## lvgl/ (android_external_lvgl)
 
 | Patch | Source | Hardware | Apply on head |
 | --- | --- | --- | --- |
-| 0002 aera: draw transforms through layers, not the unsupported matrix | lvgl-patches/0002 | a56b3ac | applies on 212fd3a |
-| 0003 draw: allocate a layer larger than the whole budget when none is held | lvgl-patches/0003 | a56b3ac | applies on 212fd3a |
+| 0001 draw/sw: never blend outside the target buffer | lvgl-patches/0001 | not yet: needs a Cuttlefish run (D10, stock UI) on an image built with it | applies on 212fd3a, compiles |
 
 "Compiles" = `-fsyntax-only` of the touched aeraui sources against
 stock LVGL with stubs; minuitwrp, prebuilt and aera_remote changes were
