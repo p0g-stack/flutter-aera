@@ -16,12 +16,17 @@ reboot that ends the power transition) can stall. lvgl#7 only existed to
 make lvgl#6's layers fit. We tested plugins on top of lvgl#6 and never compared
 AERA's own UI against stock, which is how this got through.
 
-**Fix.** lvgl#6 and lvgl#7 are withdrawn. The crash lvgl#6 was fixing (an object
-shrunk on press near a screen edge made the software renderer blend
-outside the display buffer, SIGSEGV in `lv_draw_sw_blend`) is fixed
-instead by a one-line clip in `lv_draw_sw_blend.c`
-(`lvgl/0001-draw-sw-never-blend-outside-the-target-buffer.patch`).
-It leaves transforms exactly as stock draws them.
+**Fix.** lvgl#6 and lvgl#7 are withdrawn. In their place, a one-line
+clip in `lv_draw_sw_blend.c`
+(`lvgl/0001-draw-sw-never-blend-outside-the-target-buffer.patch`)
+keeps the software renderer from blending outside its buffer, which it
+does because AERA's `lv_conf.h` enables `LV_DRAW_TRANSFORM_USE_MATRIX`
+(upstream ships it off: it is for renderers that apply matrices, and
+the clip area of a scaled object is widened without the object being
+drawn scaled). It leaves transforms exactly as stock draws them. On
+Cuttlefish, without it the fastboot transition crashes recovery; with
+it, it does not (results below). Upstream LVGL master has no such clip,
+so a rebase of the fork would not bring one.
 
 **The recovery PRs** do not touch drawing, the power menu or reboot:
 recovery#4 and #6 packaging, #5 only without an SDE topology, #7 RPC,
@@ -41,9 +46,13 @@ the device actually rebooted). Results:
   transition recovery draws nothing more, stops answering, and spins one
   core at 100% (201 of 200 ticks in 2 s); the power menu never shows and
   the device never reboots
-- an older image without any LVGL patch (run 37518367652): the fastboot
-  transition runs, recovery restarts into fastboot and comes back, and
-  the UI keeps drawing
+- images without any LVGL patch: on the current recovery series (run
+  37565476825) and on an older one (run 37518367652), recovery died with
+  SIGSEGV during the fastboot transition (no plugin involved; init
+  restarted it, so the UI came back under a new pid). We first read the
+  older run's new pid as a normal restart into fastboot; it was this
+  crash. The Recents-card crash 0001 was first written for no longer
+  happens on the current series without it
 - image with only the new 0001 (run 37533988207): the held Files card
   keeps its size and place and only changes colour; the fastboot
   transition animates and the UI keeps drawing and answering (recovery

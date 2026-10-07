@@ -88,7 +88,7 @@ standalone form), posted on those PRs.
 
 | Patch | Source | Hardware | Apply on head |
 | --- | --- | --- | --- |
-| 0001 draw/sw: never blend outside the target buffer | lvgl-patches/0001 | Cuttlefish run 37533988207 (image aera-cf-x86_64-20261006-37523912695): stock UI as stock (press, transition, power menu), D10 A/B and rotate pass; not yet on hardware | applies on 212fd3a, compiles |
+| 0001 draw/sw: never blend outside the target buffer | lvgl-patches/0001 | Cuttlefish run 37533988207 (image aera-cf-x86_64-20261006-37523912695): stock UI as stock (press, transition, power menu), D10 A/B and rotate pass; without it the fastboot transition crashes recovery (runs 37565476825, 37518367652); not yet on hardware | applies on 212fd3a, compiles |
 
 "Compiles" = `-fsyntax-only` of the touched aeraui sources against
 stock LVGL with stubs; minuitwrp, prebuilt and aera_remote changes were

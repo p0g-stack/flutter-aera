@@ -100,7 +100,7 @@ It needs nothing from `refinement-patches/` today. AERA Remote work goes here (Y
 
 | Patch | What |
 | --- | --- |
-| 0001 | `src/draw/sw/blend/lv_draw_sw_blend.c`: clip every software blend to the target layer's buffer. AERA's LVGL enables `LV_DRAW_TRANSFORM_USE_MATRIX`, which neither of its renderers applies, so `refr_obj_matrix()` widens the clip area of a shrunk object without drawing it shrunk; an off-screen part then blended outside the display buffer (the D10/D12 crash). Transforms stay drawn at 100%, as stock AERA's UI expects |
+| 0001 | `src/draw/sw/blend/lv_draw_sw_blend.c`: clip every software blend to the target layer's buffer. AERA's LVGL enables `LV_DRAW_TRANSFORM_USE_MATRIX`, which neither of its renderers applies, so `refr_obj_matrix()` widens the clip area of a shrunk object without drawing it shrunk; an off-screen part then blended outside the display buffer (the D10/D12 crash). Transforms stay drawn at 100%, as stock AERA's UI expects. Still needed (2026-10-07): on Cuttlefish without it the stock fastboot transition crashes recovery (runs 37565476825 on the current series, 37518367652), with it it does not (37533988207); the D10 Recents-card crash no longer reproduces without it. Upstream LVGL master has no equivalent clip |
 
 Dropped 2026-10-06: 0002 (`LV_DRAW_TRANSFORM_USE_MATRIX 0`) and 0003
 (oversized layer when none is held). 0002 made every `transform_scale`
