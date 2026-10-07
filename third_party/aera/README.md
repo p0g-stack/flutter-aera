@@ -64,6 +64,7 @@ checkouts devicelab's GitHub build uses.
 | 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped, on whichever slot the kernel is on (devicelab D9; the Infiniti panel's raw path was not on slot 0) |
 | 0026 | `aeraui/core/engine.cpp`: the software renderer (no Adreno) draws landscape into a landscape-shaped buffer and turns each frame upright on flush, instead of folding a landscape layout into the portrait scanout (devicelab D12) |
 | 0029 | `aeraui/scenes/pixel_plugin_scene.cpp`: the surface is scaled to the panel on each axis, so with adaptive resolution it is exactly the panel's width (it was 1279 on a 1272 panel; Infiniti hand walk) |
+| 0030 | `aeraui/core/engine.cpp`: a draw unit that takes no tasks clips every new draw task to its target layer's buffer, so the widened clip areas of `LV_DRAW_TRANSFORM_USE_MATRIX` (enabled in AERA's `lv_conf.h`, applied by neither renderer) cannot make the software blend write outside it. The recovery-side shim for what LVGL 0001 does inside LVGL; under test as its replacement (2026-10-07) |
 
 `cuttlefish-patches/` is the series only an emulator build needs: nothing
 in it matters on an arm64 phone (harmless there).
