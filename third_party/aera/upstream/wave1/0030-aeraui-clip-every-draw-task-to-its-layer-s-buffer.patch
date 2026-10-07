@@ -1,0 +1,94 @@
+From e1e8e73b6303c63afff367b36579a0a54f7e2597 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 7 Oct 2026 05:40:16 +0000
+Subject: [PATCH] aeraui: clip every draw task to its layer's buffer
+
+lv_conf.h enables LV_DRAW_TRANSFORM_USE_MATRIX, which neither of AERA's
+draw units (software, OpenGL ES) applies. A scaled object is therefore
+drawn at 100%, which AERA's UI is tuned to, but refr_obj_matrix() still
+widens its clip area by the inverse of the scale. Near a layer's edge
+the clip area then reaches past the layer's buffer, and the software
+blend writes outside it: on Cuttlefish's software renderer the fastboot
+mode transition, which scales every content child, kills recovery with
+SIGSEGV.
+
+Register a draw unit that takes no tasks and only clips each new task
+to its target layer's buffer before the real units see it. Every
+visible pixel is inside that buffer, so nothing drawn changes; LVGL's
+source and configuration stay as they are.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J6XhHxrkhAcXmkzHMeCnVz
+---
+ aeraui/core/engine.cpp | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/aeraui/core/engine.cpp b/aeraui/core/engine.cpp
+index 3ff578b..6924747 100644
+--- a/aeraui/core/engine.cpp
++++ b/aeraui/core/engine.cpp
+@@ -35,6 +35,8 @@
+ #include "update/update_manager.hpp"
+ #include "../components/power_transition.hpp"
+ #include "draw/opengles/lv_draw_opengles.h"
++#include "draw/lv_draw_private.h"
++#include "misc/lv_area_private.h"
+ #include "../../aera_rpc/aera_channel.hpp"
+ #include "../../aera_remote/aera_remote.hpp"
+ 
+@@ -71,6 +73,36 @@ uint32_t MonotonicMilliseconds() {
+   return static_cast<uint32_t>(now.tv_sec * 1000ULL + now.tv_nsec / 1000000ULL);
+ }
+ 
++// lv_conf.h enables LV_DRAW_TRANSFORM_USE_MATRIX, which neither of AERA's
++// draw units (software, OpenGL ES) applies: a scaled object is drawn at
++// 100%, but refr_obj_matrix() still widens its clip area by the inverse of
++// the scale. Near a layer's edge (the mode transition scales every content
++// child) that clip area reaches past the layer's buffer and the software
++// blend writes outside it. This draw unit takes no tasks; it runs first
++// on every new task and clips it to its target layer's buffer, where all
++// visible pixels already are, so drawing is otherwise unchanged.
++int32_t ClipTaskToLayer(lv_draw_unit_t *, lv_draw_task_t *task) {
++  if (task->target_layer != nullptr) {
++    lv_area_intersect(&task->clip_area, &task->clip_area,
++                      &task->target_layer->buf_area);
++  }
++  return 0;
++}
++
++int32_t TakeNoTasks(lv_draw_unit_t *, lv_layer_t *) {
++  return LV_DRAW_UNIT_IDLE;
++}
++
++// After lv_init(): units are evaluated newest first, so this one runs
++// before the software and OpenGL ES units.
++void AddLayerClipUnit() {
++  auto *unit = static_cast<lv_draw_unit_t *>(
++      lv_draw_create_unit(sizeof(lv_draw_unit_t)));
++  unit->name = "AERA_LAYER_CLIP";
++  unit->evaluate_cb = ClipTaskToLayer;
++  unit->dispatch_cb = TakeNoTasks;
++}
++
+ struct RecentPreview {
+   std::shared_ptr<PictureData> pixels;
+   lv_image_dsc_t descriptor{};
+@@ -272,6 +304,7 @@ public:
+         gpu_renderer_.Initialize(physical_width_, physical_height_);
+     lv_draw_opengles_set_enabled(gpu_accelerated_);
+     lv_init();
++    AddLayerClipUnit();
+     lv_tick_set_cb(MonotonicMilliseconds);
+ 
+     display_ = gpu_accelerated_ ? gpu_renderer_.CreateDisplay(width_, height_)
+@@ -285,6 +318,7 @@ public:
+       gpu_accelerated_ = false;
+       lv_draw_opengles_set_enabled(false);
+       lv_init();
++      AddLayerClipUnit();
+       lv_tick_set_cb(MonotonicMilliseconds);
+       display_ = lv_display_create(width_, height_);
+     }
+-- 
+2.43.0
+

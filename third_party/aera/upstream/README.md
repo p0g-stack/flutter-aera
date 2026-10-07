@@ -45,7 +45,7 @@ mode transitions and reboot not happening). The cause is lvgl 0002: it
 turns `LV_DRAW_TRANSFORM_USE_MATRIX` off, so every `transform_scale` in
 AERA's UI, tuned for renderers that ignore it, is drawn for the first
 time and transform layers appear in the transitions. lvgl 0002 and 0003
-are withdrawn; lvgl 0001 below replaces them. The recovery patches do not
+are withdrawn; wave1 0030 (a recovery-side clip, no LVGL change) replaces them. The recovery patches do not
 touch drawing, the power menu or reboot (read for the stock path:
 0010/0014 packaging, 0013 only without an SDE topology, 0016 RPC, 0025
 touch slots, 0026 software renderer in landscape, R0001-R0003 Remote and
@@ -68,6 +68,7 @@ standalone form), posted on those PRs.
 | R0001 aera_remote: create the virtual input device when Remote starts | remote-patches/R0001 | a56b3ac | standalone |
 | R0002 aera_remote: answer /screen.jpg with a frame taken after the request | remote-patches/R0002 | a56b3ac | standalone |
 | R0003 aeraui: act on the Home and Menu keys | remote-patches/R0003 | 1793c04 (a56b3ac had the 0024 variant) | standalone, compiles |
+| 0030 aeraui: clip every draw task to its layer's buffer | patches/0030 | Cuttlefish run 37582507317 (stock LVGL: stock UI as stock, fastboot transition no longer crashes, D10 A/B, rotate); not yet on hardware | standalone, compiles |
 | C0001 aeraui: build libwebp's SSE2 and SSE4.1 sources (optional) | cuttlefish-patches/C0001 | Cuttlefish builds only | standalone |
 
 ## wave2/ (needs maintainer agreement)
@@ -84,11 +85,11 @@ standalone form), posted on those PRs.
 | H3 plugin_api: add Host API 3 pixel plugins | patches/0001-0009, 0015, 0019-0022, 0029 squashed | a56b3ac (every part has the same patch-id) | on head + wave2 0018; tree equals the series |
 | pr-body.md | H3's PR body (draft) | | |
 
-## lvgl/ (android_external_lvgl)
+## lvgl/
 
-| Patch | Source | Hardware | Apply on head |
-| --- | --- | --- | --- |
-| 0001 draw/sw: never blend outside the target buffer | lvgl-patches/0001 | Cuttlefish run 37533988207 (image aera-cf-x86_64-20261006-37523912695): stock UI as stock (press, transition, power menu), D10 A/B and rotate pass; without it the fastboot transition crashes recovery (runs 37565476825, 37518367652); not yet on hardware | applies on 212fd3a, compiles |
+Empty since 2026-10-07: nothing goes to android_external_lvgl. lvgl#6
+and #7 are withdrawn; the blend overrun they were for is handled by
+wave1 0030 from AERA's side.
 
 "Compiles" = `-fsyntax-only` of the touched aeraui sources against
 stock LVGL with stubs; minuitwrp, prebuilt and aera_remote changes were

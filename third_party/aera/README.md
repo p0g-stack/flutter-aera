@@ -64,7 +64,7 @@ checkouts devicelab's GitHub build uses.
 | 0025 | `minuitwrp/events.cpp`: a new touch contact starts at its slot's last position, so a second tap at the same x (or the same spot) is no longer reported at x=0 or dropped, on whichever slot the kernel is on (devicelab D9; the Infiniti panel's raw path was not on slot 0) |
 | 0026 | `aeraui/core/engine.cpp`: the software renderer (no Adreno) draws landscape into a landscape-shaped buffer and turns each frame upright on flush, instead of folding a landscape layout into the portrait scanout (devicelab D12) |
 | 0029 | `aeraui/scenes/pixel_plugin_scene.cpp`: the surface is scaled to the panel on each axis, so with adaptive resolution it is exactly the panel's width (it was 1279 on a 1272 panel; Infiniti hand walk) |
-| 0030 | `aeraui/core/engine.cpp`: a draw unit that takes no tasks clips every new draw task to its target layer's buffer, so the widened clip areas of `LV_DRAW_TRANSFORM_USE_MATRIX` (enabled in AERA's `lv_conf.h`, applied by neither renderer) cannot make the software blend write outside it. The recovery-side shim for what LVGL 0001 does inside LVGL; under test as its replacement (2026-10-07) |
+| 0030 | `aeraui/core/engine.cpp`: a draw unit that takes no tasks clips every new draw task to its target layer's buffer, so the widened clip areas of `LV_DRAW_TRANSFORM_USE_MATRIX` (enabled in AERA's `lv_conf.h`, applied by neither renderer) cannot make the software blend write outside it. Replaces LVGL 0001 (2026-10-07). On Cuttlefish with stock LVGL: without it the stock fastboot transition kills recovery with SIGSEGV (runs 37565476825, 37518367652); with it (image aera-cf-x86_64-84736fe-c07ed742cefdb67c, run 37582507317) the transition runs in the same process, the stock UI checks match, D10 A/B and rotate pass |
 
 `cuttlefish-patches/` is the series only an emulator build needs: nothing
 in it matters on an arm64 phone (harmless there).
@@ -99,9 +99,7 @@ It needs nothing from `refinement-patches/` today. AERA Remote work goes here (Y
 `git am $(cat lvgl-patches/series)` there; devicelab copies them to
 `aera/build/patches/external/lvgl/`.
 
-| Patch | What |
-| --- | --- |
-| 0001 | `src/draw/sw/blend/lv_draw_sw_blend.c`: clip every software blend to the target layer's buffer. AERA's LVGL enables `LV_DRAW_TRANSFORM_USE_MATRIX`, which neither of its renderers applies, so `refr_obj_matrix()` widens the clip area of a shrunk object without drawing it shrunk; an off-screen part then blended outside the display buffer (the D10/D12 crash). Transforms stay drawn at 100%, as stock AERA's UI expects. Still needed (2026-10-07): on Cuttlefish without it the stock fastboot transition crashes recovery (runs 37565476825 on the current series, 37518367652), with it it does not (37533988207); the D10 Recents-card crash no longer reproduces without it. Upstream LVGL master has no equivalent clip |
+The series is empty since 2026-10-07: recovery patch 0030 does what LVGL 0001 did from AERA's side (below).
 
 Dropped 2026-10-06: 0002 (`LV_DRAW_TRANSFORM_USE_MATRIX 0`) and 0003
 (oversized layer when none is held). 0002 made every `transform_scale`
@@ -110,8 +108,9 @@ and power transitions, enlarged icons), all tuned for a renderer that
 ignores them: AERA's maintainer saw pressed buttons drawn far smaller and
 misaligned, and mode transitions and reboot not happening, with no plugin
 involved. 0003 only mattered because 0002 sent transforms through layers.
-0001 (dropped in the 2026-10-03 audit as unreachable with 0002 in) is
-back as the crash fix.
+0001 (a clip in `lv_draw_sw_blend.c`) came back as the crash fix and
+was replaced on 2026-10-07 by recovery patch 0030, which clips every
+draw task from AERA's side, without touching LVGL.
 
 What differs from our first guess (aera-flutter-demo#1):
 `HELLO_ACK` carries the version in `value` and the features in `flags`, as
