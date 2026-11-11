@@ -6,7 +6,7 @@ Pins: what this repo holds fixed, where, and who moves it. Values read from the 
 | --- | --- | --- | --- |
 | Flutter release / engine revision | `ci/fetch-engine.sh` `rev=`; `spec/engine-pin.md` | 3.47.5, `af7e796` | flutter-aera |
 | Engine zips (ours, release `engine-af7e796-0d7f3ed2`) | `ci/fetch-engine.sh` sha256 per zip | x64-debug `3d5df7a6…`, arm64-debug `9f073512…`, arm64-profile `d16e8cac…`, arm64-release `6fd21fe0…` | flutter-aera |
-| Own engine release | name from `ci/engine-tag.sh` (rev + hash of `third_party/flutter-engine/patches`), built by `ci/build-engine.sh`, published by `ci/publish-engine.sh` / `engine.yml` | inferred: engine-af7e796-0d7f3ed2, not yet pinned by fetch-engine.sh | flutter-aera |
+| Own engine release | name from `ci/engine-tag.sh` (rev + hash of `third_party/flutter-engine/patches`), built by `ci/build-engine.sh`, published by `ci/publish-engine.sh` / `engine.yml` | `engine-af7e796-0d7f3ed2`, pinned by `ci/fetch-engine.sh` (`tag=` and the sha256s above) | flutter-aera |
 | Vendored embedder header | `vendor/flutter/flutter_embedder.h`, sha256 in `spec/engine-pin.md` | `b9f20ec9…` | flutter-aera, with the engine patches |
 | AERA source the patch series applies to | `third_party/aera/README.md` `pin:` | `9281346` (LVGL `212fd3a`) | flutter-aera |
 | AERA protocol headers | `vendor/aera/protocol*.hpp`, sha256 in `spec/host.md` | `82d7b8df…`, `dd8a9740…` | flutter-aera, with the AERA pin |
