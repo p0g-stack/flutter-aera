@@ -3,12 +3,15 @@ name: Kit
 # (phones, arm64 Cuttlefish) and x64 (x86 Cuttlefish), proves each by running
 # the counter app through the kit's own launcher, loader and Mesa in the
 # simulator, and on request publishes them, with a static aera-host-sim per
-# arch (docs/device.md), as the kit-<flutter> release.
+# arch (docs/device.md), as the kit-<flutter>-<full commit SHA> release.
+# Assets are immutable (.github/scripts/immutable-release-upload.sh): a
+# rerun skips identical bytes and fails on different ones; changed kits come
+# from a new commit. The old mutable kit-<flutter> releases stay as they are.
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish to the kit-<flutter> release
+        description: Publish to the kit-<flutter>-<commit> release
         type: boolean
         default: false
   push:
@@ -27,7 +30,7 @@ jobs:
     steps:
       - name: Counter app bundle (kernel, architecture independent)
         run: |
-          curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_$FLUTTER_VERSION-stable.tar.xz | tar -C "$RUNNER_TEMP" -xJ
+          curl -fsSL "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_$FLUTTER_VERSION-stable.tar.xz" | tar -C "$RUNNER_TEMP" -xJ
           export PATH=$RUNNER_TEMP/flutter/bin:$PATH
           flutter --disable-analytics >/dev/null
           flutter create --no-pub --project-name counter counter
@@ -138,7 +141,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag=kit-$FLUTTER_VERSION
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Runtime kit, Flutter $FLUTTER_VERSION" \
-            --notes "Debug (JIT) runtime kits for flutter_p0g (arm64, x64) and static aera-host-sim stand-in hosts. Layout: spec/aerap.md; device runs: docs/device.md; pins: kit.json inside." --prerelease
-          gh release upload "$tag" dist/* --clobber
+          set -euo pipefail
+          tag=kit-$FLUTTER_VERSION-$GITHUB_SHA
+          .github/scripts/immutable-release-upload.sh -R "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" "$tag" dist/* -- \
+            --title "Runtime kit, Flutter $FLUTTER_VERSION, flutter-aera ${GITHUB_SHA:0:7}" --prerelease \
+            --notes "Debug (JIT) runtime kits for flutter_p0g (arm64, x64) and static aera-host-sim stand-in hosts, built at flutter-aera $GITHUB_SHA. Layout: spec/aerap.md; device runs: docs/device.md; pins: kit.json inside. Assets are never replaced."

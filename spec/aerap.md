@@ -142,8 +142,10 @@ screen does not, and recovery never suspends. Rotation keeps it running
 
 ## Runtime kit
 
-`https://github.com/p0g-stack/flutter-aera/releases/download/kit-<flutter>/flutter-aera-kit-linux-arm64-<mode>-<flutter>.tar.xz`
-with a `.sha256` next to it. Today: `kit-3.47.5`, mode `debug` (JIT; the
+`https://github.com/p0g-stack/flutter-aera/releases/download/kit-<flutter>-<commit>/flutter-aera-kit-linux-<arch>-<mode>-<flutter>.tar.xz`
+with a `.sha256` next to it, where `<commit>` is the full flutter-aera commit
+the Kit workflow built; assets of a release are never replaced. Mode today:
+`debug` (JIT; the
 app ships `kernel_blob.bin` in `flutter_assets`). The tarball is the
 expanded payload tree above without the app, plus `kit.json` (pins) at its
 root, which is not packed into `runtime.xz`. To pack: extract the kit, drop

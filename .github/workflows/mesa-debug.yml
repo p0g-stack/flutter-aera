@@ -1,8 +1,9 @@
 name: Mesa debug
 # A debug build of the kit's Mesa for diagnosing a driver on a device: the
 # same version, patches and drivers as ci/build-mesa.sh, with Mesa's debug
-# output. Published as mesa-debug-linux-<arch>.tar.xz on the kit release;
-# unpack it over a kit's usr/lib (docs/device.md).
+# output. Published as mesa-debug-linux-<arch>.tar.xz on the kit release of
+# the same commit, kit-<flutter>-<full commit SHA> (created if missing),
+# without replacing an asset; unpack it over a kit's usr/lib (docs/device.md).
 on:
   workflow_dispatch:
     inputs:
@@ -37,7 +38,11 @@ jobs:
           set -euo pipefail
           name=mesa-debug-linux-${{ inputs.arch }}.tar.xz
           lib=$RUNNER_TEMP/mesa/usr/lib
-          tar -h -C "$lib" -cJf "$name" $(cd "$lib" && ls libgallium-*.so libvulkan_*.so libEGL.so.1* libGLESv2.so.2* 2>/dev/null)
+          archive=$GITHUB_WORKSPACE/$name
+          (cd "$lib" && shopt -s nullglob && tar -h -cJf "$archive" libgallium-*.so libvulkan_*.so libEGL.so.1* libGLESv2.so.2*)
           tar -tJf "$name"
           sha256sum "$name" > "$name.sha256"
-          gh release upload "kit-$FLUTTER_VERSION" "$name" "$name.sha256" --clobber
+          .github/scripts/immutable-release-upload.sh -R "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" \
+            "kit-$FLUTTER_VERSION-$GITHUB_SHA" "$name" "$name.sha256" -- \
+            --title "Runtime kit, Flutter $FLUTTER_VERSION, flutter-aera ${GITHUB_SHA:0:7}" --prerelease \
+            --notes "Runtime kit release of flutter-aera $GITHUB_SHA. Layout: spec/aerap.md; device runs: docs/device.md. Assets are never replaced."

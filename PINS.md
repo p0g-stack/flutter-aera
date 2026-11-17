@@ -13,4 +13,4 @@ Pins: what this repo holds fixed, where, and who moves it. Values read from the 
 | Mesa | `spec/engine-pin.md`, `ci/build-mesa.sh` | 26.2.2 + zink-kgsl patch | flutter-aera |
 | Flutter in workflows | `kit.yml`, `mesa-debug.yml` `env.FLUTTER_VERSION` | 3.47.5 | flutter-aera |
 
-Produces: `kit-<Flutter>` (Kit workflow, run by Yuv; re-uploads with `--clobber`, so consumers that want a fixed kit need its sha256) and `engine-<rev:7>-<series:8>` (Engine workflow).
+Produces: `kit-<Flutter>-<flutter-aera full commit SHA>` (Kit workflow with `publish`, run by Yuv) and `engine-<rev:7>-<series:8>` (Engine workflow, `ci/publish-engine.sh`). Both upload through `.github/scripts/immutable-release-upload.sh`: a released asset is never replaced (identical bytes are skipped, different bytes fail the run), so changed kits come from a new commit and changed engines from a new patch series. The older `kit-<Flutter>` releases (e.g. `kit-3.47.5`) were re-uploaded with `--clobber`; they stay available but are not pinned by new consumers.

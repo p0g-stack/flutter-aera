@@ -8,7 +8,10 @@ set -euo pipefail
 work=$(realpath -m "${1:?usage: ci/aera-host-check.sh WORKDIR}")
 repo=$(cd "$(dirname "$0")/.." && pwd)
 pin=$(sed -n 's/^pin: *//p' "$repo/third_party/aera/README.md")
-kit=https://github.com/p0g-stack/flutter-aera/releases/download/kit-3.47.5/flutter-aera-kit-linux-x64-debug-3.47.5.tar.xz
+# Release kit-3.47.5's flutter-aera-kit-linux-x64-debug-3.47.5.tar.xz, by asset
+# id (a replaced asset gets a new id) and the SHA256 of its downloaded bytes.
+kit=https://api.github.com/repos/p0g-stack/flutter-aera/releases/assets/610973281
+kit_sha256=89502b18226472ee3d981eda915f1afee9b5643af67c8da9a1beeb8338ad52aa
 
 aera=$work/aera
 if [ ! -d "$aera/.git" ]; then
@@ -38,8 +41,8 @@ $cxx -I$ui/components "$ui/tests/file_picker_test.cpp" "$ui/components/file_pick
 # The published kit with this commit's embedder and the counter's assets.
 tree=$work/runtime
 rm -rf "$tree" && mkdir -p "$tree"
-curl -fsSL "$kit" -o "$work/kit.tar.xz"
-echo "$(curl -fsSL "$kit.sha256" | cut -d' ' -f1)  $work/kit.tar.xz" | sha256sum -c -
+curl -fsSL -H 'Accept: application/octet-stream' "$kit" -o "$work/kit.tar.xz"
+echo "$kit_sha256  $work/kit.tar.xz" | sha256sum -c -
 tar -xJf "$work/kit.tar.xz" -C "$tree" --no-same-owner
 rm "$tree/kit.json"
 install -m 0755 "$repo/target/release/aera-flutter" "$tree/usr/bin/aera-flutter"
