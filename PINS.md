@@ -1,6 +1,6 @@
 # Pins
 
-Pins: what this repo holds fixed, where, and who moves it. Values read from the repo at the commit that added this file; the bump order across repos is /mnt/project-files/proposals/flutter-bump-checklist.md (project files). Engine and Mesa detail with hashes: `spec/engine-pin.md` (checked by `tests/drift.rs`).
+Pins: what this repo holds fixed, where, and who moves it. Values read from the repo at the commit that added this file; the bump order across repos is https://github.com/p0g-stack/.github/blob/main/docs/flutter-bump.md. Engine and Mesa detail with hashes: `spec/engine-pin.md` (checked by `tests/drift.rs`).
 
 | What | Where | Current | Bumped by |
 | --- | --- | --- | --- |
