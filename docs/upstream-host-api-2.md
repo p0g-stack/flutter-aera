@@ -150,6 +150,14 @@ behavior, not recovery's LVGL compositor. It does not establish Cuttlefish GPU
 correctness or phone compatibility. The API3 suite's old captures do not count
 as API2 evidence. No physical device is selected, unlocked, written or flashed.
 
+The Cuttlefish qualification branch rebases this implementation onto Flutter
+3.47.9 / engine `89c39edfdfae2949f6806e4a315c0c08522238b7`, retaining main's
+deterministic kit packaging. The Kit workflow drives the negotiated API 2
+960x540 desktop: its stock counter FAB is at (916,496), not the old API 3
+phone-surface coordinate (980,2250). Both nonempty captures must still differ;
+the workflow does not relax that check. Simulator logs accompany the kit
+artifacts, and Cuttlefish qualification requires a successful Kit run.
+
 A Cuttlefish qualification image needs:
 
 1. Recovery at the exact upstream revision above (or a separately recorded new
