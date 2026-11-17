@@ -152,6 +152,14 @@ root, which is not packed into `runtime.xz`. To pack: extract the kit, drop
 `kit.json`, add `usr/share/flutter/flutter_assets` (and `usr/lib/libapp.so`
 for AOT), pack.
 
+Kit and counter archives sort members by name, normalize ownership to numeric
+root and timestamps to the producer commit time, and use single-threaded xz
+with fixed compression settings. Rebuilding unchanged payload bytes therefore
+does not change archives merely because the build ran later. Static simulator
+executables are uploaded directly, without an archive wrapper. Push-triggered
+Kit runs only validate and upload workflow artifacts; release publication
+requires an explicit dispatch with `publish=true`.
+
 `aera-plugin` binds AERA's fonts (`/twres/fonts`) at `/usr/share/fonts` and
 the payload's CA bundle at `/etc/ssl/certs` in a private mount namespace,
 then execs `usr/bin/aera-flutter` through `usr/lib/ld-linux-aarch64.so.1`

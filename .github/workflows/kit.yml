@@ -28,14 +28,18 @@ jobs:
   bundle:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       - name: Counter app bundle (kernel, architecture independent)
         run: |
+          epoch=$(git show -s --format=%ct "$GITHUB_SHA")
           curl -fsSL "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_$FLUTTER_VERSION-stable.tar.xz" | tar -C "$RUNNER_TEMP" -xJ
           export PATH=$RUNNER_TEMP/flutter/bin:$PATH
           flutter --disable-analytics >/dev/null
           flutter create --no-pub --project-name counter counter
           cd counter && flutter pub get && flutter build bundle --debug
-          tar -C build -cJf "$GITHUB_WORKSPACE/counter-flutter_assets-$FLUTTER_VERSION.tar.xz" flutter_assets
+          LC_ALL=C tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner --format=gnu \
+            -C build -cf - flutter_assets | env -u XZ_OPT -u XZ_DEFAULTS xz --threads=1 --check=crc64 -6 \
+            > "$GITHUB_WORKSPACE/counter-flutter_assets-$FLUTTER_VERSION.tar.xz"
       - uses: actions/upload-artifact@v4
         with:
           name: counter-bundle
@@ -96,6 +100,7 @@ jobs:
           set -euo pipefail
           arch=${{ matrix.arch }}
           name=flutter-aera-kit-linux-$arch-debug-$FLUTTER_VERSION
+          epoch=$(git show -s --format=%ct "$GITHUB_SHA")
           engine_revision=$(sed -n 's/^rev=//p' ci/fetch-engine.sh)
           jq -n --arg flutter "$FLUTTER_VERSION" --arg commit "$GITHUB_SHA" --arg arch "$arch" --arg engine "$engine_revision" \
             '{kit: 1, arch: $arch, mode: "debug", flutter: $flutter, engine_revision: $engine,
@@ -107,7 +112,9 @@ jobs:
             --ca-bundle /etc/ssl/certs/ca-certificates.crt --pins kit.json \
             --alsa-module target/release/libasound_module_pcm_aera.so --alsa-conf audio/aera.conf
           mkdir -p dist
-          tar -C "$RUNNER_TEMP/kit" -cJf "dist/$name.tar.xz" .
+          LC_ALL=C tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner --format=gnu \
+            -C "$RUNNER_TEMP/kit" -cf - . | env -u XZ_OPT -u XZ_DEFAULTS xz --threads=1 --check=crc64 -6 \
+            > "dist/$name.tar.xz"
           cp target/static/release/aera-host-sim "dist/aera-host-sim-linux-$arch"
           (cd dist && for f in "$name.tar.xz" "aera-host-sim-linux-$arch"; do sha256sum "$f" > "$f.sha256"; done)
           ls -la dist
