@@ -9,7 +9,7 @@ set -euo pipefail
 dir=${1:?usage: ci/fetch-engine.sh DIR [x64|arm64] [debug|profile|release]}
 arch=${2:-x64}
 mode=${3:-debug}
-rev=af7e796e161ae0bb1ff0758c71a7105418bd9ded
+rev=89c39edfdfae2949f6806e4a315c0c08522238b7
 tag=engine-af7e796-0d7f3ed2
 base=https://github.com/p0g-stack/flutter-aera/releases/download/$tag
 case $arch-$mode in
