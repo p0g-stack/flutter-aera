@@ -22,7 +22,7 @@ permissions:
   contents: write
 
 env:
-  FLUTTER_VERSION: 3.47.9
+  FLUTTER_VERSION: 3.50.0
 
 jobs:
   bundle:
@@ -104,7 +104,7 @@ jobs:
           engine_revision=$(sed -n 's/^rev=//p' ci/fetch-engine.sh)
           jq -n --arg flutter "$FLUTTER_VERSION" --arg commit "$GITHUB_SHA" --arg arch "$arch" --arg engine "$engine_revision" \
             '{kit: 1, arch: $arch, mode: "debug", flutter: $flutter, engine_revision: $engine,
-              mesa: "26.2.2", flutter_aera_commit: $commit}' > kit.json
+              mesa: "26.2.7", flutter_aera_commit: $commit}' > kit.json
           ci/assemble-kit.py --arch "$arch" --out "$RUNNER_TEMP/kit" --embedder target/release/aera-flutter \
             --launcher target/static/release/aera-plugin --engine "$RUNNER_TEMP/engine/embedder/libflutter_engine.so" \
             --icu "$RUNNER_TEMP/engine/icudtl.dat" --mesa "$RUNNER_TEMP/mesa" \

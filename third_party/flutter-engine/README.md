@@ -30,7 +30,7 @@ Release layout, one zip per configuration, each with a `.sha256`:
 0001 is written to go upstream; 0002 and 0003 only make the minimal Linux
 target build work.
 
-The three patches apply unchanged to Flutter 3.47.9's engine revision
-`89c39edfdfae2949f6806e4a315c0c08522238b7`. Applying the ordered series to that
-revision produces Git tree `f63c1114ee77433428e85ea43c567034d7c1a093`;
+The three patches apply unchanged to Flutter 3.50.0's engine revision
+`371f77202a73e8dff57a8b3bff75bca55c090aee`. Applying the ordered series to that
+revision produces Git tree `d23d5f801a554e5b9936497b8e7cfd36a65cda18`;
 the build's exported header remains the authority for the vendored ABI.

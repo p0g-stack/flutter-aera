@@ -2,7 +2,7 @@
 # Builds the default counter app for the pinned Flutter, stages an x64
 # payload with the debug engine, runs it in aera-host-sim, taps "+" three
 # times and checks the frames changed.
-#   ci/sim-smoke.sh WORKDIR        (needs `flutter` 3.47.9 on PATH)
+#   ci/sim-smoke.sh WORKDIR        (needs `flutter` 3.50.0 on PATH)
 set -euo pipefail
 work=$(realpath -m "${1:?usage: ci/sim-smoke.sh WORKDIR}")
 repo=$(cd "$(dirname "$0")/.." && pwd)

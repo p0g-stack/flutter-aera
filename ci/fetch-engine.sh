@@ -10,13 +10,13 @@ dir=${1:?usage: ci/fetch-engine.sh DIR [x64|arm64] [debug|profile|release]}
 arch=${2:-x64}
 mode=${3:-debug}
 rev=371f77202a73e8dff57a8b3bff75bca55c090aee
-tag=engine-89c39ed-0d7f3ed2
+tag=engine-371f772-0d7f3ed2
 base=https://github.com/p0g-stack/flutter-aera/releases/download/$tag
 case $arch-$mode in
-  arm64-debug) sum=6f8ebb3b36f91080bfac8e9f382ddc1a33b78e28105467cf19bc09d19e675d6f ;;
-  arm64-profile) sum=840c93fe60f98c7c6fd5ad111e6a512092caf7c767008cf5eebac7f6142e8e60 ;;
-  arm64-release) sum=1b7804fa484581e36adf7c83c64443b4b815676fbe3759d0886ca6a8845b5db5 ;;
-  x64-debug) sum=3919ecd5554e7c7bc06f86e26f799343ee55995ae17f6ff11a5fb1d628a8ccb4 ;;
+  arm64-debug) sum=77abf5a14a97cd9e1a084cf8bfe8f532de2ba6020a994e69b4ea968648496b4b ;;
+  arm64-profile) sum=b4306275a327c5aeb4216cbffa6688ce4a9cb0d17f5aba53888ca4591890463d ;;
+  arm64-release) sum=b96d1248ce56fb8c5ac154901934710072cad79e642279e67bc746a36208419e ;;
+  x64-debug) sum=df9099fc821e9b138a2536ff7ac9fdfcd6612eaecd301166ca9bad7de8374664 ;;
   *) echo "no engine for $arch $mode" >&2; exit 2 ;;
 esac
 zip=linux-$arch-$mode-embedder.zip

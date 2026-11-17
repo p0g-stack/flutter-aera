@@ -4,7 +4,7 @@
 # plugin-data/vm-service-url, recolours the app bar and hot-reloads, then detaches.
 # Passes when the colour changed and the count survived the reload.
 # Run after ci/sim-smoke.sh WORKDIR (it builds the payload and the counter).
-#   ci/hot-reload-check.sh WORKDIR        (needs `flutter` 3.47.9 on PATH)
+#   ci/hot-reload-check.sh WORKDIR        (needs `flutter` 3.50.0 on PATH)
 set -euo pipefail
 work=$(realpath -m "${1:?usage: ci/hot-reload-check.sh WORKDIR}")
 repo=$(cd "$(dirname "$0")/.." && pwd)
