@@ -4,7 +4,7 @@
 # type text with an accent and an emoji, Enter submits and hides the
 # keyboard (KEYBOARD_HIDE, inset 0). The app prints what it saw.
 # Run after ci/sim-smoke.sh WORKDIR (it fetches the engine).
-#   ci/text-input-check.sh WORKDIR        (needs `flutter` 3.47.5 on PATH)
+#   ci/text-input-check.sh WORKDIR        (needs `flutter` 3.47.9 on PATH)
 set -euo pipefail
 work=$(realpath -m "${1:?usage: ci/text-input-check.sh WORKDIR}")
 repo=$(cd "$(dirname "$0")/.." && pwd)
