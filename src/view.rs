@@ -1,8 +1,9 @@
-//! The one view: window metrics from AERA's `SURFACE` and keyboard inset,
-//! and touches as Flutter pointer events. ≈ GTK's `fl_view`.
+//! The one view: window metrics from AERA's desktop surface and keyboard
+//! inset. ≈ GTK's `fl_view`. Desktop input becomes pointer events in
+//! `engine.rs`, from `host::input`.
 
-use crate::ffi::{self, FlutterPointerEvent, FlutterWindowMetricsEvent};
-use crate::host::{kind, Geometry, Message};
+use crate::ffi::{self, FlutterWindowMetricsEvent};
+use crate::host::Geometry;
 
 pub const VIEW_ID: i64 = 0;
 pub const DISPLAY_ID: u64 = 0;
@@ -10,7 +11,7 @@ pub const DISPLAY_ID: u64 = 0;
 #[derive(Clone, Copy, Debug)]
 pub struct View {
     pub geometry: Geometry,
-    /// AERA's keyboard height in surface pixels.
+    /// AERA's desktop keyboard height in surface pixels.
     pub bottom_inset: u32,
     /// The padding in logical pixels (left, top, right, bottom), from
     /// [`crate::padding::resolve`].
@@ -52,28 +53,6 @@ impl View {
         self.padding_dp.map(|dp| (dp * scale).round())
     }
 
-    /// A touch from AERA as a Flutter pointer event, or `None` if `message`
-    /// is not a touch.
-    pub fn pointer(&self, message: &Message, timestamp_us: usize) -> Option<FlutterPointerEvent> {
-        let phase = match message.kind {
-            kind::TOUCH_DOWN => ffi::kDown,
-            kind::TOUCH_MOVE => ffi::kMove,
-            kind::TOUCH_UP => ffi::kUp,
-            _ => return None,
-        };
-        // SAFETY: a plain C struct; all-zero is a valid start.
-        let mut e: FlutterPointerEvent = unsafe { std::mem::zeroed() };
-        e.struct_size = std::mem::size_of::<FlutterPointerEvent>();
-        e.phase = phase;
-        e.timestamp = timestamp_us;
-        e.x = message.value.min(self.geometry.width.saturating_sub(1)) as f64;
-        e.y = message.flags.min(self.geometry.height.saturating_sub(1)) as f64;
-        e.device = message.request_id as i32;
-        e.device_kind = ffi::kFlutterPointerDeviceKindTouch;
-        e.view_id = VIEW_ID;
-        Some(e)
-    }
-
     /// The display, for `FlutterEngineNotifyDisplayUpdate` (frame pacing).
     pub fn display(&self) -> ffi::FlutterEngineDisplay {
         ffi::FlutterEngineDisplay {
@@ -94,11 +73,11 @@ mod tests {
 
     #[test]
     fn metrics_carry_the_keyboard_inset() {
-        let mut v = View::new(Geometry::PHONE);
-        v.bottom_inset = 900;
+        let mut v = View::new(Geometry::desktop(960, 540));
+        v.bottom_inset = 300;
         let m = v.metrics();
-        assert_eq!((m.width, m.height, m.pixel_ratio), (1080, 2400, 2.75));
-        assert_eq!(m.physical_view_inset_bottom, 900.0);
+        assert_eq!((m.width, m.height, m.pixel_ratio), (960, 540, 1.0));
+        assert_eq!(m.physical_view_inset_bottom, 300.0);
         let p = v.padding();
         assert_eq!(
             [m.physical_view_padding_left, m.physical_view_padding_top, m.physical_view_padding_right, m.physical_view_padding_bottom],
@@ -109,7 +88,7 @@ mod tests {
     #[test]
     fn padding_is_minimal() {
         // The Infiniti's portrait surface (0029) and its landscape one.
-        let mut g = Geometry::PHONE;
+        let mut g = Geometry::desktop(960, 540);
         (g.width, g.height, g.scale) = (1272, 2647, 3.0);
         assert_eq!(View::new(g).padding(), [12.0, 0.0, 12.0, 24.0]);
         (g.width, g.height) = (2772, 1154);
@@ -117,13 +96,5 @@ mod tests {
         let mut v = View::new(g);
         v.padding_dp = [6.0, 0.0, 6.0, 10.0];
         assert_eq!(v.padding(), [18.0, 0.0, 18.0, 30.0]);
-    }
-
-    #[test]
-    fn touches_become_pointer_events() {
-        let v = View::new(Geometry::PHONE);
-        let e = v.pointer(&Message::with(kind::TOUCH_DOWN, 2, 100, 5000), 7).unwrap();
-        assert_eq!((e.phase, e.device, e.x, e.y, e.timestamp), (ffi::kDown, 2, 100.0, 2399.0, 7));
-        assert!(v.pointer(&Message::new(kind::BACK), 0).is_none());
     }
 }

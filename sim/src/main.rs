@@ -1,37 +1,53 @@
-//! `aera-host-sim`: plays AERA's side of the generic pixel host on a PC.
+//! `aera-host-sim`: plays AERA's side of Host API 2 on a PC.
 //!
-//! It makes the frame memfd and control socket as AERA would, starts the
-//! embedder with them on fds 3 and 4, answers the handshake, takes each
-//! `PRESENT` and hands slots back with `FRAME_DONE` as AERA's pixel scene
-//! does (see [`Screen`]), replays a script of input, and writes frames as
-//! PNG files.
+//! It starts the embedder as AERA's plugin launcher does (the control
+//! socket on fd 4 only, `AERA_HOST_API=2`, `--aera-host-api=2`), answers
+//! the handshake and the setup page, and when the plugin asks with
+//! `OPEN_DESKTOP` hands over a sealed two-slot BGRA memfd and the input
+//! channel in `DESKTOP_READY`'s `SCM_RIGHTS`. Then it runs AERA's 16 ms
+//! desktop timer (ACK the frame received last tick, then read the next),
+//! replays a script of touches and keys as AERA's toolbar, game controls
+//! and keyboard turn them into `PlayMessage`s, and writes frames as PNG.
+//! The recovery extensions (desktop integration, desktop text input) are
+//! granted when asked unless `--base-api2` is given.
 //!
 //! ```text
-//! aera-host-sim --root PAYLOAD [--embedder BIN] [--out DIR]
-//!               [--size WxH] [--bar PX] [--scale S] [--until MS] [--gpu]
+//! aera-host-sim --root PAYLOAD [--embedder BIN] [--out DIR] [--until MS]
+//!               [--gpu] [--base-api2] [--pick-file ABSPATH] [--edit-text TEXT]
 //!               [--tap X,Y@MS]... [--type TEXT@MS]... [--back@MS]...
-//!               [--rotate@MS]... [--snap NAME@MS]...
+//!               [--action ID@MS]... [--snap NAME@MS]...
 //! ```
 //!
-//! Times are milliseconds after the first frame; `--until 0` runs until the
-//! app closes. Positions are surface pixels. `last.png` is always written at
-//! the end. `OUT/plugin-data` is the app's `AERA_PLUGIN_DATA`; its
+//! Times are milliseconds after the first desktop frame; `--until 0` runs
+//! until the embedder exits. `--tap` positions are desktop pixels (the
+//! simulated panel is the desktop frame, scale 1); taps in AERA's toolbar
+//! strip (virtual 960x540 layout: x < 580, y < 65) work its buttons, EXIT
+//! included. `--type` presses AERA's on-screen keyboard, which must be up
+//! (the KEYS button, or the app's `SET_DESKTOP_KEYBOARD`); `\n` is its OK
+//! key unless the app asked for a multiline keyboard. `--back` cancels an
+//! open picker or editor, else taps ESC on the desktop, else runs the
+//! page's back action; `--action` presses a setup-page button.
+//! `--pick-file` is the file or folder the simulated user picks
+//! (`MODAL_ANSWER_MS` after the picker opens); `--edit-text` is what they
+//! submit in AERA's native editor. Without them the modal stays open until
+//! `--back`.
+//!
+//! `last.png` is always written at the end. `OUT/plugin-data` is passed as
+//! `AERA_PLUGIN_DATA` (a PC convenience; AERA does not set it); its
 //! `vm-service-url` is what `flutter attach --debug-url` takes. While it
 //! runs, a file `OUT/snap` holding NAME writes NAME.png and `OUT/stop` ends
 //! the run.
-//!
-//! `--bar` takes a status bar off the top of a `--size` screen, as AERA's
-//! pixel scene does. `--rotate` turns the screen a quarter, as AERA's
-//! Rotation tile does: a new `SURFACE` for the turned screen less the bar,
-//! in the same memfd (made, like AERA's, with room for square frames on the
-//! screen's longer side). Frames drawn
-//! for the old shape are handed straight back, as AERA's scene does.
 //!
 //! It also runs on a device as a stand-in for AERA's host (built static, see
 //! docs/device.md): `--gpu` then lets Mesa use the device's GPU instead of
 //! forcing softpipe.
 
+mod clipboard;
+mod desktop;
+mod session;
+
 use std::collections::VecDeque;
+use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -40,14 +56,23 @@ use std::time::{Duration, Instant};
 
 use flutter_aera::host::surface::create_memfd_of;
 use flutter_aera::host::transport::pair;
-use flutter_aera::host::{feature, kind, lifecycle, Control, Geometry, Message, PROTOCOL_VERSION};
+use flutter_aera::host::{
+    kind, Control, Message, PlayChannel, CONTROL_FD, CONTROL_FD_ENV, DATA_ENV, HOST_API, HOST_API_ARG,
+    HOST_API_ENV, ROOT_ENV,
+};
+
+use desktop::Tick;
+use session::{Config, Out, Session};
+
+/// AERA's desktop timer period (`lv_timer_create(..., 16, ...)`).
+const TICK: Duration = Duration::from_millis(16);
 
 #[derive(Debug, Clone)]
 enum Action {
-    Tap(u32, u32),
+    Tap(i32, i32),
     Type(String),
     Back,
-    Rotate,
+    Press(u32),
     Snap(String),
 }
 
@@ -55,12 +80,12 @@ struct Options {
     root: PathBuf,
     embedder: PathBuf,
     out: PathBuf,
-    geometry: Geometry,
-    /// Status bar rows above the surface.
-    bar: u32,
     until: Duration,
     /// Let Mesa pick the GPU (on a device) instead of forcing softpipe.
     gpu: bool,
+    base_only: bool,
+    pick_file: Option<PathBuf>,
+    edit_text: Option<String>,
     script: Vec<(Duration, Action)>,
 }
 
@@ -75,10 +100,11 @@ fn parse() -> Result<Options, String> {
         root: PathBuf::new(),
         embedder: here.with_file_name("aera-flutter"),
         out: PathBuf::from("out/sim"),
-        geometry: Geometry::PHONE,
-        bar: 0,
         until: Duration::from_secs(5),
         gpu: false,
+        base_only: false,
+        pick_file: None,
+        edit_text: None,
         script: vec![],
     };
     let mut args = std::env::args().skip(1);
@@ -88,17 +114,18 @@ fn parse() -> Result<Options, String> {
             "--root" => o.root = value()?.into(),
             "--embedder" => o.embedder = value()?.into(),
             "--out" => o.out = value()?.into(),
-            "--size" => {
-                let v = value()?;
-                let (w, h) = v.split_once('x').ok_or("--size WxH")?;
-                o.geometry.width = w.parse().map_err(|_| "--size WxH")?;
-                o.geometry.height = h.parse().map_err(|_| "--size WxH")?;
-                o.geometry.stride = o.geometry.width * 4;
-            }
-            "--bar" => o.bar = value()?.parse().map_err(|_| "--bar PX")?,
             "--gpu" => o.gpu = true,
-            "--scale" => o.geometry.scale = value()?.parse().map_err(|_| "--scale S")?,
+            "--base-api2" => o.base_only = true,
             "--until" => o.until = Duration::from_millis(value()?.parse().map_err(|_| "--until MS")?),
+            "--pick-file" => {
+                let path = PathBuf::from(value()?);
+                if !path.is_absolute() {
+                    return Err("--pick-file takes an absolute path".into());
+                }
+                std::fs::metadata(&path).map_err(|e| format!("--pick-file {}: {e}", path.display()))?;
+                o.pick_file = Some(path);
+            }
+            "--edit-text" => o.edit_text = Some(value()?),
             "--tap" => {
                 let v = value()?;
                 let (xy, t) = at(&v)?;
@@ -110,35 +137,45 @@ fn parse() -> Result<Options, String> {
                 let (text, t) = at(&v)?;
                 o.script.push((t, Action::Type(text.to_owned())));
             }
+            "--action" => {
+                let v = value()?;
+                let (id, t) = at(&v)?;
+                o.script.push((t, Action::Press(id.parse().map_err(|_| "--action ID@MS")?)));
+            }
             "--snap" => {
                 let v = value()?;
                 let (name, t) = at(&v)?;
                 o.script.push((t, Action::Snap(name.to_owned())));
             }
             b if b.starts_with("--back@") => o.script.push((at(b)?.1, Action::Back)),
-            r if r.starts_with("--rotate@") => o.script.push((at(r)?.1, Action::Rotate)),
+            "--size" | "--bar" | "--scale" => {
+                return Err(format!("{a}: Host API 2's desktop size is the plugin's OPEN_DESKTOP request"));
+            }
+            r if r.starts_with("--rotate@") => return Err("--rotate: Host API 2's desktop is fixed landscape".into()),
             other => return Err(format!("unknown argument {other}")),
         }
     }
     if o.root.as_os_str().is_empty() {
         return Err("--root PAYLOAD is required".into());
     }
-    if o.bar >= o.geometry.height || o.bar >= o.geometry.width {
-        return Err("--bar must leave room in either orientation".into());
-    }
     o.script.sort_by_key(|(t, _)| *t);
     Ok(o)
 }
 
-fn write_png(path: &Path, frame: &[u8], g: &Geometry) -> Result<(), String> {
-    let mut rgba = Vec::with_capacity(g.width as usize * g.height as usize * 4);
-    for row in frame.chunks(g.stride as usize).take(g.height as usize) {
-        for px in row[..g.width as usize * 4].chunks_exact(4) {
-            rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
-        }
+/// A copy of one desktop frame.
+struct Shot {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+fn write_png(path: &Path, shot: &Shot) -> Result<(), String> {
+    let mut rgba = Vec::with_capacity(shot.pixels.len());
+    for px in shot.pixels.chunks_exact(4) {
+        rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
     }
     let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), g.width, g.height);
+    let mut encoder = png::Encoder::new(io::BufWriter::new(file), shot.width, shot.height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.write_header().and_then(|mut w| w.write_image_data(&rgba)).map_err(|e| e.to_string())?;
@@ -146,15 +183,61 @@ fn write_png(path: &Path, frame: &[u8], g: &Geometry) -> Result<(), String> {
     Ok(())
 }
 
+/// The host's half of an open desktop: the frame memfd it allocated and
+/// maps read-only, and its end of the input channel.
+struct Surface {
+    play: PlayChannel,
+    _memfd: OwnedFd,
+    base: *const u8,
+    len: usize,
+}
+
+impl Surface {
+    /// `OpenPluginDesktop` + `Session::SendDesktop`.
+    fn open(control: &Control, request_id: u32, width: u32, height: u32) -> io::Result<Surface> {
+        let len = 2 * width as usize * height as usize * 4;
+        let (ours, theirs) = pair()?;
+        let play = PlayChannel::new(ours)?;
+        let memfd = create_memfd_of(len)?;
+        // SAFETY: a fresh read-only shared mapping of a memfd sealed at `len`.
+        let base = unsafe {
+            libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, memfd.as_raw_fd(), 0)
+        };
+        if base == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        // From here `Drop` unmaps.
+        let s = Surface { play, _memfd: memfd, base: base as *const u8, len };
+        let ready = Message::with(kind::DESKTOP_READY, request_id, width, height);
+        control.send_with_fds(&ready, &[s._memfd.as_raw_fd(), theirs.as_raw_fd()])?;
+        Ok(s)
+    }
+
+    fn shot(&self, slot: usize, width: u32, height: u32) -> Shot {
+        let bytes = width as usize * height as usize * 4;
+        // SAFETY: the mapping is `len` bytes, two slots of `bytes`, alive
+        // while `self` is.
+        let all = unsafe { std::slice::from_raw_parts(self.base, self.len) };
+        Shot { width, height, pixels: all[slot * bytes..][..bytes].to_vec() }
+    }
+}
+
+impl Drop for Surface {
+    fn drop(&mut self) {
+        // SAFETY: the mapping made in `open`; no slice of it outlives `self`.
+        unsafe { libc::munmap(self.base as *mut libc::c_void, self.len) };
+    }
+}
+
 /// Moves `from` to fd `to` in the child, clearing close-on-exec.
-fn place(from: i32, to: i32) -> std::io::Result<()> {
+fn place(from: i32, to: i32) -> io::Result<()> {
     // SAFETY: async-signal-safe calls between fork and exec.
     unsafe {
         if from == to {
             let flags = libc::fcntl(to, libc::F_GETFD);
             libc::fcntl(to, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
         } else if libc::dup2(from, to) < 0 {
-            return Err(std::io::Error::last_os_error());
+            return Err(io::Error::last_os_error());
         }
     }
     Ok(())
@@ -170,289 +253,290 @@ fn main() -> ExitCode {
     }
 }
 
-/// AERA's pixel scene's slot ownership (`plugin_api/surface.cpp` in the
-/// Host API 3 patches): a newer `PRESENT` releases a pending frame at once;
-/// each refresh shows the latched frame and releases the one it replaced;
-/// the frame on screen stays the host's.
-#[derive(Default)]
-struct Screen {
-    /// (sequence, slot) of each stage.
-    pending: Option<(u32, usize)>,
-    latched_frame: Option<(u32, usize)>,
-    shown: Option<(u32, usize)>,
-    /// The slot being drawn this refresh, for snapshots.
-    latched: Option<usize>,
+/// The I/O around one [`Session`].
+struct Host {
+    session: Session,
+    control: Option<Control>,
+    surface: Option<Surface>,
+    /// The frame on screen when the desktop last closed.
+    last: Option<Shot>,
 }
 
-impl Screen {
-    fn holds(&self, slot: usize) -> bool {
-        [self.pending, self.latched_frame, self.shown].iter().flatten().any(|(_, s)| *s == slot)
+impl Host {
+    fn send_play(&mut self) {
+        let (Some(d), Some(s)) = (&mut self.session.desktop, &self.surface) else { return };
+        for p in std::mem::take(&mut d.out) {
+            if !d.connected() {
+                break;
+            }
+            if let Err(e) = s.play.send(&p) {
+                println!("sim: input channel send failed ({e}); Application stopped");
+                d.disconnect();
+            }
+        }
     }
 
-    /// `None` for a slot the host holds; else the sequence to release now.
-    fn present(&mut self, seq: u32, slot: usize) -> Option<Option<u32>> {
-        if self.holds(slot) {
-            return None;
+    /// The frame on screen now, or the last one shown.
+    fn shot(&self) -> Option<Shot> {
+        match (&self.session.desktop, &self.surface) {
+            (Some(d), Some(s)) => d.latched_slot().map(|slot| s.shot(slot, d.width, d.height)),
+            _ => self.last.as_ref().map(|l| Shot { pixels: l.pixels.clone(), ..*l }),
         }
-        Some(self.pending.replace((seq, slot)).map(|(s, _)| s))
     }
 
-    /// One display refresh: the latched frame goes on screen and the one it
-    /// replaces is released; the newest pending frame is latched for the
-    /// next refresh.
-    fn refresh(&mut self) -> Vec<u32> {
-        let mut released = vec![];
-        if let Some(next) = self.latched_frame.take() {
-            released.extend(self.shown.replace(next).map(|(s, _)| s));
+    fn snap(&self, dir: &Path, name: &str) -> Result<(), String> {
+        match self.shot() {
+            Some(shot) => write_png(&dir.join(format!("{name}.png")), &shot),
+            None => {
+                println!("sim: no frame yet for {name}");
+                Ok(())
+            }
         }
-        self.latched_frame = self.pending.take();
-        self.latched = self.latched_frame.map(|(_, slot)| slot);
-        released
+    }
+
+    /// Carries out everything the session queued.
+    fn flush(&mut self) {
+        loop {
+            self.send_play();
+            if self.session.out.is_empty() {
+                return;
+            }
+            for o in std::mem::take(&mut self.session.out) {
+                match o {
+                    Out::Control(m) => {
+                        if let Some(c) = &self.control {
+                            if let Err(e) = c.send(&m) {
+                                println!("sim: control send failed ({e})");
+                                self.session.peer_gone();
+                                self.control = None;
+                            }
+                        }
+                    }
+                    Out::OpenDesktop { request_id, width, height } => {
+                        let Some(c) = &self.control else { continue };
+                        match Surface::open(c, request_id, width, height) {
+                            Ok(s) => {
+                                self.surface = Some(s);
+                                self.session.desktop_opened(width, height);
+                            }
+                            Err(e) => {
+                                println!("sim: could not open the desktop ({e})");
+                                self.session.desktop_failed(request_id);
+                            }
+                        }
+                    }
+                    Out::CloseDesktop => {
+                        self.send_play();
+                        if let Some(shot) = self.shot() {
+                            self.last = Some(shot);
+                        }
+                        self.session.desktop = None;
+                        self.surface = None;
+                        println!("sim: desktop closed");
+                    }
+                    Out::Disconnect => self.control = None,
+                }
+            }
+        }
     }
 }
 
 fn run() -> Result<ExitCode, String> {
     let o = parse()?;
-    // The screen; the surface is the screen less the status bar.
-    let (mut screen_w, mut screen_h) = (o.geometry.width, o.geometry.height);
-    let mut g = Geometry { height: screen_h - o.bar, ..o.geometry };
     std::fs::create_dir_all(&o.out).map_err(|e| e.to_string())?;
     let data = o.out.join("plugin-data");
     std::fs::create_dir_all(&data).map_err(|e| e.to_string())?;
+    let root = std::fs::canonicalize(&o.root).map_err(|e| format!("{}: {e}", o.root.display()))?;
 
-    // Room for either orientation, as AERA allocates it.
-    let side = screen_w.max(screen_h) as usize;
-    let len = side * side * 4 * g.slots as usize;
-    let memfd: OwnedFd = create_memfd_of(len).map_err(|e| e.to_string())?;
     let (plugin_end, host_end) = pair().map_err(|e| e.to_string())?;
-    // SAFETY: the host's own mapping of the memfd it created.
-    let base = unsafe {
-        libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, memfd.as_raw_fd(), 0)
-    };
-    if base == libc::MAP_FAILED {
-        return Err("mmap surface".into());
-    }
-    // SAFETY: the mapping lives until the process exits.
-    let surface = unsafe { std::slice::from_raw_parts(base as *const u8, len) };
-
-    let (m, p) = (memfd.as_raw_fd(), plugin_end.as_raw_fd());
+    let p = plugin_end.as_raw_fd();
     let mut command = Command::new(&o.embedder);
     command
-        .arg("--aera-host-api=3")
-        .env("AERA_PLUGIN_ROOT", &o.root)
-        .env("AERA_PLUGIN_DATA", std::fs::canonicalize(&data).map_err(|e| e.to_string())?)
-        .env("AERA_PLUGIN_FD", "4")
-        .env("AERA_SURFACE_FD", "3");
+        .arg(HOST_API_ARG)
+        .current_dir(&root)
+        .env("HOME", "/tmp")
+        .env("TMPDIR", "/tmp")
+        .env("LANG", "en.UTF-8")
+        .env("AERA_LOCALE", "en")
+        .env(CONTROL_FD_ENV, CONTROL_FD.to_string())
+        .env(HOST_API_ENV, HOST_API)
+        .env(ROOT_ENV, &root)
+        .env("XDG_DATA_DIRS", root.join("usr/share"))
+        .env(DATA_ENV, std::fs::canonicalize(&data).map_err(|e| e.to_string())?)
+        .process_group(0);
     // Mesa 25's llvmpipe crashes (a JIT call through a null pointer) once
     // libflutter_engine.so is loaded; softpipe draws the same frames.
     // On a device, --gpu leaves the choice to the launcher and Mesa.
     if !o.gpu && std::env::var_os("GALLIUM_DRIVER").is_none() {
         command.env("GALLIUM_DRIVER", "softpipe");
     }
-    // SAFETY: only dup2/fcntl run in the child before exec. The order avoids
-    // clobbering: park both above 10 first, then place them.
+    // SAFETY: only fcntl/close/dup2 run in the child before exec. As AERA's
+    // launcher does: nothing on fd 3, the control socket on fd 4. Parking
+    // it above 10 first keeps `close(3)` from closing it.
     unsafe {
         command.pre_exec(move || {
-            let mm = libc::fcntl(m, libc::F_DUPFD, 10);
-            let pp = libc::fcntl(p, libc::F_DUPFD, 10);
-            place(mm, 3)?;
-            place(pp, 4)?;
-            Ok(())
+            let parked = libc::fcntl(p, libc::F_DUPFD_CLOEXEC, 10);
+            if parked < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            libc::close(3);
+            place(parked, CONTROL_FD)
         });
     }
     let mut child = command.spawn().map_err(|e| format!("start {}: {e}", o.embedder.display()))?;
     drop(plugin_end);
-    let host = Control::host(host_end);
 
-    let hello = host.recv(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?.ok_or("no HELLO")?;
-    if hello.kind != kind::HELLO || !(hello.value..=hello.flags).contains(&3) {
-        return Err(format!("bad HELLO {hello:?}"));
-    }
-    let features = feature::PIXEL_SURFACE | feature::BACK_NAVIGATION | feature::KEYBOARD_INSET;
-    host.send(&Message::with(kind::HELLO_ACK, 0, PROTOCOL_VERSION, features)).map_err(|e| e.to_string())?;
-    host.send(&g.to_message()).map_err(|e| e.to_string())?;
-    host.send(&Message::with(kind::LIFECYCLE, 0, lifecycle::RESUME, 0)).map_err(|e| e.to_string())?;
-    println!("sim: handshake done, {}x{} x{} slots", g.width, g.height, g.slots);
+    let mut config = Config::new(o.base_only);
+    config.pick_file = o.pick_file.clone();
+    config.edit_text = o.edit_text.clone();
+    let mut host = Host { session: Session::new(config), control: Some(Control::host(host_end)), surface: None, last: None };
+    println!("sim: Host API 2{}", if o.base_only { ", base only" } else { " with recovery extensions" });
 
-    let period = g.frame_period();
     let started = Instant::now();
+    let ms = |t: Instant| t.duration_since(started).as_millis() as u64;
+    let mut next_tick = started + TICK;
     let mut first_frame: Option<Instant> = None;
     let mut script: VecDeque<(Duration, Action)> = o.script.into();
-    let mut last: Option<Vec<u8>> = None;
-    let mut screen = Screen::default();
     let mut frames = 0u32;
-    let mut closed = false;
-    let mut keyboard = false;
-    let mut next_vsync = Instant::now() + period;
-    // The surface generation, as PRESENT's flags carry it.
-    let mut generation = 0u32;
+    let mut play_fault: Option<String> = None;
 
     loop {
         let now = Instant::now();
-        if now >= next_vsync {
-            for seq in screen.refresh() {
-                let _ = host.send(&Message::with(kind::FRAME_DONE, seq, 0, 0));
+        if now < next_tick {
+            let wait = next_tick - now;
+            match &host.control {
+                Some(c) => match c.recv(Some(wait)) {
+                    Ok(Some(m)) => host.session.receive(&m, ms(Instant::now())),
+                    Ok(None) => {}
+                    // `Session::Poll`: a malformed or wrong-way packet fails
+                    // the session and AERA closes the socket.
+                    Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                        host.session.fail(format!("The plugin closed or sent an invalid message ({e})."));
+                    }
+                    Err(e) => {
+                        println!("sim: control socket closed ({e})");
+                        host.session.peer_gone();
+                        host.control = None;
+                    }
+                },
+                None => std::thread::sleep(wait),
             }
-            if let Some(slot) = screen.latched {
-                last = Some(surface[slot * g.frame_bytes()..][..g.frame_bytes()].to_vec());
-            }
-            next_vsync += period * ((now - next_vsync).as_nanos() / period.as_nanos() + 1) as u32;
+            host.flush();
+            continue;
         }
+        next_tick += TICK;
+        if next_tick <= now {
+            next_tick = now + TICK;
+        }
+        let t = ms(now);
+        host.session.poll(t);
+
         if let Some(t0) = first_frame {
             let since = now - t0;
-            while script.front().is_some_and(|(t, _)| *t <= since) {
-                let (t, action) = script.pop_front().unwrap();
-                println!("sim: {:>6} ms {action:?}", t.as_millis());
+            while script.front().is_some_and(|(at, _)| *at <= since) {
+                let (at, action) = script.pop_front().unwrap();
+                println!("sim: {:>6} ms {action:?}", at.as_millis());
                 match action {
-                    Action::Tap(x, y) => {
-                        let _ = host.send(&Message::with(kind::TOUCH_DOWN, 0, x, y));
-                        let _ = host.send(&Message::with(kind::TOUCH_UP, 0, x, y));
-                    }
-                    Action::Type(text) => {
-                        for c in text.chars() {
-                            let code = match c { '\u{8}' => 8, '\n' => 13, c => c as u32 };
-                            let _ = host.send(&Message::with(kind::KEY, 0, code, 0));
-                        }
-                    }
-                    Action::Back => {
-                        let _ = host.send(&Message::new(kind::BACK));
-                    }
-                    Action::Rotate => {
-                        // Nothing of the old shape stays on screen; as in
-                        // AERA's Surface::Reshape, every slot is the
-                        // plugin's again without a FRAME_DONE.
-                        screen = Screen::default();
-                        last = None;
-                        (screen_w, screen_h) = (screen_h, screen_w);
-                        g = Geometry { width: screen_w, height: screen_h - o.bar, stride: screen_w * 4, ..g };
-                        generation = generation.wrapping_add(1);
-                        let _ = host.send(&g.to_message());
-                        println!("sim: rotated to {}x{}", g.width, g.height);
-                    }
-                    Action::Snap(name) => match &last {
-                        Some(f) => write_png(&o.out.join(format!("{name}.png")), f, &g)?,
-                        None => println!("sim: no frame yet for {name}"),
-                    },
+                    Action::Tap(x, y) => host.session.tap(x, y, t),
+                    Action::Type(text) => host.session.type_text(&text),
+                    Action::Back => host.session.back(t),
+                    Action::Press(id) => host.session.action(id),
+                    Action::Snap(name) => host.snap(&o.out, &name)?,
                 }
             }
             if !o.until.is_zero() && since >= o.until {
                 break;
             }
         } else if now - started > Duration::from_secs(60) {
-            return Err("no frame within 60 s".into());
+            return Err("no desktop frame within 60 s".into());
         }
+
+        // AERA's desktop timer.
+        if let Some(d) = &mut host.session.desktop {
+            match d.tick() {
+                Tick::Close => host.session.close_desktop(),
+                Tick::Idle => {}
+                Tick::Receive => {
+                    // The ACK this tick queued goes out before the read.
+                    host.send_play();
+                    let (Some(d), Some(s)) = (&mut host.session.desktop, &host.surface) else { unreachable!() };
+                    match s.play.try_recv() {
+                        Ok(Some(m)) => match d.frame(m) {
+                            Ok(_) => {
+                                frames += 1;
+                                if first_frame.is_none() {
+                                    first_frame = Some(now);
+                                    println!("sim: first frame after {} ms", t);
+                                }
+                            }
+                            Err(why) => {
+                                println!("sim: bad input-channel message: {why}; Application stopped");
+                                play_fault = Some(why);
+                            }
+                        },
+                        Ok(None) => {}
+                        Err(e) => {
+                            println!("sim: input channel closed ({e}); Application stopped");
+                            if e.kind() == io::ErrorKind::InvalidData {
+                                play_fault = Some(e.to_string());
+                            }
+                            d.disconnect();
+                        }
+                    }
+                }
+            }
+        }
+        host.flush();
+
         // Script hooks for interactive runs (ci/hot-reload-check.sh):
         // OUT/snap holding NAME writes NAME.png; OUT/stop ends the run.
         // A writer should rename the file into place; an empty read is a
         // write still in progress, so it is left for the next turn.
         if let Some(name) = std::fs::read_to_string(o.out.join("snap")).ok().filter(|n| !n.trim().is_empty()) {
             let _ = std::fs::remove_file(o.out.join("snap"));
-            match &last {
-                Some(f) => write_png(&o.out.join(format!("{}.png", name.trim())), f, &g)?,
-                None => println!("sim: no frame yet for {}", name.trim()),
-            }
+            host.snap(&o.out, name.trim())?;
         }
         if o.out.join("stop").exists() {
             let _ = std::fs::remove_file(o.out.join("stop"));
             break;
         }
-        if closed {
+        if let Ok(Some(status)) = child.try_wait() {
+            println!("sim: embedder exited with {status}");
             break;
         }
-        let wait = next_vsync.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
-        match host.recv(Some(wait)) {
-            Ok(Some(msg)) => match msg.kind {
-                kind::PRESENT => {
-                    let slot = msg.value as usize;
-                    if slot >= g.slots as usize {
-                        return Err(format!("PRESENT for slot {slot}"));
-                    }
-                    if msg.flags != generation {
-                        // Drawn for the shape before a rotation.
-                        let _ = host.send(&Message::with(kind::FRAME_DONE, msg.request_id, 0, 0));
-                        continue;
-                    }
-                    match screen.present(msg.request_id, slot) {
-                        Some(Some(seq)) => {
-                            let _ = host.send(&Message::with(kind::FRAME_DONE, seq, 0, 0));
-                        }
-                        Some(None) => {}
-                        None => return Err(format!("PRESENT for slot {slot}, which the host holds")),
-                    }
-                    frames += 1;
-                    if first_frame.is_none() {
-                        first_frame = Some(Instant::now());
-                        println!("sim: first frame after {} ms", started.elapsed().as_millis());
-                    }
-                }
-                kind::KEYBOARD_SHOW => {
-                    println!("sim: keyboard show (purpose {}, multiline {})", msg.value, msg.flags);
-                    if !keyboard {
-                        keyboard = true;
-                        let _ = host.send(&Message::with(kind::KEYBOARD_INSET, 0, g.height * 2 / 5, 0));
-                    }
-                }
-                kind::KEYBOARD_HIDE => {
-                    println!("sim: keyboard hide");
-                    keyboard = false;
-                    let _ = host.send(&Message::with(kind::KEYBOARD_INSET, 0, 0, 0));
-                }
-                kind::SET_STATUS => println!("sim: status {:?}", msg.text),
-                kind::CLOSE => {
-                    println!("sim: plugin asked to close");
-                    closed = true;
-                }
-                other => println!("sim: ignoring kind {other}"),
-            },
-            Ok(None) => {}
-            Err(e) => {
-                println!("sim: control socket closed ({e})");
-                closed = true;
-            }
-        }
     }
+
     println!("sim: {frames} frames");
-    if let Some(f) = &last {
-        write_png(&o.out.join("last.png"), f, &g)?;
+    if let Some(shot) = host.shot() {
+        write_png(&o.out.join("last.png"), &shot)?;
     }
-    if !closed {
-        let _ = host.send(&Message::with(kind::LIFECYCLE, 0, lifecycle::STOP, 0));
-    }
+    // The scene goes away: the desktop first, then LIFECYCLE STOP.
+    host.session.close_desktop();
+    host.session.stop();
+    host.flush();
+    host.control = None;
     let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
+    let child_ok = loop {
         match child.try_wait() {
             Ok(Some(status)) => {
                 println!("sim: embedder exited with {status}");
-                break;
+                break status.success();
             }
             _ if Instant::now() > deadline => {
                 let _ = child.kill();
                 println!("sim: embedder killed after 5 s");
-                break;
+                let _ = child.wait();
+                break false;
             }
             _ => std::thread::sleep(Duration::from_millis(20)),
         }
+    };
+    if let Some(reason) = &host.session.failed {
+        println!("sim: FAIL: AERA rejected the plugin: {reason}");
     }
-    drop(host);
-    Ok(if frames > 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Screen;
-
-    #[test]
-    fn slots_come_back_as_aera_hands_them_back() {
-        let mut s = Screen::default();
-        assert_eq!(s.present(1, 0), Some(None));
-        // Superseded before it was shown: back at once.
-        assert_eq!(s.present(2, 1), Some(Some(1)));
-        assert!(s.refresh().is_empty()); // 2 latched
-        assert_eq!(s.present(3, 1), None); // the host holds slot 1
-        assert_eq!(s.present(3, 0), Some(None));
-        assert!(s.refresh().is_empty()); // 2 shown, 3 latched
-        assert_eq!(s.refresh(), vec![2]); // 3 shown; 2 replaced
-        assert!(s.refresh().is_empty()); // 3 stays on screen
-        assert!(s.holds(0));
+    if let Some(why) = &play_fault {
+        println!("sim: FAIL: input channel protocol: {why}");
     }
+    let ok = frames > 0 && child_ok && host.session.failed.is_none() && play_fault.is_none();
+    Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }

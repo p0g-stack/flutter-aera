@@ -21,7 +21,7 @@
 //! | `flutter/accessibility` | standard message | not-implemented; semantics never enabled (AERA has no screen reader) | ATK | not handled |
 //! | `flutter/keyevent` | JSON message | not sent: AERA's keyboard commits text, as an IME | GDK key events | evdev keys |
 //! | `io.material.plugins/dynamic_color` | standard method | [`dynamic_color`]: `getAccentColor` = AERA's saved accent; in place of the stock plugin's GTK half | GTK plugin: portal or theme accent | not handled |
-//! | `dev.flutter.pigeon.file_selector_linux…showFileChooser` | Pigeon (standard) | [`file_selector`]: AERA's picker (`kPickFiles`), answered when AERA is; in place of the stock plugin's GTK half | GTK plugin: `GtkFileChooserNative` | not handled |
+//! | `dev.flutter.pigeon.file_selector_linux…showFileChooser` | Pigeon (standard) | [`file_selector`]: upstream `PickFile`; single file/folder, unsupported multi/save | GTK plugin: `GtkFileChooserNative` | not handled |
 //! | `flutter/restoration` | standard method | not-implemented (as GTK) | not-implemented | not-implemented |
 //! | anything else | | not-implemented | | |
 
@@ -81,7 +81,7 @@ impl Handlers {
         }
         let reply = match channel {
             platform::CHANNEL => self.platform.handle(bytes, &mut effects),
-            textinput::CHANNEL => textinput::handle(&mut self.ime, bytes, &mut effects),
+            textinput::CHANNEL => textinput::handle(&mut self.ime, bytes, self.features, &mut effects),
             mousecursor::CHANNEL => mousecursor::handle(bytes),
             keyboard::CHANNEL => keyboard::handle(bytes),
             dynamic_color::CHANNEL => dynamic_color::handle(bytes, self.settings.accent()),
@@ -96,11 +96,11 @@ impl Handlers {
         use crate::host::kind;
         let mut effects = vec![];
         match message.kind {
-            kind::BACK => effects.push(navigation::pop_route()),
-            kind::KEY => textinput::on_key(&mut self.ime, message.value, &mut effects),
-            kind::KEYBOARD_INSET => effects.push(Effect::BottomInset(message.value)),
+            kind::DESKTOP_KEYBOARD_INSET if self.features & crate::host::feature::DESKTOP_INTEGRATION != 0 => {
+                effects.push(Effect::BottomInset(message.value));
+            }
             kind::LIFECYCLE => effects.extend(lifecycle::from_host(message.value)),
-            kind::OPERATION_RESULT => self.file_selector.on_result(message, &mut effects),
+            kind::FILE_PICKER_RESULT => self.file_selector.on_result(message, &mut effects),
             _ => {}
         }
         effects

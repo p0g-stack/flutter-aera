@@ -1,0 +1,281 @@
+From df2c0f09ff7368933c54d57ce42a8daa1984a5c9 Mon Sep 17 00:00:00 2001
+From: 1vivy <1vivy@tutanota.com>
+Date: Tue, 17 Nov 2026 02:12:11 -0600
+Subject: [PATCH 2/2] plugin_api: let a worker open a native field editor over
+ its desktop
+
+A Host API 2 worker whose desktop app focuses a text field had no way to
+get AERA's native editor for it: the editor opens only when the user
+taps the field's card on the setup page, and the desktop covers that
+page.
+
+Add kFeatureDesktopTextInput (bit 13):
+
+- EDIT_TEXT_INPUT (worker kind 30) names an existing field of the
+  committed page in request_id and opens the same editor a tap on its
+  card opens, also while the desktop is open. Over the desktop, desktop
+  input is suspended exactly as for Files until the editor closes by
+  Done, Cancel, Back, a new page, leaving the view, the worker stopping
+  or the editor being destroyed. A field that cannot be edited now is
+  answered with TEXT_INPUT_RESULT kInputError.
+- DISMISS_TEXT_INPUT (worker kind 31) cancels that field's editor.
+  Dismissing a field that is not being edited is ignored, so every
+  opened editor still ends with exactly one TEXT_INPUT_RESULT.
+
+Both reuse TEXT_INPUT_RESULT (74) and its limits; no drafts are sent.
+The kinds are valid only after the bit was acknowledged. Workers that do
+not request it keep the previous behaviour, values and ACK flags.
+
+Assisted-by: Claude Opus 5.5
+---
+ aeraui/features/plugin_api/README.md     | 27 ++++++++++++++++
+ aeraui/features/plugin_api/protocol.hpp  |  9 ++++--
+ aeraui/scenes/generic_plugin_scene.cpp   | 35 ++++++++++++++++++---
+ aeraui/tests/plugin_api_session_test.cpp |  9 ++++++
+ aeraui/tests/plugin_runtime_ui_test.cpp  | 39 ++++++++++++++++++++++++
+ 5 files changed, 113 insertions(+), 6 deletions(-)
+
+diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
+index 3231a3fb..7d4791f3 100644
+--- a/aeraui/features/plugin_api/README.md
++++ b/aeraui/features/plugin_api/README.md
+@@ -337,3 +337,30 @@ page or a detached view cancels an open editor; stopping/crashing the runtime
+ closes it. Background workers cannot open the keyboard or read the draft.
+ Field values are retained with a live background runtime, but persistence
+ across process restarts remains the plugin's responsibility.
++
++### Native editing over the desktop (optional)
++
++Request `kFeatureDesktopTextInput` (bit 13) with `kFeatureTextInput` and check
++the ACK. It lets the worker open the native editor of one of its text input
++fields itself, also while the desktop covers the setup page, for example when
++its desktop app focuses a field. It is the native modal path: incremental
++typing into a desktop app uses the desktop keyboard and `PLAY_KEY` instead.
++The kinds below are valid only after the bit was acknowledged; an
++unacknowledged one closes the session. Without the bit nothing changes.
++
++- `EDIT_TEXT_INPUT` (worker kind 30): `request_id` is the field ID of an input
++  on the committed page; value and flags are zero and both strings empty. AERA
++  opens the same editor as tapping the card, with the field's title, value,
++  mode and limit. Over an open desktop, desktop input is suspended as for
++  Files (see Desktop integration) until the editor closes by any path. If the
++  field is unknown or disabled, the view is not in the foreground, a page is
++  being assembled, or another modal or operation is open, the reply is
++  `TEXT_INPUT_RESULT` with kInputError. A request for the field already being
++  edited changes nothing.
++- `DISMISS_TEXT_INPUT` (worker kind 31): the same field ID and zero/empty
++  fields close that editor as Cancel does. Dismissing a field that is not
++  being edited is ignored.
++
++Each opened editor ends with exactly one `TEXT_INPUT_RESULT`: kInputSubmitted
++with the confirmed text, or kInputCancelled. The 255-code-point limit and the
++absence of drafts are unchanged.
+diff --git a/aeraui/features/plugin_api/protocol.hpp b/aeraui/features/plugin_api/protocol.hpp
+index 87f3afda..212d5129 100644
+--- a/aeraui/features/plugin_api/protocol.hpp
++++ b/aeraui/features/plugin_api/protocol.hpp
+@@ -26,11 +26,12 @@ enum Features : uint32_t {
+   kFeatureTextInput = 1U << 10,
+   kFeatureFilePicker = 1U << 11,
+   kFeatureDesktopIntegration = 1U << 12,
++  kFeatureDesktopTextInput = 1U << 13,
+ };
+ constexpr uint32_t kOptionalFeatures = kFeatureBackground | kFeatureActivities |
+     kFeatureRichPresentation | kFeaturePackageReview | kFeatureReadablePresentation |
+     kFeatureDesktop | kFeatureDesktopResolution | kFeatureClipboard | kFeatureTextInput |
+-    kFeatureFilePicker | kFeatureDesktopIntegration;
++    kFeatureFilePicker | kFeatureDesktopIntegration | kFeatureDesktopTextInput;
+ constexpr uint32_t kFeatureRequestMagic = 0xA2E20000U;
+ 
+ enum class Kind : uint32_t {
+@@ -63,6 +64,8 @@ enum class Kind : uint32_t {
+   kTextInputPlaceholder = 27,
+   kPickFile = 28,
+   kSetDesktopKeyboard = 29,
++  kEditTextInput = 30,
++  kDismissTextInput = 31,
+   kHelloAck = 64,
+   kAction,
+   kLifecycle,
+@@ -166,7 +169,7 @@ inline bool StringsValid(const Message &message) {
+          memchr(message.text, '\0', sizeof(message.text)) != nullptr;
+ }
+ inline bool WorkerKind(Kind kind) {
+-  return kind >= Kind::kHello && kind <= Kind::kSetDesktopKeyboard;
++  return kind >= Kind::kHello && kind <= Kind::kDismissTextInput;
+ }
+ inline bool HostKind(Kind kind) {
+   return kind >= Kind::kHelloAck && kind <= Kind::kDesktopKeyboardInset;
+@@ -177,6 +180,8 @@ inline uint32_t KindFeature(Kind kind) {
+   switch (kind) {
+     case Kind::kSetDesktopKeyboard:
+     case Kind::kDesktopKeyboardInset: return kFeatureDesktopIntegration;
++    case Kind::kEditTextInput:
++    case Kind::kDismissTextInput: return kFeatureDesktopTextInput;
+     default: return 0;
+   }
+ }
+diff --git a/aeraui/scenes/generic_plugin_scene.cpp b/aeraui/scenes/generic_plugin_scene.cpp
+index 67b0f156..41dd191e 100644
+--- a/aeraui/scenes/generic_plugin_scene.cpp
++++ b/aeraui/scenes/generic_plugin_scene.cpp
+@@ -205,7 +205,8 @@ bool ModalVisible(lv_obj_t *screen) {
+ // A native modal over the plugin's desktop owns input until it closes. Every
+ // open/close path calls this, so suspension follows the modal's lifetime.
+ void SyncDesktopInput(GenericScene *scene) {
+-  if (scene->desktop_open) PluginDesktopSuspendInput(scene->file_picker != nullptr);
++  if (scene->desktop_open)
++    PluginDesktopSuspendInput(scene->file_picker != nullptr || scene->input_overlay != nullptr);
+ }
+ 
+ const char *ActionIcon(const ButtonModel &model) {
+@@ -346,6 +347,7 @@ void CloseTextInput(GenericScene *scene, bool submit, bool notify) {
+         nullptr, submit ? value.c_str() : nullptr);
+   lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+   lv_obj_delete_async(overlay);
++  SyncDesktopInput(scene);
+ }
+ 
+ void CloseNativeFilePicker(GenericScene* scene, bool notify) {
+@@ -362,12 +364,14 @@ void CloseNativeFilePicker(GenericScene* scene, bool notify) {
+   SyncDesktopInput(scene);
+ }
+ 
+-void OpenTextInput(GenericScene *scene, uint32_t id) {
++// `over_desktop`: the worker's EDIT_TEXT_INPUT may open the editor over its
++// desktop; tapping a card never can, since the desktop covers the cards.
++bool OpenTextInput(GenericScene *scene, uint32_t id, bool over_desktop = false) {
+   auto *row = FindTextInput(scene, id);
+   if (!row || (row->flags & plugin_api::kInputDisabled) || scene->input_overlay ||
+       !scene->screen || scene->screen != lv_screen_active() || scene->page_pending ||
+-      scene->operation_pending || scene->desktop_open || ModalVisible(scene->screen) ||
+-      !scene->session.Connected()) return;
++      scene->operation_pending || (scene->desktop_open && !over_desktop) ||
++      ModalVisible(scene->screen) || !scene->session.Connected()) return false;
+   auto *overlay = lv_obj_create(scene->screen); Clear(overlay);
+   scene->input_overlay = overlay; scene->input_id = id;
+   scene->input_binding = new ViewBinding{scene};
+@@ -385,6 +389,7 @@ void OpenTextInput(GenericScene *scene, uint32_t id) {
+             scene->input_id, 0, plugin_api::kInputCancelled);
+         scene->input_overlay = scene->input_editor = scene->input_keyboard = nullptr;
+         scene->input_binding = nullptr; scene->input_id = 0;
++        SyncDesktopInput(scene);
+       }
+       delete binding;
+     }
+@@ -437,6 +442,8 @@ void OpenTextInput(GenericScene *scene, uint32_t id) {
+   lv_obj_add_event_cb(keyboard, finish, LV_EVENT_ALL, scene);
+   lv_obj_add_event_cb(input, finish, LV_EVENT_ALL, scene);
+   lv_obj_send_event(input, LV_EVENT_CLICKED, nullptr);
++  SyncDesktopInput(scene);
++  return true;
+ }
+ 
+ void RenderInputCard(GenericScene *scene, RowModel &row, int width, int y) {
+@@ -869,6 +876,26 @@ void HandleMessage(GenericScene *scene, const plugin_api::Message &message) {
+                                  message.flags & plugin_api::kInputMultiline);
+       break;
+     }
++    case plugin_api::Kind::kEditTextInput:
++    case plugin_api::Kind::kDismissTextInput: {
++      if (!scene->session.Supports(plugin_api::kFeatureDesktopTextInput) ||
++          !message.request_id || message.value || message.flags ||
++          message.title[0] || message.text[0]) {
++        SetStatus(scene, "Plugin sent an invalid text editor request");
++        scene->session.Close(); break;
++      }
++      const bool editing = scene->input_overlay && scene->input_id == message.request_id;
++      // Dismissing an editor that already closed is a no-op: each accepted
++      // edit has exactly one TEXT_INPUT_RESULT.
++      if (message.kind == plugin_api::Kind::kDismissTextInput) {
++        if (editing) CloseTextInput(scene, false);
++        break;
++      }
++      if (!editing && !OpenTextInput(scene, message.request_id, true))
++        scene->session.Send(plugin_api::Kind::kTextInputResult, message.request_id, 0,
++            plugin_api::kInputError, nullptr, "The field cannot be edited now.");
++      break;
++    }
+     case plugin_api::Kind::kAddTextInput: {
+       const uint32_t maximum = message.value ? message.value : plugin_api::kMaxInputCharacters;
+       if (!scene->session.Supports(plugin_api::kFeatureTextInput) || !scene->page_pending ||
+diff --git a/aeraui/tests/plugin_api_session_test.cpp b/aeraui/tests/plugin_api_session_test.cpp
+index 2bda519a..055ca18b 100644
+--- a/aeraui/tests/plugin_api_session_test.cpp
++++ b/aeraui/tests/plugin_api_session_test.cpp
+@@ -154,6 +154,13 @@ int main() {
+   assert(session.Poll().at(0).kind == Kind::kSetDesktopKeyboard);
+   assert(session.Send(Kind::kDesktopKeyboardInset, 0, 270));
+   assert(ReceiveHost(pair[1]).value == 270);
++  static_assert(kFeatureDesktopTextInput == (1U << 13));
++  static_assert(static_cast<uint32_t>(Kind::kEditTextInput) == 30);
++  static_assert(static_cast<uint32_t>(Kind::kDismissTextInput) == 31);
++  SendWorker(pair[1], Kind::kEditTextInput, 101);
++  SendWorker(pair[1], Kind::kDismissTextInput, 101);
++  const auto editor = session.Poll();
++  assert(editor.size() == 2 && editor[1].kind == Kind::kDismissTextInput);
+   close(pair[1]);
+   session.Close();
+   assert(!session.Supports(kOptionalFeatures));
+@@ -165,6 +172,8 @@ int main() {
+   assert(ReceiveHost(pair[1]).flags == (3 | kFeatureActivities));
+   (void)ReceiveHost(pair[1]);
+   assert(!session.Supports(kFeatureBackground));
++  SendWorker(pair[1], Kind::kEditTextInput, 101);
++  assert(session.Poll().empty() && !session.Connected());
+   close(pair[1]);
+   session.Close();
+ 
+diff --git a/aeraui/tests/plugin_runtime_ui_test.cpp b/aeraui/tests/plugin_runtime_ui_test.cpp
+index 8bd14dda..5ef746c6 100644
+--- a/aeraui/tests/plugin_runtime_ui_test.cpp
++++ b/aeraui/tests/plugin_runtime_ui_test.cpp
+@@ -293,6 +293,45 @@ void TestPluginRuntime(lv_obj_t *host_screen) {
+   OpenTextInput(scene, 104); assert(!lv_textarea_get_one_line(scene->input_editor));
+   lv_textarea_set_text(scene->input_editor, "first\nsecond");
+   CloseTextInput(scene, true); assert(std::string(receive(peer).text) == "first\nsecond");
++  // A worker-driven editor over the desktop suspends the desktop's input.
++  {
++    scene->callback = [](Action, void *) {};
++    Message desktop; desktop.kind = Kind::kOpenDesktop; desktop.request_id = 310;
++    HandleMessage(scene, desktop); assert(scene->desktop_open);
++    assert(receive(peer).kind == Kind::kDesktopReady);
++    assert(receive(peer).kind == Kind::kDesktopKeyboardInset);
++    assert(PluginDesktopHandleKey('a', 1));
++    Message edit; edit.kind = Kind::kEditTextInput; edit.request_id = 101;
++    HandleMessage(scene, edit);
++    assert(scene->input_overlay && scene->input_id == 101 && ModalVisible(page));
++    assert(!PluginDesktopHandleKey('b', 1) && !PluginDesktopHandlePointer(0, 100, 100, true));
++    HandleMessage(scene, edit);  // Already open: still one result.
++    Message dismiss = edit; dismiss.kind = Kind::kDismissTextInput;
++    HandleMessage(scene, dismiss);
++    auto dismissed = receive(peer);
++    assert(dismissed.kind == Kind::kTextInputResult && dismissed.request_id == 101 &&
++           dismissed.flags == kInputCancelled && !scene->input_overlay);
++    HandleMessage(scene, dismiss);  // Nothing open: no reply.
++    assert(!PluginDesktopHandlePointer(0, 100, 100, false) && PluginDesktopHandleKey('b', 1));
++    HandleMessage(scene, edit);
++    lv_textarea_set_text(scene->input_editor, "\xc3\x9c" "ber");
++    CloseTextInput(scene, true);
++    auto submitted = receive(peer);
++    assert(submitted.request_id == 101 && submitted.flags == kInputSubmitted &&
++           submitted.value == 4 && std::string(submitted.text) == "\xc3\x9c" "ber");
++    edit.request_id = 999; HandleMessage(scene, edit);
++    auto refused = receive(peer);
++    assert(refused.request_id == 999 && refused.flags == kInputError && !scene->input_overlay);
++    // Destroying the editor with its view also restores desktop input.
++    edit.request_id = 101; HandleMessage(scene, edit);
++    assert(!PluginDesktopHandleKey('c', 1));
++    lv_obj_delete(scene->input_overlay);
++    assert(receive(peer).flags == kInputCancelled && !scene->input_overlay);
++    assert(PluginDesktopHandleKey('c', 1));
++    ClosePluginDesktop(); scene->desktop_open = false; scene->callback = nullptr;
++    lv_tick_inc(20); lv_timer_handler();
++    Message extra; assert(recv(peer, &extra, sizeof(extra), MSG_DONTWAIT) < 0);
++  }
+   Message update; update.kind = Kind::kUpdateTextInput; update.request_id = 101;
+   snprintf(update.text, sizeof(update.text), "From plugin"); HandleMessage(scene, update);
+   assert(field->value == "From plugin");
+-- 
+2.56.0
+

@@ -15,7 +15,22 @@ constexpr uint32_t kMaxSections = 16;
 enum Features : uint32_t {
   kFeatureMetrics = 1U << 0,
   kFeatureBackNavigation = 1U << 1,
+  kFeatureBackground = 1U << 2,
+  kFeatureActivities = 1U << 3,
+  kFeatureRichPresentation = 1U << 4,
+  kFeaturePackageReview = 1U << 5,
+  kFeatureReadablePresentation = 1U << 6,
+  kFeatureDesktop = 1U << 7,
+  kFeatureDesktopResolution = 1U << 8,
+  kFeatureClipboard = 1U << 9,
+  kFeatureTextInput = 1U << 10,
+  kFeatureFilePicker = 1U << 11,
 };
+constexpr uint32_t kOptionalFeatures = kFeatureBackground | kFeatureActivities |
+    kFeatureRichPresentation | kFeaturePackageReview | kFeatureReadablePresentation |
+    kFeatureDesktop | kFeatureDesktopResolution | kFeatureClipboard | kFeatureTextInput |
+    kFeatureFilePicker;
+constexpr uint32_t kFeatureRequestMagic = 0xA2E20000U;
 
 enum class Kind : uint32_t {
   kHello = 1,
@@ -29,10 +44,77 @@ enum class Kind : uint32_t {
   kAddMetric,
   kUpdateMetric,
   kSetBackAction,
+  kSetBackground,
+  kSetActivity,
+  kSetActivityStorage,
+  kAddProgress,
+  kUpdateProgress,
+  kAddTile,
+  kSetPageLayout,
+  kSetActivityFile,
+  kReviewPackage,
+  kOpenDesktop = 21,
+  kGetClipboard = 22,
+  kSetClipboard = 23,
+  kClipboardChunk = 24,
+  kAddTextInput = 25,
+  kUpdateTextInput = 26,
+  kTextInputPlaceholder = 27,
+  kPickFile = 28,
   kHelloAck = 64,
   kAction,
   kLifecycle,
   kOperationResult,
+  kBackgroundResult,
+  kActivityCancel,
+  kActivityResult,
+  kActivityFileResult,
+  kDesktopReady = 72,
+  kClipboardResult = 73,
+  kTextInputResult = 74,
+  kFilePickerResult = 75,
+};
+
+enum FilePickerResultFlags : uint32_t {
+  kFileSelected = 1U << 0,
+  kFileCancelled = 1U << 1,
+  kFileError = 1U << 2,
+};
+
+constexpr uint32_t kMaxTextInputs = 16;
+// At most four UTF-8 bytes per code point; results fit one wire packet.
+constexpr uint32_t kMaxInputCharacters = 255;
+enum TextInputFlags : uint32_t {
+  kInputPassword = 1U << 0,
+  kInputNumber = 1U << 1,
+  kInputMultiline = 1U << 2,
+  kInputDisabled = 1U << 3,
+};
+enum TextInputResultFlags : uint32_t {
+  kInputSubmitted = 1U << 0,
+  kInputCancelled = 1U << 1,
+  kInputError = 1U << 2,
+};
+
+constexpr uint32_t kMaxClipboardBytes = 1024U * 1024U;
+constexpr uint32_t kClipboardContinue = 1U;
+enum ClipboardResultFlags : uint32_t {
+  kClipboardReady = 1U << 0,
+  kClipboardMore = 1U << 1,
+  kClipboardComplete = 1U << 2,
+  kClipboardError = 1U << 3,
+};
+
+constexpr uint32_t kProgressUnknown = UINT32_MAX;
+enum ActivityFlags : uint32_t {
+  kActivityActive = 1U << 0,
+  kActivityCancellable = 1U << 1,
+  kActivityComplete = 1U << 2,
+  kActivityFailed = 1U << 3,
+};
+enum class Icon : uint32_t {
+  kDefault, kHome, kBack, kDownload, kFolder, kRefresh, kInfo,
+  kNetwork, kStorage, kImage, kSettings, kStop,
 };
 
 enum class Lifecycle : uint32_t { kResume = 1, kPause, kStop };
@@ -59,8 +141,10 @@ enum Flags : uint32_t {
 };
 
 // One bounded packet is one complete message. Strings must be NUL-terminated;
-// no pointers, file descriptors, paths, or variable-size allocations cross the
-// trust boundary.
+// No pointers or variable-size allocations cross the channel. Optional storage
+// paths use the bounded text field.
+// The optional host-to-worker kDesktopReady message alone carries two
+// SCM_RIGHTS descriptors: host-allocated, size-sealed shared pixels and input.
 struct Message {
   uint32_t magic = kMagic;
   uint32_t version = kProtocolVersion;
@@ -79,10 +163,10 @@ inline bool StringsValid(const Message &message) {
          memchr(message.text, '\0', sizeof(message.text)) != nullptr;
 }
 inline bool WorkerKind(Kind kind) {
-  return kind >= Kind::kHello && kind <= Kind::kSetBackAction;
+  return kind >= Kind::kHello && kind <= Kind::kPickFile;
 }
 inline bool HostKind(Kind kind) {
-  return kind >= Kind::kHelloAck && kind <= Kind::kOperationResult;
+  return kind >= Kind::kHelloAck && kind <= Kind::kFilePickerResult;
 }
 inline bool Valid(const Message &message, bool from_worker) {
   return message.magic == kMagic && message.version == kProtocolVersion &&

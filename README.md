@@ -5,11 +5,12 @@ is to GTK, this is to AERA: it hosts `libflutter_engine.so`, renders through GL
 (Zink), Vulkan or Impeller, hands frames to AERA, and answers Flutter's standard
 platform channels from AERA's input. A stock app runs unmodified.
 
-It targets AERA's **pixel plugin host** (Host API 3). AERA has not published
-one, so we wrote it: a patch series against AERA in `third_party/aera/`,
-built into the devicelab Cuttlefish image and offered upstream from there.
-`spec/host.md` is its contract. Plugins run as root
-in recovery's namespaces, so apps get root in-process; there is no helper.
+This branch targets upstream **Host API 2 desktop surfaces** at recovery
+`1cabc509`, with optional negotiated extensions for desktop keyboard geometry,
+Unicode entry and native Files/editor overlays. It does not use the colliding
+Host API 3 wire protocol. See [`spec/host.md`](spec/host.md) and the
+[feasibility and qualification report](docs/upstream-host-api-2.md).
+Plugins run as root in recovery's namespaces; there is no helper or sandbox.
 
 ## Parity reference
 
@@ -38,13 +39,13 @@ builds, packs and runs `.aerap`s and adds the `aera/` platform folder), app code
 ## Nest
 
 ```
-spec/host.md          the Host API 3 contract (launch, handshake, frames, input)
+spec/host.md          upstream API 2 + negotiated desktop extension contract
 spec/engine-pin.md    Flutter release, engine revision, header provenance
 src/engine.rs         dlopen, proc table, project args, run          ≈ fl_engine
-src/view.rs           window metrics, pointer, frame slots           ≈ fl_view
-src/task_runner.rs    platform task runner, vsync from FRAME_DONE
+src/view.rs           window metrics and frame slots                ≈ fl_view
+src/task_runner.rs    platform task runner, estimated vsync with ACK backpressure
 src/renderer/         gl.rs (default), vk.rs (--vulkan); Skia or Impeller; readback now, dma-buf later
-src/host/             socket + memfd slots, SURFACE, input, lifecycle, keyboard inset
+src/host/             SCM_RIGHTS control, desktop Play transport, memfd slots and input
 src/handlers/         one per standard channel
 src/ime.rs            text-input model
 src/env.rs            XDG dirs inside AERA_PLUGIN_DATA, ALSA config in the payload
@@ -53,7 +54,7 @@ audio/                ALSA's default device for the payload: AERA's audio bridge
 launcher/             static aera-plugin: private mount ns, font + CA binds, exec via payload ld-linux
 sim/                  aera-host-sim: AERA's side on a PC
 vendor/               AERA protocol.hpp (as published and as patched) + flutter_embedder.h
-third_party/aera/     Host API 3 for AERA, as patches against its pin
+third_party/aera/patches-api2/  small opt-in extensions against upstream 1cabc509
 third_party/mesa/     Zink-on-KGSL surfaceless patch
 ci/                   engine + gen_snapshot, Mesa, runtime-kit build scripts
 example/              the counter app as an .aerap
@@ -61,36 +62,25 @@ example/              the counter app as an .aerap
 
 ## Status
 
-The counter app renders and counts taps in `sim/` and through AERA's own
-launcher, session and pixel surface with the Host API 3 patches
-(`ci/aera-host-check.sh`). The debug runtime kits for arm64 and x64 are
-published (`spec/aerap.md`). Checked in CI under the simulator:
+The branch's reproducible host-only proof is `ci/api2-check.sh`: it runs the
+Rust workspace tests, then the same Flutter probe under unmodified API 2
+simulation and the explicitly negotiated extensions. It checks counter taps,
+different before/after screenshots, route Back, Unicode text submission,
+keyboard insets and a native Files round trip. Results and limitations are
+recorded in `docs/upstream-host-api-2.md`.
 
-- Renderers: GL (the default) and Vulkan (`--vulkan`, as flutter-pi), each
-  with Skia or Impeller (`--enable-impeller`) (`ci/renderer-check.sh`).
-  Skia on GL repaints and copies only what changed (the counter's copies
-  drop from 12 ms to 2.3 ms in the sim); the others copy whole frames.
-- Hot reload with a stock `flutter attach` (`ci/hot-reload-check.sh`,
-  `docs/debugging.md`).
-- Text input through AERA's keyboard, with its height as the bottom inset
-  (`ci/text-input-check.sh`).
-- Sound through ALSA's default device into a stand-in for AERA's closed
-  audio bridge (`ci/audio-check.sh`; `spec/host.md`, Sound).
-
-What AERA itself lacks, and which patch or workaround answers it:
-`docs/aera-deficiencies.md`.
-
-Not yet: a run inside an AERA image (devicelab's Cuttlefish build), a device
-run, `example/` .aerap. `spec/aerap.md` is the
-package layout `flutter_p0g` packs.
+Use the SDK matching the unchanged engine artifact (Flutter 3.47.5). The
+parallel Flutter/kit bump is a separate track; this branch does not change
+consumer pins. The old API 3 simulator scripts and recovery patch series are
+historical and are not this branch's qualification entry points.
 
 ```sh
-cargo test --workspace
-ci/sim-smoke.sh /tmp/smoke      # needs flutter 3.47.5 on PATH; frames in /tmp/smoke/sim
-ci/renderer-check.sh /tmp/smoke         # GL/Vulkan x Skia/Impeller (Vulkan needs a driver, e.g. lavapipe)
-sudo ci/aera-host-check.sh /tmp/smoke   # AERA + patches; frames in /tmp/smoke/aera-host
-sudo ci/audio-check.sh /tmp/smoke       # needs libasound2-dev, alsa-utils
+FLUTTER=/path/to/flutter-3.47.5/bin/flutter ci/api2-check.sh /tmp/api2-proof
 ```
+
+This is not yet a qualified Cuttlefish image or a released API 2 runtime kit.
+Do not flash, unlock or select any physical device. Cuttlefish qualification
+must use upstream recovery plus the explicitly listed remaining patches.
 
 ## License
 

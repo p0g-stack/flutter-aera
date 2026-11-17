@@ -1,7 +1,7 @@
 # The `.aerap` layout
 
-What `flutter_p0g` produces and AERA installs with the Host API 3 patches
-(`third_party/aera/`, patch 0005).
+The package contract for the `upstream-host-api-2` branch, accepted by upstream
+AERA at `1cabc509`. Existing consumer packers/pins are not changed by this spike.
 
 ## Package
 
@@ -27,33 +27,34 @@ Host API 2's schema (`plugin_manager.cpp`):
   "type": "ui-runtime",
   "entry": "main",
   "executable": "usr/bin/aera-plugin",
-  "min_host_api": 3,
-  "protocol_version": 3,
+  "min_host_api": 2,
+  "protocol_version": 2,
   "payload": "runtime.xz",
   "payload_url": "https://…/runtime.xz",
   "payload_size": 0, "payload_sha256": "…",
   "expanded_size": 0, "expanded_sha256": "…", "member_count": 0,
-  "permissions": ["display", "touch-input", "pixel-surface", "gpu-acceleration"]
+  "permissions": ["display", "touch-input", "desktop-surface"]
 }
 ```
 
 - `id`: lowercase letters, digits, `-` and `.`, 1–64, not starting or ending
   with `.`; never `browser`.
 - `name` ≤ 80, `description` ≤ 320, `version` ≤ 32, `icon` ≤ 24 characters.
-- `min_host_api` 3 and `protocol_version` 3 make it a pixel plugin.
-  Permissions: `display`, `touch-input` and `pixel-surface` are required;
-  `gpu-acceleration`, `network` and `audio-output` are the only others
-  allowed. They are declarations shown to the user: plugins run as root and
-  nothing enforces them. Add `network` or `audio-output` only when the app
-  needs them.
+- `min_host_api` and `protocol_version` are both 2. `display` and
+  `touch-input` are required; `desktop-surface` permits OpenDesktop.
+  Upstream also allows `settings-backup`, `settings-restore`,
+  `android-settings-backup`, `android-settings-restore`, `screen-mirror`.
+  The old `pixel-surface`, `gpu-acceleration`, `network` and `audio-output`
+  permissions are rejected by upstream's generic-plugin allowlist. All workers
+  already run as root; desktop permission is not a filesystem sandbox.
 
 ### Who sets which field
 
 | Fields | Source |
 | --- | --- |
 | `id`, `name`, `version`, `description`, optional `icon` | the app's `aera/plugin.json` |
-| extra `permissions` (`network`, `audio-output`) | the app's `aera/plugin.json`, merged after the fixed four |
-| `schema`, `type`, `entry`, `executable`, `min_host_api`, `protocol_version`, `payload`, base `permissions` | fixed by the packer, as above |
+| extra supported privileged permissions | the app's manifest, only when required |
+| `schema`, `type`, `entry`, `executable`, `min_host_api`, `protocol_version`, `payload`, base `permissions` | API 2 values above; consumer packers still require a separate migration before adoption |
 | `payload_size`, `payload_sha256`, `expanded_size`, `expanded_sha256`, `member_count` | computed by the packer from `runtime.xz` |
 | `payload_url` | where `runtime.xz` is published; any https URL for local installs |
 
@@ -76,8 +77,8 @@ length is not a multiple of 4 the two differ, and AERA's reader
 the package. Devicelab's `aera/tools/aerap.py` matches that reader.
 
 Regular files only (AERA's mode 0, an alias whose body is the target path,
-is not used), ≤ 4096 members, ≤ 100 MiB each, ≤ 512 MiB compressed and
-expanded.
+is not used), ≤4096 members. Upstream at `1cabc509` accepts ≤512 MiB per
+member and ≤512 MiB compressed/expanded; it also reserves extraction RAM.
 
 The expanded tree (`AERA_PLUGIN_ROOT`):
 
@@ -102,43 +103,24 @@ contributes only `flutter_assets` and, for AOT builds, `libapp.so`.
 
 ## Storage and lifecycle
 
-AERA picks the data directory (`AERA_PLUGIN_DATA`, patch 0005) at every
-launch: `/sdcard/AERA/plugin-data/<id>` when `/sdcard/AERA` is on mounted
-storage (decrypted; AERA asks to unlock it on first launch; a `/sdcard/AERA`
-folder in recovery's RAM root while `/data` is not mounted does not count),
-otherwise `/tmp/aera/plugin-data/<id>` in RAM, and then AERA also sets
-`AERA_PLUGIN_DATA_VOLATILE=1` (patch 0022) so the app can warn that nothing
-it saves survives a reboot (`Platform.environment`). The embedder (`src/env.rs`)
-and the payload's `xdg-user-dir` map the stock APIs onto it. The engine is
-Flutter's Linux embedder engine, so Dart reports `linux` and the stock
-`*_linux` implementations (`path_provider_linux`, which
-`shared_preferences_linux` uses) are the ones in play:
+Upstream API 2 does **not** set `AERA_PLUGIN_DATA`,
+`AERA_PLUGIN_DATA_VOLATILE` or the old pixel-host appearance variable.
+It supplies `HOME=/tmp` and `TMPDIR=/tmp`. The embedder's optional
+`AERA_PLUGIN_DATA` override remains useful for local launches, but is not a
+promise made by recovery. Without that explicit override, XDG/home paths are
+left to the process environment. Persistent preferences/support directories
+are not qualified on this branch. An app must use an explicitly selected,
+available storage path for durable data and validate its own storage policy.
 
-| Flutter API (stock) | AERA path | Lifetime |
-| --- | --- | --- |
-| `getApplicationSupportDirectory` | `$AERA_PLUGIN_DATA/data/<app id>` (`XDG_DATA_HOME`) | survives updates and reboots; removed with the plugin |
-| `SharedPreferences` | `shared_preferences.json` in the support directory | same |
-| `getApplicationDocumentsDirectory` | `$AERA_PLUGIN_DATA` (`HOME`), as WebUI's | same |
-| `getApplicationCacheDirectory` | `$AERA_PLUGIN_DATA/cache/<app id>` (`XDG_CACHE_HOME`) | same; the app may clear it |
-| `getTemporaryDirectory` | `/tmp/aera-flutter/<id>` (`TMPDIR`), recovery's RAM | until reboot |
-| `getDownloadsDirectory` | `/sdcard/Download` when mounted, else `HOME` | the user's |
-| files the user picks | anywhere, through AERA's picker (`spec/host.md`, Files) | the user's |
+The simulator may set a private output-directory override for its fixtures;
+that does not establish recovery persistence. No physical device, partition,
+mount, unlock or flash operation is part of this branch's proof.
 
-Launched while storage is locked, the app runs on an empty RAM directory
-that is gone at reboot; its data on storage is untouched and back at the
-next launch with storage mounted. Removing the plugin deletes both data
-directories (a locked storage one stays behind). Updates keep them.
-
-Lifecycle (patch 0021, `spec/host.md` Lifecycle): AERA starts the plugin
-when it is first opened (`resumed`). Leaving its scene for Home, Recents or
-another app pauses it (`paused`): the process stays, drawing stalls, and
-opening it again resumes it where it was. A shade, sheet or AERA's picker
-over it makes it `inactive`. It ends (`detached`, then SIGTERM, half a
-second, SIGKILL for the process group) when the app pops its last route,
-when Recents is cleared or drops it, or when an update replaces it.
-Nothing runs beyond that, and nothing pauses it otherwise: a blanked
-screen does not, and recovery never suspends. Rotation keeps it running
-(patch 0020).
+Lifecycle is upstream API 2 resume=1, pause=2, stop=3. Desktop and background
+mode are mutually exclusive. Leaving the plugin scene destroys the surface
+and terminates the worker process group rather than retaining a Flutter app in
+Recents. Desktop EXIT restores the setup orientation. There is no API 3
+inactive state or live-rotation surface renegotiation; see `host.md`.
 
 ## Runtime kit
 

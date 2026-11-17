@@ -2,21 +2,30 @@
 //! platform loop. ≈ GTK's `fl_engine` plus flutter-pi's main loop.
 //!
 //! Threads: the caller's thread is Flutter's platform thread and runs
-//! [`Engine::run`]: platform tasks, AERA's control socket and vsync answers.
-//! The engine's own raster thread calls the renderer callbacks and presents
-//! frames into AERA's slots.
+//! [`Engine::run`]: platform tasks, AERA's control socket, the desktop's
+//! play channel (acknowledgements and input) and vsync answers. The
+//! engine's own raster thread calls the renderer callbacks and publishes
+//! frames into the desktop's slots.
+//!
+//! Lifecycle: `main.rs` opens the desktop before the engine starts. AERA's
+//! EXIT closes it (`PLAY_CLOSE`, then the channel): the app keeps running,
+//! hidden, behind the setup page, whose Open action asks for the desktop
+//! again at the same size; Close ends the app.
 
 use std::ffi::{c_char, c_void, CStr, CString};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use libloading::Library;
 
 use crate::ffi::{self, FlutterEngineProcTable, FlutterTask, FLUTTER_ENGINE_VERSION};
 use crate::handlers::{self, Effect, Handlers};
-use crate::host::{kind, lifecycle, Control, Geometry, Message, Slots};
+use crate::host::desktop::{self, Request};
+use crate::host::input::{self, Device, Input, Phase, Translator};
+use crate::host::{feature, kind, lifecycle, play, surface, Control, Desktop, Geometry, Message};
 use crate::renderer::gl::{self, Gl};
 use crate::renderer::damage::{Damage, Rect};
 use crate::renderer::vk::Vk;
@@ -38,6 +47,9 @@ pub struct Config {
     pub vulkan: bool,
     /// AERA's `HELLO_ACK` features.
     pub host_features: u32,
+    /// The desktop size asked for (`None`: AERA's default); a reopened
+    /// desktop asks for the same.
+    pub desktop_size: Option<(u32, u32)>,
     /// The view's padding in logical pixels (left, top, right, bottom).
     pub padding_dp: [f64; 4],
 }
@@ -53,6 +65,7 @@ impl Config {
             engine_args: vec![],
             vulkan: false,
             host_features: 0,
+            desktop_size: None,
             padding_dp: crate::padding::DEFAULT.dp(),
         }
     }
@@ -63,12 +76,25 @@ struct Vsync {
     last_ns: u64,
 }
 
+/// Asking AERA for the desktop again.
+struct Opening {
+    pending: Option<Request>,
+    next_id: u32,
+}
+
 /// Everything the engine's callbacks reach through `user_data`.
 struct Shared {
     procs: FlutterEngineProcTable,
     engine: Mutex<ffi::FlutterEngine>,
     control: Control,
-    slots: Slots,
+    features: u32,
+    /// The desktop's fixed shape; every desktop of this run has it.
+    geometry: Geometry,
+    desktop_size: Option<(u32, u32)>,
+    /// The open desktop, if any. The raster thread clones it per frame.
+    desktop: Mutex<Option<Arc<Desktop>>>,
+    opening: Mutex<Opening>,
+    input: Mutex<Translator>,
     renderer: Renderer,
     /// What each slot still lacks (GL with partial repaint).
     damage: Mutex<Damage>,
@@ -132,10 +158,9 @@ pub fn locale_from_env(value: Option<&str>) -> (String, Option<String>) {
 }
 
 impl Engine {
-    /// Loads the engine and starts the app. `early` are host messages that
-    /// arrived during the handshake.
-    pub fn start(config: Config, control: Control, slots: Slots) -> Result<Engine, String> {
-        let geometry = slots.geometry();
+    /// Loads the engine and starts the app on the desktop `main.rs` opened.
+    pub fn start(config: Config, control: Control, desktop: Desktop) -> Result<Engine, String> {
+        let geometry = desktop.geometry();
         // SAFETY: loading the engine library we ship; its initializers are
         // the engine's own.
         let library = unsafe { Library::new(&config.engine_library) }
@@ -144,7 +169,7 @@ impl Engine {
         // The engine's switch, as GTK passes it through.
         let impeller = config.engine_args.iter().any(|a| a == "--enable-impeller" || a == "--enable-impeller=true");
         let renderer = if config.vulkan {
-            match Vk::new(geometry.width, geometry.height, slots.longest_side()) {
+            match Vk::new(geometry.width, geometry.height, geometry.width.max(geometry.height)) {
                 Ok(v) => {
                     eprintln!("aera-flutter: Vulkan on {}", v.name());
                     Renderer::Vk(v)
@@ -157,15 +182,25 @@ impl Engine {
         } else {
             Renderer::Gl(Gl::new(geometry.width, geometry.height, impeller)?)
         };
+        // AERA's toolbar covers the desktop's top left: apps keep their
+        // controls below it, as below a status bar.
+        let mut padding_dp = config.padding_dp;
+        padding_dp[1] = padding_dp[1].max(desktop::toolbar_height(geometry.height) as f64 / geometry.scale);
+        let next_id = desktop.request_id.wrapping_add(1).max(1);
         let shared = Box::new(Shared {
             procs,
             engine: Mutex::new(std::ptr::null_mut()),
             control,
-            slots,
+            features: config.host_features,
+            geometry,
+            desktop_size: config.desktop_size,
+            desktop: Mutex::new(Some(Arc::new(desktop))),
+            opening: Mutex::new(Opening { pending: None, next_id }),
+            input: Mutex::new(Translator::new(geometry.width, geometry.height)),
             renderer,
-            damage: Mutex::new(Damage::new(geometry.width, geometry.height, geometry.slots as usize)),
+            damage: Mutex::new(Damage::new(geometry.width, geometry.height, surface::SLOTS as usize)),
             runner: TaskRunner::new().map_err(|e| e.to_string())?,
-            view: Mutex::new(View { padding_dp: config.padding_dp, ..View::new(geometry) }),
+            view: Mutex::new(View { padding_dp, ..View::new(geometry) }),
             handlers: Mutex::new(Handlers { settings: crate::aera_settings::Settings::load(), features: config.host_features, ..Handlers::default() }),
             vsync: Mutex::new(Vsync { baton: None, last_ns: 0 }),
             exit: AtomicBool::new(false),
@@ -175,8 +210,6 @@ impl Engine {
         });
         let user_data = &*shared as *const Shared as *mut c_void;
 
-        // SAFETY: plain C structs; zeroed is valid and every callback we set
-        // matches the header's signature.
         // SAFETY: plain C structs; zeroed is valid and every callback we set
         // matches the header's signature.
         let mut renderer: ffi::FlutterRendererConfig = unsafe { std::mem::zeroed() };
@@ -323,7 +356,7 @@ impl Engine {
     /// Replays host messages that arrived before the engine started.
     pub fn replay(&self, early: Vec<Message>) {
         for m in early {
-            self.shared.on_host(&m);
+            self.shared.on_control(m, vec![]);
         }
     }
 
@@ -338,26 +371,46 @@ impl Engine {
                 // on its thread.
                 unsafe { (s.procs.RunTask.unwrap())(s.engine(), &task) };
             }
+            if s.exit.load(Ordering::Acquire) {
+                break;
+            }
             let vsync_wait = s.answer_vsync(s.now());
             let task_wait = s.runner.next_target().map(|t| t.saturating_sub(s.now()));
             let wait_ns = [vsync_wait, task_wait].into_iter().flatten().min();
             let timeout = wait_ns.map_or(-1, |ns| ns.div_ceil(1_000_000).min(i32::MAX as u64) as i32);
+            let play_fd = s.desktop().map_or(-1, |d| d.play.raw_fd());
             let mut fds = [
                 libc::pollfd { fd: s.control.raw_fd(), events: libc::POLLIN, revents: 0 },
                 libc::pollfd { fd: s.runner.wake_fd(), events: libc::POLLIN, revents: 0 },
+                // Negative while no desktop is open: poll skips it.
+                libc::pollfd { fd: play_fd, events: libc::POLLIN, revents: 0 },
             ];
-            // SAFETY: two valid pollfds.
-            if unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) } < 0 {
+            // SAFETY: three valid pollfds.
+            if unsafe { libc::poll(fds.as_mut_ptr(), 3, timeout) } < 0 {
                 continue;
             }
             if fds[1].revents != 0 {
                 s.runner.drain_wake();
             }
+            if fds[2].revents != 0 {
+                s.on_play();
+            }
+            if s.exit.load(Ordering::Acquire) {
+                break;
+            }
             if fds[0].revents != 0 {
-                loop {
-                    match s.control.try_recv() {
-                        Ok(Some(m)) => s.on_host(&m),
+                while !s.exit.load(Ordering::Acquire) {
+                    match s.control.try_recv_with_fds() {
+                        Ok(Some((m, fds))) => s.on_control(m, fds),
                         Ok(None) => break,
+                        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                            // As upstream's Session on a bad packet: the
+                            // session is over.
+                            eprintln!("aera-flutter: protocol error from the host ({e})");
+                            s.apply(vec![Effect::Exit]);
+                            status = 1;
+                            break;
+                        }
                         Err(e) => {
                             eprintln!("aera-flutter: host gone ({e})");
                             s.exit.store(true, Ordering::Release);
@@ -371,7 +424,7 @@ impl Engine {
         let frames = s.frames.load(Ordering::Relaxed);
         eprintln!("aera-flutter: shutting down after {frames} frames");
         if frames > 0 {
-            let g = s.slots.geometry();
+            let g = s.geometry;
             let px = s.copy_px.load(Ordering::Relaxed) as f64 / frames as f64;
             eprintln!(
                 "aera-flutter: copies {:.2} ms and {:.0}% of the frame on average",
@@ -386,7 +439,10 @@ impl Engine {
 impl Drop for Engine {
     fn drop(&mut self) {
         let s = &*self.shared;
-        s.slots.close();
+        // Wake the raster thread for good; AERA tears the desktop down.
+        if let Some(d) = s.desktop.lock().unwrap().take() {
+            d.slots.close();
+        }
         let engine = s.engine();
         if !engine.is_null() {
             // SAFETY: shut down once, on the platform thread, before
@@ -451,24 +507,125 @@ impl Shared {
         }
     }
 
-    /// A later `SURFACE`: AERA rotated. The slots take the new shape, the
-    /// renderer follows on its next frame, and Flutter gets new metrics.
-    fn reshape(&self, m: &Message) {
-        let Some(g) = Geometry::from_message(m) else {
-            eprintln!("aera-flutter: ignoring a bad SURFACE");
-            return;
-        };
-        if !self.renderer.resize(g.width, g.height) || !self.slots.reshape(g) {
-            eprintln!("aera-flutter: cannot follow SURFACE {}x{}; keeping {:?}", g.width, g.height, self.slots.geometry());
+    fn desktop(&self) -> Option<Arc<Desktop>> {
+        self.desktop.lock().unwrap().clone()
+    }
+
+    fn status(&self, text: &str) {
+        self.apply(vec![Effect::Host(desktop::status(text))]);
+    }
+
+    /// The setup page's Open: ask AERA for the desktop again, same size.
+    fn open_desktop(&self) {
+        if self.desktop.lock().unwrap().is_some() {
             return;
         }
-        eprintln!("aera-flutter: surface now {}x{}", g.width, g.height);
-        *self.damage.lock().unwrap() = Damage::new(g.width, g.height, g.slots as usize);
-        self.view.lock().unwrap().geometry = g;
-        self.send_metrics();
+        let mut opening = self.opening.lock().unwrap();
+        if opening.pending.is_some() {
+            return;
+        }
+        let id = opening.next_id;
+        opening.next_id = id.wrapping_add(1).max(1);
+        let request = match Request::new(id, self.desktop_size, self.features) {
+            Ok(r) => r,
+            Err(e) => {
+                drop(opening);
+                return self.status(&e);
+            }
+        };
+        match self.control.send(&request.message()) {
+            Ok(()) => opening.pending = Some(request),
+            Err(e) => eprintln!("aera-flutter: OPEN_DESKTOP: {e}"),
+        }
+    }
+
+    fn on_desktop_ready(&self, m: &Message, fds: Vec<OwnedFd>) {
+        let request = {
+            let mut opening = self.opening.lock().unwrap();
+            match opening.pending {
+                Some(r) if r.request_id == m.request_id => opening.pending.take().unwrap(),
+                _ => {
+                    // Its descriptors close here.
+                    eprintln!("aera-flutter: DESKTOP_READY {} that we did not ask for", m.request_id);
+                    return;
+                }
+            }
+        };
+        let d = match Desktop::accept(&request, m, fds) {
+            Ok(d) if d.geometry() == self.geometry => d,
+            Ok(d) => {
+                let g = d.geometry();
+                return self.status(&format!("Desktop unavailable: {}x{} is not this app's {}x{}", g.width, g.height, self.geometry.width, self.geometry.height));
+            }
+            Err(e) => return self.status(&format!("Desktop unavailable: {e}")),
+        };
+        eprintln!("aera-flutter: desktop {} open again", d.request_id);
+        // New memory: every slot needs the whole frame.
+        *self.damage.lock().unwrap() = Damage::new(self.geometry.width, self.geometry.height, surface::SLOTS as usize);
+        *self.input.lock().unwrap() = Translator::new(self.geometry.width, self.geometry.height);
+        *self.desktop.lock().unwrap() = Some(Arc::new(d));
+        self.apply(vec![handlers::lifecycle::message("resumed"), Effect::Host(desktop::status(""))]);
         // SAFETY: a live engine.
         unsafe { (self.procs.ScheduleFrame.unwrap())(self.engine()) };
         self.runner.wake();
+    }
+
+    /// The desktop is gone (EXIT, a protocol error, the channel closed): the
+    /// app keeps running hidden behind the setup page.
+    fn close_desktop(&self, why: &str) {
+        let Some(d) = self.desktop.lock().unwrap().take() else { return };
+        d.slots.close();
+        eprintln!("aera-flutter: desktop {} closed ({why})", d.request_id);
+        let held = self.input.lock().unwrap().release();
+        self.send_inputs(held);
+        self.apply(vec![handlers::lifecycle::message("hidden"), Effect::Host(desktop::status("Desktop closed."))]);
+    }
+
+    /// Everything waiting on the play channel.
+    fn on_play(&self) {
+        let Some(d) = self.desktop() else { return };
+        let unicode = self.features & feature::DESKTOP_INTEGRATION != 0;
+        loop {
+            let m = match d.play.try_recv() {
+                Ok(Some(m)) => m,
+                Ok(None) => return,
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return self.close_desktop("channel closed"),
+                Err(e) => return self.close_desktop(&format!("play channel: {e}")),
+            };
+            match m.kind {
+                play::ACK => {
+                    if let Err(e) = d.slots.ack(m.sequence) {
+                        return self.close_desktop(&e.to_string());
+                    }
+                }
+                play::FRAME => return self.close_desktop("AERA sent a FRAME"),
+                // AERA sends RELEASE first; close_desktop releases anyway.
+                play::CLOSE => return self.close_desktop("EXIT"),
+                _ => {
+                    let inputs = self.input.lock().unwrap().on_play(&m, unicode);
+                    self.send_inputs(inputs);
+                }
+            }
+        }
+    }
+
+    fn send_inputs(&self, inputs: Vec<Input>) {
+        for i in inputs {
+            match i {
+                Input::Pointer { .. } => {
+                    if let Some(e) = pointer_event(&i, (self.now() / 1000) as usize) {
+                        // SAFETY: a live engine and one event on the stack.
+                        unsafe { (self.procs.SendPointerEvent.unwrap())(self.engine(), &e, 1) };
+                    }
+                }
+                Input::Back => self.apply(vec![handlers::navigation::pop_route()]),
+                Input::Text(code) => {
+                    let mut effects = vec![];
+                    handlers::textinput::on_key(&mut self.handlers.lock().unwrap().ime, code, &mut effects);
+                    self.apply(effects);
+                }
+            }
+        }
     }
 
     /// Answers a platform message through its response handle, once.
@@ -483,23 +640,27 @@ impl Shared {
         }
     }
 
-    fn on_host(&self, m: &Message) {
+    /// A control packet with the descriptors it carried; only
+    /// `DESKTOP_READY` keeps any.
+    fn on_control(&self, m: Message, fds: Vec<OwnedFd>) {
+        if m.kind == kind::DESKTOP_READY {
+            return self.on_desktop_ready(&m, fds);
+        }
+        if !fds.is_empty() {
+            eprintln!("aera-flutter: closing {} descriptors sent with kind {}", fds.len(), m.kind);
+        }
+        if !kind::negotiated(m.kind, self.features) {
+            eprintln!("aera-flutter: ignoring kind {}, not negotiated", m.kind);
+            return;
+        }
         match m.kind {
-            kind::FRAME_DONE => {
-                if !self.slots.frame_done(m.request_id) {
-                    eprintln!("aera-flutter: FRAME_DONE for unknown frame {}", m.request_id);
-                }
-            }
-            kind::TOUCH_DOWN | kind::TOUCH_MOVE | kind::TOUCH_UP => {
-                let event = self.view.lock().unwrap().pointer(m, (self.now() / 1000) as usize);
-                if let Some(e) = event {
-                    // SAFETY: a live engine and one event on the stack.
-                    unsafe { (self.procs.SendPointerEvent.unwrap())(self.engine(), &e, 1) };
-                }
-            }
-            kind::SURFACE => self.reshape(m),
+            kind::ACTION => match m.request_id {
+                desktop::ACTION_OPEN => self.open_desktop(),
+                desktop::ACTION_CLOSE => self.apply(vec![Effect::Exit]),
+                other => eprintln!("aera-flutter: unknown action {other}"),
+            },
             _ => {
-                let effects = self.handlers.lock().unwrap().on_host(m);
+                let effects = self.handlers.lock().unwrap().on_host(&m);
                 self.apply(effects);
                 if m.kind == kind::LIFECYCLE && m.value == lifecycle::STOP {
                     self.exit.store(true, Ordering::Release);
@@ -508,17 +669,17 @@ impl Shared {
         }
     }
 
-    /// Answers a pending vsync once a slot is free and a frame period has
-    /// passed. Returns how long to wait before trying again, if anything is
-    /// pending.
+    /// Answers a pending vsync once the previous frame is acknowledged and
+    /// a frame period has passed. Returns how long to wait before trying
+    /// again, if anything is pending. No desktop, no vsync: the app idles.
     fn answer_vsync(&self, now: u64) -> Option<u64> {
         let mut v = self.vsync.lock().unwrap();
         let baton = v.baton?;
-        if !self.slots.has_free() {
-            // FRAME_DONE wakes the loop through the control socket.
+        if !self.desktop().is_some_and(|d| d.slots.has_free()) {
+            // PLAY_ACK or a reopened desktop wakes the loop.
             return None;
         }
-        let period = self.slots.geometry().frame_period().as_nanos() as u64;
+        let period = self.geometry.frame_period().as_nanos() as u64;
         let earliest = v.last_ns + period;
         if now < earliest {
             return Some(earliest - now);
@@ -563,10 +724,7 @@ unsafe extern "C" fn cb_fbo(user_data: *mut c_void) -> u32 {
 }
 
 /// Asked at the start of each frame, before the engine asks for the
-/// framebuffer, which is when a rotation reallocates it: so the flip is
-/// about the height the frame will have, not the one the framebuffer had.
-/// (With the old height the first frame after a rotation was drawn shifted
-/// off the surface, and later partial repaints left the rest stale.)
+/// framebuffer: the flip is about the height the frame is drawn at.
 unsafe extern "C" fn cb_transformation(user_data: *mut c_void) -> ffi::FlutterTransformation {
     gl::flip_vertically(shared(user_data).renderer.gl().drawing_size().1)
 }
@@ -575,7 +733,7 @@ unsafe extern "C" fn cb_proc_resolver(user_data: *mut c_void, name: *const c_cha
     shared(user_data).renderer.gl().proc_address(CStr::from_ptr(name))
 }
 
-/// Raster thread: copy the frame into a free slot and tell AERA.
+/// Raster thread: copy the frame into the next slot and tell AERA.
 unsafe extern "C" fn cb_present(user_data: *mut c_void) -> bool {
     let s = shared(user_data);
     present(s, None, |slot, stride, rect| s.renderer.gl().read_frame(slot, stride, rect))
@@ -583,7 +741,7 @@ unsafe extern "C" fn cb_present(user_data: *mut c_void) -> bool {
 
 unsafe extern "C" fn cb_present_with_info(user_data: *mut c_void, info: *const ffi::FlutterPresentInfo) -> bool {
     let s = shared(user_data);
-    let g = s.slots.geometry();
+    let g = s.geometry;
     let d = &(*info).frame_damage;
     let changed = (d.num_rects > 0 && !d.damage.is_null()).then(|| {
         std::slice::from_raw_parts(d.damage, d.num_rects)
@@ -629,38 +787,64 @@ unsafe extern "C" fn cb_vk_present(user_data: *mut c_void, _image: *const ffi::F
     present(s, None, |slot, stride, _| v.read_frame(slot, stride))
 }
 
-/// Copies a frame into a free slot and tells AERA. `changed` is what
-/// Flutter repainted (`None`: unknown, all of it).
+/// Copies a frame into the desktop's next slot and sends its `PLAY_FRAME`.
+/// `changed` is what Flutter repainted (`None`: unknown, all of it).
 fn present(s: &Shared, changed: Option<Rect>, read: impl FnOnce(&mut [u8], usize, Rect)) -> bool {
-    let Some(frame) = s.slots.acquire(Duration::from_secs(1)) else {
-        // AERA held every slot for a second (or we are shutting down): drop
-        // this frame rather than stall the raster thread forever. What it
+    // Vsync waits for the previous frame's ACK, so this rarely waits; a
+    // second's wait means AERA stopped latching (or the desktop closed).
+    let Some((d, frame)) = s.desktop().and_then(|d| d.slots.acquire(Duration::from_secs(1)).map(|f| (d, f))) else {
+        // Drop this frame rather than stall the raster thread. What it
         // changed is still owed to every slot.
         s.damage.lock().unwrap().skip(changed);
         return true;
     };
-    let g = frame.geometry;
-    if s.renderer.size() != (g.width, g.height) {
-        // Drawn before a rotation reached the renderer: the next frame has
-        // the new shape.
-        s.slots.release(&frame);
-        // SAFETY: a live engine.
-        unsafe { (s.procs.ScheduleFrame.unwrap())(s.engine()) };
-        return true;
-    }
-    let stride = g.stride as usize;
+    let stride = frame.geometry.stride as usize;
     let rect = s.damage.lock().unwrap().next(frame.index, changed);
     let started = std::time::Instant::now();
-    // SAFETY: `frame` is ours until `present`.
-    read(unsafe { s.slots.slot_mut(&frame) }, stride, rect);
+    // SAFETY: `frame` is ours until `present`, and AERA no longer shows
+    // its slot (Slots' sequence rule).
+    read(unsafe { d.slots.slot_mut(&frame) }, stride, rect);
     s.copy_ns.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
     s.copy_px.fetch_add(((rect.x1 - rect.x0) * (rect.y1 - rect.y0)) as u64, Ordering::Relaxed);
-    let message = s.slots.present(&frame);
+    let message = d.slots.present(&frame);
     s.frames.fetch_add(1, Ordering::Relaxed);
-    if let Err(e) = s.control.send(&message) {
-        eprintln!("aera-flutter: PRESENT failed: {e}");
+    if let Err(e) = d.play.send(&message) {
+        // No further frames on this desktop; the platform thread closes it
+        // when the channel reports the error.
+        eprintln!("aera-flutter: PLAY_FRAME {} failed: {e}", message.sequence);
+        d.slots.close();
     }
     true
+}
+
+/// A desktop pointer [`Input`] as Flutter's event; `None` for other inputs.
+fn pointer_event(i: &Input, timestamp_us: usize) -> Option<ffi::FlutterPointerEvent> {
+    let Input::Pointer { device, phase, x, y, buttons, scroll_y } = *i else { return None };
+    // SAFETY: a plain C struct; all-zero is a valid start.
+    let mut e: ffi::FlutterPointerEvent = unsafe { std::mem::zeroed() };
+    e.struct_size = std::mem::size_of::<ffi::FlutterPointerEvent>();
+    e.phase = match phase {
+        Phase::Add => ffi::kAdd,
+        Phase::Down => ffi::kDown,
+        Phase::Move => ffi::kMove,
+        Phase::Up => ffi::kUp,
+        Phase::Cancel => ffi::kCancel,
+        Phase::Hover => ffi::kHover,
+    };
+    e.timestamp = timestamp_us;
+    e.x = x;
+    e.y = y;
+    (e.device, e.device_kind, e.buttons) = match device {
+        // The engine fills in a touch's primary button.
+        Device::Touch => (input::TOUCH_DEVICE, ffi::kFlutterPointerDeviceKindTouch, 0),
+        Device::Mouse => (input::MOUSE_DEVICE, ffi::kFlutterPointerDeviceKindMouse, buttons),
+    };
+    if scroll_y != 0.0 {
+        e.signal_kind = ffi::kFlutterPointerSignalKindScroll;
+        e.scroll_delta_y = scroll_y;
+    }
+    e.view_id = crate::view::VIEW_ID;
+    Some(e)
 }
 
 unsafe extern "C" fn cb_runs_on_platform(user_data: *mut c_void) -> bool {

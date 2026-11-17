@@ -195,7 +195,8 @@ fn main() {
     let mut pointers: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
     pointers.push(std::ptr::null());
     // SAFETY: argv is NUL-terminated and outlives the call; the environment
-    // (AERA_* variables, fds 3 and 4) passes through unchanged.
+    // (AERA_HOST_API=2, AERA_PLUGIN_FD=4 and the rest) and fd 4 pass
+    // through unchanged, as does upstream's --aera-host-api=2.
     unsafe { libc::execv(loader.as_ptr(), pointers.as_ptr()) };
     eprintln!("aera-plugin: exec {}: {}", loader.to_string_lossy(), std::io::Error::last_os_error());
     std::process::exit(127);

@@ -1,0 +1,660 @@
+From 92917b6ff96cbdbd803d8015100c7f02ed365087 Mon Sep 17 00:00:00 2001
+From: 1vivy <1vivy@tutanota.com>
+Date: Tue, 17 Nov 2026 02:10:30 -0600
+Subject: [PATCH 1/2] plugin_api: let a desktop plugin use Files and the
+ keyboard over its desktop
+
+A Host API 2 worker that opened the optional desktop could not ask for a
+file while the desktop was up (PICK_FILE was refused), could not show or
+hide AERA's on-screen keyboard for a focused text field, never learned
+how much of its frame the keyboard covered, and lost every key that has
+no ASCII keysym.
+
+Add kFeatureDesktopIntegration (bit 12), negotiated like the other
+optional features through the HELLO request marker:
+
+- PICK_FILE is accepted while the desktop is open. The Files selection
+  opens over it and suspends desktop input for as long as it is open:
+  held keys get their key-up, RELEASE is sent, a shown keyboard is
+  hidden, and touches, mouse and keys go to Files. A press that began on
+  the guest is swallowed until it is released; one that began on Files
+  ends there. Every close path (select, cancel, a new page, leaving the
+  view, the worker stopping) restores input and a requested keyboard.
+- SET_DESKTOP_KEYBOARD (worker kind 29) shows or hides the keyboard,
+  with the number or multiline layout. Contacts above the shown keyboard
+  still reach the guest; Done sends Return.
+- DESKTOP_KEYBOARD_INSET (host kind 76) reports the framebuffer rows the
+  keyboard covers: 0 after DESKTOP_READY, then on each show and hide,
+  including the toolbar's KEYS button, which now toggles.
+- On-screen keys without an ASCII keysym are sent as X11 keysyms (the
+  Latin-1 code point, else 0x01000000 | code point).
+
+The new kinds are valid only after the bit was acknowledged: the session
+closes a worker that sends one unnegotiated and never sends one to it.
+Workers that do not request the bit keep the previous behaviour, values
+and ACK flags exactly.
+
+Assisted-by: Claude Opus 5.5
+---
+ aeraui/components/plugin_desktop.cpp     | 198 +++++++++++++++++++----
+ aeraui/components/plugin_desktop.hpp     |  19 +++
+ aeraui/features/plugin_api/README.md     |  33 ++++
+ aeraui/features/plugin_api/protocol.hpp  |  18 ++-
+ aeraui/features/plugin_api/session.cpp   |   7 +-
+ aeraui/scenes/generic_plugin_scene.cpp   |  35 +++-
+ aeraui/tests/plugin_api_session_test.cpp |  13 +-
+ aeraui/tests/plugin_runtime_ui_test.cpp  |  52 ++++++
+ 8 files changed, 336 insertions(+), 39 deletions(-)
+
+diff --git a/aeraui/components/plugin_desktop.cpp b/aeraui/components/plugin_desktop.cpp
+index 0a81f0a5..8e3201af 100644
+--- a/aeraui/components/plugin_desktop.cpp
++++ b/aeraui/components/plugin_desktop.cpp
+@@ -37,6 +37,15 @@ struct PlayScene {
+   bool mouse_buttons[4]{}, mouse_toolbar=false, mouse_pending=false;
+   int mouse_x=0,mouse_y=0,mouse_dx=0,mouse_dy=0;
+   std::function<void()> on_close;
++  // kFeatureDesktopIntegration: geometry reports and Unicode keysyms.
++  bool integration=false,suspended=false,keyboard_wanted=false,keyboard_multiline=false;
++  uint32_t keyboard_inset=0;
++  std::function<void(uint32_t)> on_inset;
++  // Contacts and mouse buttons pressed on AERA's UI (a native modal or the
++  // keyboard) stay there until released; ones pressed on the guest before a
++  // modal opened are swallowed until released.
++  std::array<bool,16> lvgl_contacts{},drained_contacts{};
++  bool lvgl_buttons[4]{},drained_buttons[4]{};
+   bool Send(uint32_t kind,int x=0,int y=0) {
+     if(control<0) return false;
+     // Controls use a fixed virtual layout; only guest pointer coordinates scale.
+@@ -105,16 +114,97 @@ void Mark(PlayScene *s,const char *text,int gx,int gy,int w=70,int h=42) {
+   if(gx==130&&gy==32)s->mode_label=l;
+   if(gy>65) {s->game_controls.push_back(b);lv_obj_add_flag(b,LV_OBJ_FLAG_HIDDEN);}
+ }
++bool KeyboardVisible(const PlayScene *s) {
++  return s->keyboard&&!lv_obj_has_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN);
++}
++bool InKeyboard(const PlayScene *s,int py) {
++  lv_area_t area; lv_obj_get_coords(s->keyboard,&area);
++  return py>=area.y1;
++}
++// Bottom occlusion of the guest frame, in framebuffer rows, rounded up.
++void ReportInset(PlayScene *s) {
++  uint32_t inset=0;
++  if(KeyboardVisible(s)&&s->height>0) {
++    lv_obj_update_layout(s->screen);
++    lv_area_t screen,keyboard;
++    lv_obj_get_coords(s->screen,&screen);lv_obj_get_coords(s->keyboard,&keyboard);
++    const int bottom=screen.y1+s->top+s->height;
++    const int covered=std::clamp(bottom-static_cast<int>(keyboard.y1),0,s->height);
++    inset=static_cast<uint32_t>((static_cast<int64_t>(covered)*s->frame_height+s->height-1)/s->height);
++  }
++  if(inset==s->keyboard_inset)return;
++  s->keyboard_inset=inset;
++  if(s->on_inset)s->on_inset(inset);
++}
++void ShowKeyboard(PlayScene *s,bool visible,bool release) {
++  s->keyboard_wanted=visible;
++  if(visible) {
++    if(release)s->Release();
++    lv_obj_remove_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN);
++    lv_obj_move_foreground(s->keyboard);
++  } else lv_obj_add_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN);
++  ReportInset(s);
++}
++void KeyboardEvent(lv_event_t *event) {
++  auto *state=static_cast<PlayScene *>(lv_event_get_user_data(event));
++  const auto code=lv_event_get_code(event);
++  if(code==LV_EVENT_READY||code==LV_EVENT_CANCEL) {
++    // Integration: Done submits like Return before the keyboard hides.
++    if(code==LV_EVENT_READY&&state->integration) {
++      state->Send(PLAY_KEY,0xff0d,1);state->Send(PLAY_KEY,0xff0d,0);
++    }
++    ShowKeyboard(state,false,false);return;
++  }
++  if(code!=LV_EVENT_VALUE_CHANGED)return;
++  // A shifted letter has already returned the map to lower case; integration
++  // reads the key that was activated. The original path keeps its behaviour.
++  const char *text=state->integration?phone_keyboard::ActivatedKey(state->keyboard):
++      lv_buttonmatrix_get_button_text(state->keyboard,
++          lv_buttonmatrix_get_selected_button(state->keyboard));
++  const uint32_t key=PluginDesktopKeysym(text,state->integration);
++  if(key) {
++    const bool shift=(key>='A'&&key<='Z')||(key<127&&strchr("~!@#$%^&*()_+{}|:\"<>?",static_cast<int>(key)));
++    if(shift)state->Send(PLAY_KEY,0xffe1,1);
++    state->Send(PLAY_KEY,static_cast<int>(key),1);state->Send(PLAY_KEY,static_cast<int>(key),0);
++    if(shift)state->Send(PLAY_KEY,0xffe1,0);
++  }
++}
++void BuildKeyboard(PlayScene *s,bool multiline) {
++  s->keyboard=lv_keyboard_create(s->screen);
++  phone_keyboard::Apply(s->keyboard,multiline);
++  s->keyboard_multiline=multiline;
++  lv_obj_set_size(s->keyboard,lv_obj_get_width(s->screen),lv_obj_get_height(s->screen)*55/100);
++  lv_obj_align(s->keyboard,LV_ALIGN_BOTTOM_MID,0,0);
++  lv_obj_add_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN);
++  lv_obj_add_event_cb(s->keyboard,KeyboardEvent,LV_EVENT_ALL,s);
++}
++// The multiline map replaces Done with Return, so it needs its own keyboard.
++void SetKeyboardLayout(PlayScene *s,bool number,bool multiline) {
++  if(multiline!=s->keyboard_multiline) {
++    const bool visible=KeyboardVisible(s);
++    lv_obj_delete(s->keyboard);
++    BuildKeyboard(s,multiline);
++    if(visible)lv_obj_remove_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN);
++  }
++  lv_keyboard_set_mode(s->keyboard,number?LV_KEYBOARD_MODE_NUMBER:LV_KEYBOARD_MODE_TEXT_LOWER);
++}
+ }
+ 
+ bool PluginDesktopHandlePointer(int slot,int px,int py,bool down) {
+   auto *s=active;
+   if(!s||lv_screen_active()!=lv_obj_get_screen(s->screen))return false;
+-  if(s->keyboard&&!lv_obj_has_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN))return false;
++  if(slot>=0&&slot<16) {
++    if(s->drained_contacts[slot]) {s->drained_contacts[slot]=down;return true;}
++    if(s->suspended||s->lvgl_contacts[slot]) {s->lvgl_contacts[slot]=down;return false;}
++  }
++  if(KeyboardVisible(s)&&!s->integration)return false;
+   if(slot<0||slot>=16)return true;
+   int x=std::clamp((px-s->left)*960/std::max(1,s->width),0,959);
+   int y=std::clamp((py-s->top)*540/std::max(1,s->height),0,539);
+   auto &c=s->contacts[slot];
++  if(down&&!c.down&&KeyboardVisible(s)&&InKeyboard(s,py)) {
++    s->lvgl_contacts[slot]=true;return false;
++  }
+   if(down&&!c.down) {
+     c.down=true;c.x=x;c.y=y;c.start_x=x;c.start_y=y;c.started=lv_tick_get();
+     if(y<65&&x<75) {c.role=10;return true;} // Exit on release.
+@@ -156,8 +246,12 @@ bool PluginDesktopHandlePointer(int slot,int px,int py,bool down) {
+       case 12:s->Send(PLAY_KEY,0xff1b,0);break;
+       case 14:
+         if(y<65&&x>=290&&x<400) {
+-          s->Release();lv_obj_remove_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN);
+-          lv_obj_move_foreground(s->keyboard);
++          // With integration the toolbar stays reachable and toggles.
++          if(s->integration&&KeyboardVisible(s))ShowKeyboard(s,false,false);
++          else {
++            if(s->integration)SetKeyboardLayout(s,false,false);
++            ShowKeyboard(s,true,true);
++          }
+         }
+         break;
+       case 15:s->Send(PLAY_KEY,0xff0d,0);break;
+@@ -197,6 +291,7 @@ void PluginDesktopReleaseKeyboard() {
+ bool PluginDesktopHandleKey(unsigned symbol,int value) {
+   auto *s=active;
+   if(!s||lv_screen_active()!=lv_obj_get_screen(s->screen))return false;
++  if(s->suspended)return false;
+   if(value<0||value>2)return true;
+   auto it=std::find(s->physical_keys.begin(),s->physical_keys.end(),symbol);
+   if(value==0) {
+@@ -213,8 +308,19 @@ bool PluginDesktopHandleKey(unsigned symbol,int value) {
+ bool PluginDesktopHandleMouse(int kind,int px,int py,int button,bool down,int dx,int dy) {
+   auto *s=active;
+   if(!s||lv_screen_active()!=lv_obj_get_screen(s->screen))return false;
+-  if(kind==3) {s->Release();return true;}
+-  if(s->keyboard&&!lv_obj_has_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN))return false;
++  if(kind==3) {
++    s->Release();
++    for(int b=0;b<4;++b)s->lvgl_buttons[b]=s->drained_buttons[b]=false;
++    return true;
++  }
++  const bool edge=kind==1&&button>=1&&button<=3;
++  if(edge&&s->drained_buttons[button]) {s->drained_buttons[button]=down;return true;}
++  if(edge&&(s->suspended||s->lvgl_buttons[button])) {s->lvgl_buttons[button]=down;return false;}
++  if(s->suspended)return false;
++  if(KeyboardVisible(s)&&(!s->integration||InKeyboard(s,py))) {
++    if(s->integration&&edge&&down)s->lvgl_buttons[button]=true;
++    return false;
++  }
+   int x=std::clamp((px-s->left)*960/std::max(1,s->width),0,959);
+   int y=std::clamp((py-s->top)*540/std::max(1,s->height),0,539);
+   if(kind==1&&button==1) {
+@@ -244,6 +350,59 @@ bool PluginDesktopHandleMouse(int kind,int px,int py,int button,bool down,int dx
+   return true;
+ }
+ 
++void PluginDesktopEnableIntegration(std::function<void(uint32_t)> keyboard_inset) {
++  auto *s=active;
++  if(!s)return;
++  s->integration=true;s->on_inset=std::move(keyboard_inset);
++}
++
++void PluginDesktopSetKeyboard(bool visible,bool number,bool multiline) {
++  auto *s=active;
++  if(!s)return;
++  if(visible)SetKeyboardLayout(s,number,multiline);
++  if(s->suspended)s->keyboard_wanted=visible;
++  else ShowKeyboard(s,visible,false);
++}
++
++void PluginDesktopSuspendInput(bool suspended) {
++  auto *s=active;
++  if(!s||s->suspended==suspended)return;
++  s->suspended=suspended;
++  if(!suspended) {
++    if(s->keyboard_wanted) {
++      lv_obj_remove_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN);lv_obj_move_foreground(s->keyboard);
++    }
++    ReportInset(s);return;
++  }
++  for(size_t slot=0;slot<s->contacts.size();++slot)
++    s->drained_contacts[slot]=s->contacts[slot].down;
++  for(int b=1;b<=3;++b)s->drained_buttons[b]=s->mouse_buttons[b];
++  // A mouse press on the toolbar runs as contact 15; drain it as the button.
++  if(s->mouse_toolbar) {s->drained_buttons[1]=true;s->drained_contacts[15]=false;}
++  for(unsigned key:s->physical_keys)s->Send(PLAY_KEY,key,0);
++  s->Release();
++  lv_obj_add_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN);
++  ReportInset(s);
++}
++
++uint32_t PluginDesktopKeysym(const char *label,bool unicode) {
++  if(!label)return 0;
++  if(!strcmp(label,LV_SYMBOL_BACKSPACE))return 0xff08;
++  if(!strcmp(label,LV_SYMBOL_NEW_LINE))return 0xff0d;
++  if(!strcmp(label,LV_SYMBOL_LEFT))return 0xff51;
++  if(!strcmp(label,LV_SYMBOL_RIGHT))return 0xff53;
++  if(strlen(label)==1&&label[0]>=32&&label[0]<=126)return static_cast<unsigned char>(label[0]);
++  if(!unicode)return 0;
++  uint32_t index=0;
++  const uint32_t code=lv_text_encoded_next(label,&index);
++  if(!index||label[index]!='\0')return 0;
++  if(code>=0xa0&&code<=0xff)return code;  // Latin-1 keysyms equal the code point.
++  // Private-use code points are LVGL's symbol glyphs, not text.
++  if(code<=0xff||(code>=0xd800&&code<=0xdfff)||(code>=0xe000&&code<=0xf8ff)||code>0x10ffff)
++    return 0;
++  return 0x01000000U|code;
++}
++
+ void ClosePluginDesktop() {
+   if (!active) return;
+   auto *screen=active->screen;
+@@ -289,34 +448,7 @@ bool OpenPluginDesktop(lv_obj_t *parent,int &frame,int &input,std::function<void
+   Mark(s,"MOVE",145,405,180,160);Mark(s,"FIRE",905,485);
+   Mark(s,"JUMP",905,395);Mark(s,"LOAD",905,305);
+   Mark(s,"USE",800,485);Mark(s,"DUCK",700,485);Mark(s,"AIM",600,485);Mark(s,"SUIT",340,485);
+-  s->keyboard=lv_keyboard_create(screen);
+-  phone_keyboard::Apply(s->keyboard);
+-  lv_obj_set_size(s->keyboard,sw,sh*55/100);
+-  lv_obj_align(s->keyboard,LV_ALIGN_BOTTOM_MID,0,0);
+-  lv_obj_add_flag(s->keyboard,LV_OBJ_FLAG_HIDDEN);
+-  lv_obj_add_event_cb(s->keyboard,[](lv_event_t *event) {
+-    auto *state=static_cast<PlayScene *>(lv_event_get_user_data(event));
+-    const auto code=lv_event_get_code(event);
+-    if(code==LV_EVENT_READY||code==LV_EVENT_CANCEL) {
+-      lv_obj_add_flag(state->keyboard,LV_OBJ_FLAG_HIDDEN);return;
+-    }
+-    if(code!=LV_EVENT_VALUE_CHANGED)return;
+-    auto id=lv_buttonmatrix_get_selected_button(state->keyboard);
+-    const char *text=lv_buttonmatrix_get_button_text(state->keyboard,id);
+-    if(!text)return;
+-    int key=0;
+-    if(!strcmp(text,LV_SYMBOL_BACKSPACE))key=0xff08;
+-    else if(!strcmp(text,LV_SYMBOL_NEW_LINE))key=0xff0d;
+-    else if(!strcmp(text,LV_SYMBOL_LEFT))key=0xff51;
+-    else if(!strcmp(text,LV_SYMBOL_RIGHT))key=0xff53;
+-    else if(strlen(text)==1&&text[0]>=32&&text[0]<=126)key=text[0];
+-    if(key) {
+-      const bool shift=(key>='A'&&key<='Z')||(key<127&&strchr("~!@#$%^&*()_+{}|:\"<>?",key));
+-      if(shift)state->Send(PLAY_KEY,0xffe1,1);
+-      state->Send(PLAY_KEY,key,1);state->Send(PLAY_KEY,key,0);
+-      if(shift)state->Send(PLAY_KEY,0xffe1,0);
+-    }
+-  },LV_EVENT_ALL,s);
++  BuildKeyboard(s,false);
+   s->timer=lv_timer_create([](lv_timer_t *t){
+     auto *s=static_cast<PlayScene *>(lv_timer_get_user_data(t));
+     if(s->exit) {auto cb=s->on_close;ClosePluginDesktop();if(cb)cb();return;}
+diff --git a/aeraui/components/plugin_desktop.hpp b/aeraui/components/plugin_desktop.hpp
+index cc80375d..a6fc1462 100644
+--- a/aeraui/components/plugin_desktop.hpp
++++ b/aeraui/components/plugin_desktop.hpp
+@@ -1,6 +1,7 @@
+ /* SPDX-License-Identifier: Apache-2.0 */
+ #pragma once
+ #include <lvgl.h>
++#include <cstdint>
+ #include <functional>
+ namespace aeraui {
+ // Optional API 2 shared-frame surface. Never launches code or resolves paths.
+@@ -16,4 +17,22 @@ bool PluginDesktopHandleMouse(int kind, int x, int y, int button, bool down,
+                               int dx, int dy);
+ bool PluginDesktopHandleKey(unsigned key, int value);
+ void PluginDesktopReleaseKeyboard();
++// Host API 2 kFeatureDesktopIntegration, opted into per open desktop.
++// `keyboard_inset` then receives the on-screen keyboard's bottom occlusion in
++// desktop framebuffer pixels whenever it is shown or hidden, a contact above
++// the visible keyboard still reaches the desktop, and keys without an ASCII
++// keysym are forwarded as X11 Unicode keysyms. Without it the desktop keeps
++// its original ASCII-only keyboard and reports no geometry.
++void PluginDesktopEnableIntegration(std::function<void(uint32_t)> keyboard_inset);
++// Shows or hides the desktop keyboard for the worker; number and multiline
++// select the layout. While input is suspended the request applies on resume.
++void PluginDesktopSetKeyboard(bool visible, bool number, bool multiline);
++// A native AERA modal (Files selection, text editor) over the desktop owns all
++// input while it is open: held keys and buttons are released to the worker,
++// later input is left to AERA's UI, and contacts that span the transition stay
++// with whoever received their press. Resuming restores a requested keyboard.
++void PluginDesktopSuspendInput(bool suspended);
++// X11 keysym for one on-screen key label, or 0 for keys the desktop ignores.
++// `unicode` adds Latin-1 and 0x01000000|code point keysyms for non-ASCII text.
++uint32_t PluginDesktopKeysym(const char *label, bool unicode);
+ }
+diff --git a/aeraui/features/plugin_api/README.md b/aeraui/features/plugin_api/README.md
+index 5be7b4c5..3231a3fb 100644
+--- a/aeraui/features/plugin_api/README.md
++++ b/aeraui/features/plugin_api/README.md
+@@ -134,6 +134,39 @@ closes. No recovery-specific or device-specific runtime is baked into the host.
+ ID can render and request backup/restore without being added to recovery's
+ launcher source.
+ 
++### Desktop integration (optional)
++
++Request `kFeatureDesktopIntegration` (bit 12) together with `kFeatureDesktop`
++and check the ACK. Without it the desktop behaves exactly as above: Files
++cannot open over it, its keyboard sends ASCII keysyms only, and no keyboard
++geometry is reported. The kinds below are valid only after the
++bit was acknowledged; an unacknowledged one closes the session.
++
++- `PICK_FILE` is also accepted while the desktop is open. The regular Files
++  selection opens over it. While it is open, desktop input is suspended: AERA
++  sends key-ups for held physical keys and `RELEASE`, hides a shown desktop
++  keyboard, and gives touches, mouse and keys to Files. A press that began on
++  the guest is swallowed until released; one that began on Files ends there.
++  Selecting, cancelling, a new page, leaving the view or stopping the worker
++  closes Files and restores input and a keyboard the worker had requested.
++  Only single file or folder selection exists; there is no multiple selection
++  or save dialog.
++- `SET_DESKTOP_KEYBOARD` (worker kind 29): nonzero `request_id`, `value` 0
++  hides and 1 shows AERA's on-screen keyboard over the desktop, `flags` is 0,
++  `kInputNumber` (2) or `kInputMultiline` (4) (not both), empty strings. A
++  request while no desktop is open is ignored. The multiline layout replaces
++  Done with Return; Done in the other layouts sends Return and hides the
++  keyboard. A contact that starts above the keyboard still reaches the guest.
++  The toolbar `KEYS` button toggles the text keyboard.
++- `DESKTOP_KEYBOARD_INSET` (host kind 76): `request_id` 0, `value` the rows
++  of the desktop framebuffer (in its negotiated height) that the keyboard
++  covers from the bottom, `flags` 0. The host sends 0 right after
++  `DESKTOP_READY` and then on every show or hide, including the user's Done,
++  the toolbar and a suspension by Files.
++- On-screen keys without an ASCII keysym are sent as X11 keysyms: Latin-1
++  characters as their code point (`é` is `0xe9`), others as
++  `0x01000000 | code point` (`€` is `0x010020ac`). ASCII keys are unchanged.
++
+ ## Optional background, activities and presentation
+ 
+ These extensions keep protocol version 2 and the same packet size. A new worker
+diff --git a/aeraui/features/plugin_api/protocol.hpp b/aeraui/features/plugin_api/protocol.hpp
+index 76bb22e8..87f3afda 100644
+--- a/aeraui/features/plugin_api/protocol.hpp
++++ b/aeraui/features/plugin_api/protocol.hpp
+@@ -25,11 +25,12 @@ enum Features : uint32_t {
+   kFeatureClipboard = 1U << 9,
+   kFeatureTextInput = 1U << 10,
+   kFeatureFilePicker = 1U << 11,
++  kFeatureDesktopIntegration = 1U << 12,
+ };
+ constexpr uint32_t kOptionalFeatures = kFeatureBackground | kFeatureActivities |
+     kFeatureRichPresentation | kFeaturePackageReview | kFeatureReadablePresentation |
+     kFeatureDesktop | kFeatureDesktopResolution | kFeatureClipboard | kFeatureTextInput |
+-    kFeatureFilePicker;
++    kFeatureFilePicker | kFeatureDesktopIntegration;
+ constexpr uint32_t kFeatureRequestMagic = 0xA2E20000U;
+ 
+ enum class Kind : uint32_t {
+@@ -61,6 +62,7 @@ enum class Kind : uint32_t {
+   kUpdateTextInput = 26,
+   kTextInputPlaceholder = 27,
+   kPickFile = 28,
++  kSetDesktopKeyboard = 29,
+   kHelloAck = 64,
+   kAction,
+   kLifecycle,
+@@ -73,6 +75,7 @@ enum class Kind : uint32_t {
+   kClipboardResult = 73,
+   kTextInputResult = 74,
+   kFilePickerResult = 75,
++  kDesktopKeyboardInset = 76,
+ };
+ 
+ enum FilePickerResultFlags : uint32_t {
+@@ -163,10 +166,19 @@ inline bool StringsValid(const Message &message) {
+          memchr(message.text, '\0', sizeof(message.text)) != nullptr;
+ }
+ inline bool WorkerKind(Kind kind) {
+-  return kind >= Kind::kHello && kind <= Kind::kPickFile;
++  return kind >= Kind::kHello && kind <= Kind::kSetDesktopKeyboard;
+ }
+ inline bool HostKind(Kind kind) {
+-  return kind >= Kind::kHelloAck && kind <= Kind::kFilePickerResult;
++  return kind >= Kind::kHelloAck && kind <= Kind::kDesktopKeyboardInset;
++}
++// Kinds from kFeatureDesktopIntegration on exist only once their feature was
++// acknowledged. Older extension kinds keep their per-message error replies.
++inline uint32_t KindFeature(Kind kind) {
++  switch (kind) {
++    case Kind::kSetDesktopKeyboard:
++    case Kind::kDesktopKeyboardInset: return kFeatureDesktopIntegration;
++    default: return 0;
++  }
+ }
+ inline bool Valid(const Message &message, bool from_worker) {
+   return message.magic == kMagic && message.version == kProtocolVersion &&
+diff --git a/aeraui/features/plugin_api/session.cpp b/aeraui/features/plugin_api/session.cpp
+index eac98835..26e9ca42 100644
+--- a/aeraui/features/plugin_api/session.cpp
++++ b/aeraui/features/plugin_api/session.cpp
+@@ -44,7 +44,8 @@ bool Session::Adopt(int control_fd) {
+ }
+ 
+ bool Session::Write(const Message &message) {
+-  if (!Connected() || !Valid(message, false)) return false;
++  if (!Connected() || !Valid(message, false) || !Supports(KindFeature(message.kind)))
++    return false;
+   const ssize_t count = send(control_, &message, sizeof(message),
+                              MSG_DONTWAIT | MSG_NOSIGNAL);
+   if (count == static_cast<ssize_t>(sizeof(message))) return true;
+@@ -137,6 +138,10 @@ std::vector<Message> Session::Poll() {
+       Fail("The plugin repeated its handshake.");
+       break;
+     }
++    if (!Supports(KindFeature(message.kind))) {
++      Fail("The plugin used an extension it did not negotiate.");
++      break;
++    }
+     messages.push_back(message);
+   }
+   return messages;
+diff --git a/aeraui/scenes/generic_plugin_scene.cpp b/aeraui/scenes/generic_plugin_scene.cpp
+index a07943d5..67b0f156 100644
+--- a/aeraui/scenes/generic_plugin_scene.cpp
++++ b/aeraui/scenes/generic_plugin_scene.cpp
+@@ -202,6 +202,12 @@ bool ModalVisible(lv_obj_t *screen) {
+   return false;
+ }
+ 
++// A native modal over the plugin's desktop owns input until it closes. Every
++// open/close path calls this, so suspension follows the modal's lifetime.
++void SyncDesktopInput(GenericScene *scene) {
++  if (scene->desktop_open) PluginDesktopSuspendInput(scene->file_picker != nullptr);
++}
++
+ const char *ActionIcon(const ButtonModel &model) {
+   if (model.tile) switch (model.icon) {
+     case plugin_api::Icon::kHome: return LV_SYMBOL_HOME;
+@@ -353,6 +359,7 @@ void CloseNativeFilePicker(GenericScene* scene, bool notify) {
+     scene->session.Send(plugin_api::Kind::kFilePickerResult, binding->id, 0,
+                         plugin_api::kFileCancelled);
+   CancelFilePicker(picker);
++  SyncDesktopInput(scene);
+ }
+ 
+ void OpenTextInput(GenericScene *scene, uint32_t id) {
+@@ -762,9 +769,11 @@ void HandleMessage(GenericScene *scene, const plugin_api::Message &message) {
+     case plugin_api::Kind::kPickFile: {
+       FilePickerOptions options;
+       std::string error;
++      // Integration lets Files open over the desktop, which then pauses input.
+       const bool allowed = scene->session.Supports(plugin_api::kFeatureFilePicker) &&
+           scene->screen && scene->screen == lv_screen_active() &&
+-          !scene->file_picker && !scene->input_overlay && !scene->desktop_open &&
++          !scene->file_picker && !scene->input_overlay &&
++          (!scene->desktop_open || scene->session.Supports(plugin_api::kFeatureDesktopIntegration)) &&
+           !scene->page_pending && !scene->operation_pending && !ModalVisible(scene->screen);
+       if (!allowed || !plugin_api::ParseFilePickerRequest(message, options, error)) {
+         scene->session.Send(plugin_api::Kind::kFilePickerResult, message.request_id, 0,
+@@ -784,11 +793,14 @@ void HandleMessage(GenericScene *scene, const plugin_api::Message &message) {
+             binding->id, 0, result.status == FilePickerStatus::kSelected
+                 ? plugin_api::kFileSelected : plugin_api::kFileCancelled,
+             nullptr, result.path.c_str());
++        SyncDesktopInput(scene);
+       });
+       if (!scene->file_picker) {
+         binding->scene = nullptr; scene->picker_binding.reset();
+         scene->session.Send(plugin_api::Kind::kFilePickerResult, message.request_id, 0,
+             plugin_api::kFileError, nullptr, "Could not open the Files selection view.");
++      } else {
++        SyncDesktopInput(scene);
+       }
+       break;
+     }
+@@ -827,6 +839,13 @@ void HandleMessage(GenericScene *scene, const plugin_api::Message &message) {
+           scene->session.SendDesktop(message.request_id, frame, input, width, height);
+       if (frame >= 0) close(frame);
+       if (input >= 0) close(input);
++      if (sent && scene->session.Supports(plugin_api::kFeatureDesktopIntegration)) {
++        // The worker learns keyboard geometry only after opting in.
++        PluginDesktopEnableIntegration([scene](uint32_t inset) {
++          scene->session.Send(plugin_api::Kind::kDesktopKeyboardInset, 0, inset);
++        });
++        scene->session.Send(plugin_api::Kind::kDesktopKeyboardInset, 0, 0);
++      }
+       if (!sent) {
+         ClosePluginDesktop();
+         scene->desktop_open = false;
+@@ -836,6 +855,20 @@ void HandleMessage(GenericScene *scene, const plugin_api::Message &message) {
+       }
+       break;
+     }
++    case plugin_api::Kind::kSetDesktopKeyboard: {
++      constexpr uint32_t layouts = plugin_api::kInputNumber | plugin_api::kInputMultiline;
++      if (!scene->session.Supports(plugin_api::kFeatureDesktopIntegration) ||
++          !message.request_id || message.value > 1 || (message.flags & ~layouts) ||
++          message.flags == layouts || message.title[0] || message.text[0]) {
++        SetStatus(scene, "Plugin sent an invalid desktop keyboard request");
++        scene->session.Close(); break;
++      }
++      // A request racing the desktop's closing has nothing left to change.
++      if (scene->desktop_open)
++        PluginDesktopSetKeyboard(message.value == 1, message.flags & plugin_api::kInputNumber,
++                                 message.flags & plugin_api::kInputMultiline);
++      break;
++    }
+     case plugin_api::Kind::kAddTextInput: {
+       const uint32_t maximum = message.value ? message.value : plugin_api::kMaxInputCharacters;
+       if (!scene->session.Supports(plugin_api::kFeatureTextInput) || !scene->page_pending ||
+diff --git a/aeraui/tests/plugin_api_session_test.cpp b/aeraui/tests/plugin_api_session_test.cpp
+index 89b42440..2bda519a 100644
+--- a/aeraui/tests/plugin_api_session_test.cpp
++++ b/aeraui/tests/plugin_api_session_test.cpp
+@@ -77,6 +77,10 @@ int main() {
+   assert(back.size() == 1 && back[0].kind == Kind::kSetBackAction);
+   assert(back[0].request_id == 42);
+   assert(!session.SendDesktop(100, 0, 1));
++  // Kinds added with desktop integration exist only once acknowledged.
++  assert(!session.Send(Kind::kDesktopKeyboardInset));
++  SendWorker(pair[1], Kind::kSetDesktopKeyboard, 5, 1);
++  assert(session.Poll().empty() && !session.Connected());
+   close(pair[1]);
+   session.Close();
+   assert(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
+@@ -125,7 +129,7 @@ int main() {
+ 
+   assert(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
+   assert(session.Adopt(pair[0]));
+-  SendWorker(pair[1], Kind::kHello, kFeatureRequestMagic | kOptionalFeatures | (1U << 12), 2, 2);
++  SendWorker(pair[1], Kind::kHello, kFeatureRequestMagic | kOptionalFeatures | (1U << 15), 2, 2);
+   assert(session.Poll().empty());
+   const Message extended = ReceiveHost(pair[1]);
+   assert(extended.flags == (3 | kOptionalFeatures));
+@@ -143,6 +147,13 @@ int main() {
+   assert(session.Poll().at(0).value == 6500);
+   assert(session.Send(Kind::kActivityCancel, 42));
+   assert(ReceiveHost(pair[1]).request_id == 42);
++  static_assert(kFeatureDesktopIntegration == (1U << 12));
++  static_assert(static_cast<uint32_t>(Kind::kSetDesktopKeyboard) == 29);
++  static_assert(static_cast<uint32_t>(Kind::kDesktopKeyboardInset) == 76);
++  SendWorker(pair[1], Kind::kSetDesktopKeyboard, 72, 1, kInputNumber);
++  assert(session.Poll().at(0).kind == Kind::kSetDesktopKeyboard);
++  assert(session.Send(Kind::kDesktopKeyboardInset, 0, 270));
++  assert(ReceiveHost(pair[1]).value == 270);
+   close(pair[1]);
+   session.Close();
+   assert(!session.Supports(kOptionalFeatures));
+diff --git a/aeraui/tests/plugin_runtime_ui_test.cpp b/aeraui/tests/plugin_runtime_ui_test.cpp
+index 33017af1..8bd14dda 100644
+--- a/aeraui/tests/plugin_runtime_ui_test.cpp
++++ b/aeraui/tests/plugin_runtime_ui_test.cpp
+@@ -179,6 +179,58 @@ void TestPluginRuntime(lv_obj_t *host_screen) {
+     pick.value=7;HandleMessage(scene,pick);assert(receive(peer).flags==kFileError);
+     assert(!scene->file_picker);assert(rmdir(directory)==0);
+   }
++  // Desktop integration: the original keyboard stays ASCII-only.
++  assert(PluginDesktopKeysym("a", false) == 'a' && PluginDesktopKeysym("a", true) == 'a');
++  assert(!PluginDesktopKeysym("\xc3\xa9", false) && PluginDesktopKeysym("\xc3\xa9", true) == 0xe9);
++  assert(PluginDesktopKeysym("\xe2\x82\xac", true) == 0x010020ac);
++  assert(!PluginDesktopKeysym(LV_SYMBOL_UP, true) && !PluginDesktopKeysym("?123", true));
++  assert(PluginDesktopKeysym(LV_SYMBOL_BACKSPACE, false) == 0xff08);
++  {
++    scene->callback = [](Action, void *) {};
++    scene->plugin.permissions.push_back("desktop-surface");
++    Message desktop; desktop.kind = Kind::kOpenDesktop; desktop.request_id = 300;
++    HandleMessage(scene, desktop); assert(scene->desktop_open);
++    auto ready = receive(peer);
++    assert(ready.kind == Kind::kDesktopReady && ready.request_id == 300 && ready.value == 960);
++    auto inset = receive(peer);
++    assert(inset.kind == Kind::kDesktopKeyboardInset && !inset.request_id && !inset.value);
++    Message keyboard; keyboard.kind = Kind::kSetDesktopKeyboard; keyboard.request_id = 301;
++    keyboard.value = 1; HandleMessage(scene, keyboard);
++    inset = receive(peer);
++    assert(inset.kind == Kind::kDesktopKeyboardInset && inset.value > 0 && inset.value <= 540);
++    const uint32_t shown = inset.value;
++    // A contact on the keyboard stays with AERA's UI through its release.
++    const int keyboard_y = static_cast<int>(lv_obj_get_height(page)) - 4;
++    assert(!PluginDesktopHandlePointer(1, 10, keyboard_y, true));
++    assert(!PluginDesktopHandlePointer(1, 10, keyboard_y, false));
++    assert(PluginDesktopHandleKey('a', 1));
++    char directory[] = "/tmp/aera-plugin-desktop-XXXXXX"; assert(mkdtemp(directory));
++    Message pick; pick.kind = Kind::kPickFile; pick.request_id = 302;
++    snprintf(pick.text, sizeof(pick.text), "%s", directory);
++    HandleMessage(scene, pick); assert(scene->file_picker);
++    // Files over the desktop hides its keyboard and owns every input.
++    inset = receive(peer); assert(inset.kind == Kind::kDesktopKeyboardInset && !inset.value);
++    assert(!PluginDesktopHandleKey('b', 1));
++    assert(!PluginDesktopHandlePointer(0, 100, 100, true));
++    assert(!PluginDesktopHandleMouse(1, 100, 100, 1, true, 0, 0));
++    CancelFilePicker(scene->file_picker);
++    auto cancelled = receive(peer);
++    assert(cancelled.kind == Kind::kFilePickerResult && cancelled.request_id == 302 &&
++           cancelled.flags == kFileCancelled && !scene->file_picker);
++    inset = receive(peer); assert(inset.kind == Kind::kDesktopKeyboardInset && inset.value == shown);
++    // Presses that began on Files end there; new input reaches the desktop.
++    assert(!PluginDesktopHandlePointer(0, 100, 100, false));
++    assert(!PluginDesktopHandleMouse(1, 100, 100, 1, false, 0, 0));
++    assert(PluginDesktopHandleKey('a', 0) && PluginDesktopHandleKey('b', 1));
++    keyboard.flags = kInputMultiline; HandleMessage(scene, keyboard);
++    keyboard.value = 0; keyboard.flags = 0; HandleMessage(scene, keyboard);
++    inset = receive(peer); assert(inset.kind == Kind::kDesktopKeyboardInset && !inset.value);
++    ClosePluginDesktop(); scene->desktop_open = false;
++    scene->callback = nullptr;
++    lv_tick_inc(20); lv_timer_handler();
++    Message extra; assert(recv(peer, &extra, sizeof(extra), MSG_DONTWAIT) < 0);
++    assert(rmdir(directory) == 0);
++  }
+   auto *editor = lv_textarea_create(page);
+   text_edit::Attach(editor);
+   lv_textarea_set_text(editor, "Native editor to plugin");
+-- 
+2.56.0
+

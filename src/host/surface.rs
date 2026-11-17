@@ -1,41 +1,44 @@
-//! The pixel surface: geometry from `SURFACE` and the shared frame slots.
+//! The desktop's frame memory: the host's sealed memfd of two top-down
+//! BGRA8888 frames of `width * 4 * height` bytes, and the upstream
+//! sequence rule for them.
 //!
-//! Host API 3: a sealed memfd holding `slots` BGRA8888 top-down frames of
-//! `stride * height` bytes. The plugin writes a free slot, sends `PRESENT`,
-//! and may not touch that slot again until the host answers `FRAME_DONE`
-//! for it (AERA keeps the frame on screen until a newer one replaces it).
-//!
-//! A later `SURFACE` (AERA rotated) reshapes the slots within the same
-//! memfd and starts a new generation: every slot is ours again, and
-//! `PRESENT` carries the generation its frame was drawn for in `flags`, so
-//! AERA hands back a frame of the old shape unshown.
+//! Frame `N` (from 1, exactly one more each time) goes into slot `N % 2`,
+//! then `PLAY_FRAME` names it. AERA's 16 ms timer latches a frame and
+//! acknowledges it on its next tick, and keeps showing a slot until a newer
+//! frame is latched. So the slot of `N + 1` is only free once `N - 1` is
+//! replaced, which is once `N` is acknowledged: one frame is in flight at a
+//! time, and a frame is only written after the previous one's `PLAY_ACK`.
+//! `ACK` is not vsync, and there is no damage, resize or timestamp.
 
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use super::{kind, Message};
+use super::play::{self, PlayMessage};
 
 pub const FORMAT: &str = "BGRA8888";
+/// Upstream's double buffer.
+pub const SLOTS: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Geometry {
     pub width: u32,
     pub height: u32,
-    /// Bytes per row, at least `width * 4`.
+    /// Bytes per row: `width * 4`, as upstream has no stride.
     pub stride: u32,
     pub slots: u32,
-    /// Physical pixels per logical pixel.
+    /// Physical pixels per logical pixel: 1, the desktop is scaled by AERA.
     pub scale: f64,
-    /// The panel's refresh rate, for frame timing.
+    /// AERA's timer rate, for frame timing; not a measured panel rate.
     pub refresh_hz: f64,
 }
 
 impl Geometry {
-    /// A phone panel like the ones AERA runs on, used by the simulator.
-    pub const PHONE: Geometry =
-        Geometry { width: 1080, height: 2400, stride: 1080 * 4, slots: 3, scale: 2.75, refresh_hz: 60.0 };
+    /// The desktop surface of `width` x `height`.
+    pub const fn desktop(width: u32, height: u32) -> Geometry {
+        Geometry { width, height, stride: width * 4, slots: SLOTS, scale: 1.0, refresh_hz: 60.0 }
+    }
 
     pub fn frame_bytes(&self) -> usize {
         self.stride as usize * self.height as usize
@@ -45,117 +48,87 @@ impl Geometry {
         self.frame_bytes() * self.slots as usize
     }
 
-    pub fn valid(&self) -> bool {
-        (1..=8192).contains(&self.width)
-            && (1..=8192).contains(&self.height)
-            && self.stride >= self.width * 4
-            && self.stride % 4 == 0
-            && (1..=4).contains(&self.slots)
-            && (0.5..=8.0).contains(&self.scale)
-            && (1.0..=240.0).contains(&self.refresh_hz)
-    }
-
-    pub fn to_message(&self) -> Message {
-        Message {
-            title: FORMAT.into(),
-            text: format!("slots={} scale={} refresh={}", self.slots, self.scale, self.refresh_hz),
-            ..Message::with(kind::SURFACE, self.stride, self.width, self.height)
-        }
-    }
-
-    pub fn from_message(message: &Message) -> Option<Geometry> {
-        if message.kind != kind::SURFACE || message.title != FORMAT {
-            return None;
-        }
-        let mut g = Geometry {
-            width: message.value,
-            height: message.flags,
-            stride: message.request_id,
-            slots: 3,
-            scale: 1.0,
-            refresh_hz: 60.0,
-        };
-        for pair in message.text.split_whitespace() {
-            match pair.split_once('=') {
-                Some(("slots", v)) => g.slots = v.parse().ok()?,
-                Some(("scale", v)) => g.scale = v.parse().ok()?,
-                Some(("refresh", v)) => g.refresh_hz = v.parse().ok()?,
-                // Unknown keys are for later hosts.
-                _ => {}
-            }
-        }
-        g.valid().then_some(g)
-    }
-
     pub fn frame_period(&self) -> Duration {
         Duration::from_secs_f64(1.0 / self.refresh_hz)
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SlotState {
-    Free,
-    /// Handed to the renderer, not presented yet.
-    Writing,
-    /// Presented as this sequence; the host owns it until `FRAME_DONE`.
-    Presented(u32),
+/// Why a frame acknowledgement or channel packet broke the protocol.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AckError {
+    /// `ACK` with no frame in flight, or for another sequence.
+    Unexpected { sequence: u32, in_flight: Option<u32> },
+}
+
+impl std::fmt::Display for AckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AckError::Unexpected { sequence, in_flight } => write!(f, "ACK {sequence} while {in_flight:?} is in flight"),
+        }
+    }
 }
 
 struct State {
-    geometry: Geometry,
-    generation: u32,
-    slots: Vec<SlotState>,
-    next_sequence: u32,
+    /// The next frame's sequence; slot `next % 2`.
+    next: u32,
+    /// Sent and not acknowledged yet.
+    in_flight: Option<u32>,
+    /// The renderer holds the next slot.
+    writing: bool,
     closed: bool,
 }
 
-/// A slot the renderer holds, with the shape it was taken for.
+/// A slot the renderer holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
     pub index: usize,
+    pub sequence: u32,
     pub geometry: Geometry,
-    generation: u32,
 }
 
-/// The mapped memfd and who owns each slot.
+/// The mapped memfd and the sequence that owns its slots.
 pub struct Slots {
     base: *mut u8,
     len: usize,
+    geometry: Geometry,
     _fd: OwnedFd,
     state: Mutex<State>,
     freed: Condvar,
 }
 
-// SAFETY: the mapping lives as long as `Slots`; each slot's bytes are only
-// written by whoever holds it in `Writing`, which `state` hands out to one
+// SAFETY: the mapping lives as long as `Slots`; a slot's bytes are only
+// written by whoever holds it as `writing`, which `state` hands out to one
 // caller at a time.
 unsafe impl Send for Slots {}
 unsafe impl Sync for Slots {}
 
 impl Slots {
-    /// Maps the host's frame memory.
+    /// Maps the host's frame memory. The memfd must hold both frames and be
+    /// sealed against shrinking, so the host cannot cut the mapping under
+    /// us.
     pub fn map(fd: OwnedFd, geometry: Geometry) -> io::Result<Slots> {
+        // SAFETY: a plain C struct; zeroed is valid.
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-        // SAFETY: fd is open for as long as `fd` lives; stat is a valid out
-        // pointer.
+        // SAFETY: fd is open; stat is a valid out pointer.
         if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        let len = stat.st_size as usize;
-        if len < geometry.total_bytes() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "surface memfd is smaller than SURFACE says"));
+        if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "desktop memory is not a memfd"));
         }
-        // All of it: AERA sizes it for every shape a later SURFACE may give.
-        // SAFETY: a fresh shared mapping of a file this large.
+        let len = geometry.total_bytes();
+        if (stat.st_size as u64) < len as u64 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "desktop memfd is smaller than two frames"));
+        }
+        // SAFETY: fd is open.
+        let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+        if seals < 0 || seals & libc::F_SEAL_SHRINK == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "desktop memfd is not sealed against shrinking"));
+        }
+        // SAFETY: a fresh shared mapping within a file this large that
+        // cannot shrink.
         let base = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                fd.as_raw_fd(),
-                0,
-            )
+            libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd.as_raw_fd(), 0)
         };
         if base == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
@@ -163,123 +136,83 @@ impl Slots {
         Ok(Slots {
             base: base.cast(),
             len,
+            geometry,
             _fd: fd,
-            state: Mutex::new(State {
-                geometry,
-                generation: 0,
-                slots: vec![SlotState::Free; geometry.slots as usize],
-                next_sequence: 1,
-                closed: false,
-            }),
+            state: Mutex::new(State { next: 1, in_flight: None, writing: false, closed: false }),
             freed: Condvar::new(),
         })
     }
 
     pub fn geometry(&self) -> Geometry {
-        self.state.lock().unwrap().geometry
+        self.geometry
     }
 
-    /// The longest side a frame may take in any later `SURFACE`: AERA sizes
-    /// the memfd as `slots` square frames on its screen's longer side, so a
-    /// rotation can widen a frame beyond the first shape's longer side.
-    pub fn longest_side(&self) -> u32 {
-        let g = self.geometry();
-        let per_slot = self.len / g.slots.max(1) as usize / 4;
-        let mut side = (per_slot as f64).sqrt() as usize;
-        while (side + 1) * (side + 1) <= per_slot {
-            side += 1;
-        }
-        while side * side > per_slot {
-            side -= 1;
-        }
-        (side as u32).max(g.width.max(g.height))
-    }
-
-    /// A later `SURFACE`: the new shape within the same memory, a new
-    /// generation, and every slot ours again (a frame still being written
-    /// is presented as the old generation, which AERA hands straight back).
-    /// False when the shape does not fit the memfd or changes the slot count.
-    pub fn reshape(&self, geometry: Geometry) -> bool {
-        let mut state = self.state.lock().unwrap();
-        if geometry.total_bytes() > self.len || geometry.slots != state.geometry.slots {
-            return false;
-        }
-        state.geometry = geometry;
-        state.generation = state.generation.wrapping_add(1);
-        for slot in state.slots.iter_mut() {
-            if matches!(slot, SlotState::Presented(_)) {
-                *slot = SlotState::Free;
-            }
-        }
-        self.freed.notify_all();
-        true
-    }
-
-    /// Whether a slot is free right now (vsync is only granted then).
+    /// Whether the next slot may be written now (vsync is only granted then).
     pub fn has_free(&self) -> bool {
-        self.state.lock().unwrap().slots.contains(&SlotState::Free)
+        let s = self.state.lock().unwrap();
+        !s.closed && !s.writing && s.in_flight.is_none()
     }
 
-    /// Waits up to `timeout` for a free slot and takes it.
+    /// Waits up to `timeout` for the previous frame's `ACK` and takes the
+    /// next slot.
     pub fn acquire(&self, timeout: Duration) -> Option<Frame> {
         let state = self.state.lock().unwrap();
         let (mut state, _) = self
             .freed
-            .wait_timeout_while(state, timeout, |s| !s.closed && !s.slots.contains(&SlotState::Free))
+            .wait_timeout_while(state, timeout, |s| !s.closed && (s.writing || s.in_flight.is_some()))
             .unwrap();
-        if state.closed {
+        if state.closed || state.writing || state.in_flight.is_some() {
             return None;
         }
-        let index = state.slots.iter().position(|s| *s == SlotState::Free)?;
-        state.slots[index] = SlotState::Writing;
-        Some(Frame { index, geometry: state.geometry, generation: state.generation })
+        state.writing = true;
+        let sequence = state.next;
+        Some(Frame { index: (sequence % SLOTS) as usize, sequence, geometry: self.geometry })
     }
 
-    /// The bytes of a slot the caller holds, laid out as when it was taken.
+    /// The bytes of the slot the caller holds.
     ///
     /// # Safety
-    /// `frame` must have come from [`Slots::acquire`] and not been presented
-    /// or released since. Only the one renderer thread writes slots, so no
-    /// one else touches these bytes (after a reshape, slots of the two
-    /// shapes may overlap, but the renderer writes one frame at a time and
-    /// AERA reads only frames of the current shape).
+    /// `frame` must have come from [`Slots::acquire`] on this `Slots` and not
+    /// been presented or released since; only its holder touches these
+    /// bytes, and AERA is not showing this slot (see the module docs).
     #[allow(clippy::mut_from_ref)] // the slot is shared memory, owned per the contract above
     pub unsafe fn slot_mut(&self, frame: &Frame) -> &mut [u8] {
-        let size = frame.geometry.frame_bytes();
+        let size = self.geometry.frame_bytes();
         debug_assert!((frame.index + 1) * size <= self.len);
         std::slice::from_raw_parts_mut(self.base.add(frame.index * size), size)
     }
 
-    /// Marks a written slot as presented and returns the `PRESENT` message,
-    /// carrying the generation the frame was drawn for.
-    pub fn present(&self, frame: &Frame) -> Message {
+    /// Marks the written slot as in flight and returns its `PLAY_FRAME`.
+    pub fn present(&self, frame: &Frame) -> PlayMessage {
         let mut state = self.state.lock().unwrap();
-        debug_assert_eq!(state.slots[frame.index], SlotState::Writing);
-        let sequence = state.next_sequence;
-        state.next_sequence = state.next_sequence.wrapping_add(1).max(1);
-        state.slots[frame.index] = SlotState::Presented(sequence);
-        Message::with(kind::PRESENT, sequence, frame.index as u32, frame.generation)
+        debug_assert!(state.writing && state.next == frame.sequence);
+        state.writing = false;
+        state.in_flight = Some(frame.sequence);
+        state.next = frame.sequence.wrapping_add(1);
+        PlayMessage::new(play::FRAME, frame.sequence, self.geometry.width as i32, self.geometry.height as i32)
     }
 
-    /// Gives back a slot that was acquired but not presented.
+    /// Gives back a slot that was acquired but not presented; its sequence
+    /// is used by the next frame.
     pub fn release(&self, frame: &Frame) {
         let mut state = self.state.lock().unwrap();
-        state.slots[frame.index] = SlotState::Free;
+        debug_assert_eq!(state.next, frame.sequence);
+        state.writing = false;
         self.freed.notify_all();
     }
 
-    /// `FRAME_DONE` for `sequence`. Returns false for an unknown sequence.
-    pub fn frame_done(&self, sequence: u32) -> bool {
+    /// `PLAY_ACK` for `sequence`: must be the frame in flight.
+    pub fn ack(&self, sequence: u32) -> Result<(), AckError> {
         let mut state = self.state.lock().unwrap();
-        let Some(i) = state.slots.iter().position(|s| *s == SlotState::Presented(sequence)) else {
-            return false;
-        };
-        state.slots[i] = SlotState::Free;
+        if state.in_flight != Some(sequence) {
+            return Err(AckError::Unexpected { sequence, in_flight: state.in_flight });
+        }
+        state.in_flight = None;
         self.freed.notify_all();
-        true
+        Ok(())
     }
 
-    /// Wakes any waiter for good; used on shutdown.
+    /// Wakes any waiter for good; the desktop closed or we are shutting down.
     pub fn close(&self) {
         self.state.lock().unwrap().closed = true;
         self.freed.notify_all();
@@ -298,11 +231,11 @@ pub fn create_memfd(geometry: &Geometry) -> io::Result<OwnedFd> {
     create_memfd_of(geometry.total_bytes())
 }
 
-/// Creates a sealed memfd of `len` bytes.
+/// Creates a memfd of `len` bytes sealed as upstream's (shrink, grow, seal).
 pub fn create_memfd_of(len: usize) -> io::Result<OwnedFd> {
     use std::os::fd::FromRawFd;
     // SAFETY: a NUL-terminated name and valid flags.
-    let fd = unsafe { libc::memfd_create(c"aera-surface".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
+    let fd = unsafe { libc::memfd_create(c"aera-plugin-desktop".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -323,76 +256,100 @@ pub fn create_memfd_of(len: usize) -> io::Result<OwnedFd> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn geometry_round_trip() {
-        let g = Geometry::PHONE;
-        assert_eq!(Geometry::from_message(&g.to_message()), Some(g));
+    const SHORT: Duration = Duration::from_millis(1);
+
+    fn tiny() -> Slots {
+        let g = Geometry::desktop(4, 2);
+        Slots::map(create_memfd(&g).unwrap(), g).unwrap()
     }
 
     #[test]
-    fn geometry_rejects_bad_stride_and_format() {
-        let mut m = Geometry::PHONE.to_message();
-        m.request_id = 100;
-        assert!(Geometry::from_message(&m).is_none());
-        let mut m = Geometry::PHONE.to_message();
-        m.title = "RGB565".into();
-        assert!(Geometry::from_message(&m).is_none());
-    }
-
-    #[test]
-    fn slots_flow_control() {
-        let g = Geometry { width: 4, height: 4, stride: 16, slots: 3, scale: 1.0, refresh_hz: 60.0 };
-        let slots = Slots::map(create_memfd(&g).unwrap(), g).unwrap();
-        let short = Duration::from_millis(1);
-        let mut sent = vec![];
-        for _ in 0..3 {
-            let f = slots.acquire(short).unwrap();
-            unsafe { slots.slot_mut(&f).fill(f.index as u8) };
-            sent.push(slots.present(&f));
+    fn sequence_starts_at_one_and_alternates_slots() {
+        let slots = tiny();
+        let mut seen = vec![];
+        for _ in 0..4 {
+            let f = slots.acquire(SHORT).unwrap();
+            // SAFETY: held, not presented.
+            unsafe { slots.slot_mut(&f).fill(f.sequence as u8) };
+            let m = slots.present(&f);
+            assert_eq!((m.kind, m.x, m.y), (play::FRAME, 4, 2));
+            seen.push((m.sequence, f.index));
+            slots.ack(m.sequence).unwrap();
         }
+        assert_eq!(seen, vec![(1, 1), (2, 0), (3, 1), (4, 0)]);
+    }
+
+    #[test]
+    fn one_frame_in_flight_until_its_ack() {
+        let slots = tiny();
+        let f = slots.acquire(SHORT).unwrap();
         assert!(!slots.has_free());
-        assert!(slots.acquire(short).is_none());
-        assert!(!slots.frame_done(999));
-        assert!(slots.frame_done(sent[1].request_id));
-        assert_eq!(slots.acquire(short).map(|f| f.index), Some(sent[1].value as usize));
-        let sequences: Vec<u32> = sent.iter().map(|m| m.request_id).collect();
-        assert_eq!(sequences, vec![1, 2, 3]);
+        assert!(slots.acquire(SHORT).is_none(), "the slot is held while written");
+        let m = slots.present(&f);
+        assert!(!slots.has_free());
+        assert!(slots.acquire(SHORT).is_none(), "the next slot may still be on screen");
+        assert_eq!(slots.ack(m.sequence + 1), Err(AckError::Unexpected { sequence: 2, in_flight: Some(1) }));
+        slots.ack(m.sequence).unwrap();
+        assert_eq!(slots.ack(m.sequence), Err(AckError::Unexpected { sequence: 1, in_flight: None }));
+        assert!(slots.has_free());
+        assert_eq!(slots.acquire(SHORT).map(|f| (f.sequence, f.index)), Some((2, 0)));
     }
 
     #[test]
-    fn longest_side_is_what_the_memfd_holds() {
-        // A portrait view below a status bar: 720x1183 on a 720x1348 screen,
-        // memfd sized for 1348x1348 frames. Landscape is 1348 wide.
-        let g = Geometry { width: 720, height: 1183, stride: 2880, slots: 3, scale: 1.75, refresh_hz: 60.0 };
-        let slots = Slots::map(create_memfd_of(1348 * 1348 * 4 * 3).unwrap(), g).unwrap();
-        assert_eq!(slots.longest_side(), 1348);
-        // A memfd of exactly the first shape still gives its longer side.
-        let slots = Slots::map(create_memfd(&g).unwrap(), g).unwrap();
-        assert_eq!(slots.longest_side(), 1183);
+    fn a_released_slot_keeps_its_sequence() {
+        let slots = tiny();
+        let f = slots.acquire(SHORT).unwrap();
+        slots.release(&f);
+        let again = slots.acquire(SHORT).unwrap();
+        assert_eq!(again.sequence, 1);
+        assert_eq!(slots.present(&again).sequence, 1);
     }
 
     #[test]
-    fn reshape_starts_a_generation() {
-        let g = Geometry { width: 4, height: 2, stride: 16, slots: 3, scale: 1.0, refresh_hz: 60.0 };
-        // Room for the rotated shape too, as AERA allocates it.
-        let slots = Slots::map(create_memfd_of(4 * 4 * 4 * 3).unwrap(), g).unwrap();
-        let short = Duration::from_millis(1);
-        let shown = slots.acquire(short).unwrap();
-        let first = slots.present(&shown);
-        assert_eq!(first.flags, 0);
-        let writing = slots.acquire(short).unwrap();
-        let rotated = Geometry { width: 2, height: 4, stride: 8, ..g };
-        assert!(slots.reshape(rotated));
-        assert_eq!(slots.geometry(), rotated);
-        // The presented slot is ours again; the one being written stays
-        // taken and goes out as the old generation.
-        assert!(!slots.frame_done(first.request_id));
-        assert_eq!(slots.present(&writing).flags, 0);
-        let next = slots.acquire(short).unwrap();
-        assert_eq!(next.geometry, rotated);
-        assert_eq!(slots.present(&next).flags, 1);
-        // Too big for the memfd, or another slot count.
-        assert!(!slots.reshape(Geometry { width: 64, stride: 256, ..g }));
-        assert!(!slots.reshape(Geometry { slots: 2, ..rotated }));
+    fn ack_wakes_a_waiting_renderer() {
+        let slots = std::sync::Arc::new(tiny());
+        let f = slots.acquire(SHORT).unwrap();
+        let m = slots.present(&f);
+        let waiter = {
+            let slots = slots.clone();
+            std::thread::spawn(move || slots.acquire(Duration::from_secs(5)).map(|f| f.sequence))
+        };
+        std::thread::sleep(Duration::from_millis(20));
+        slots.ack(m.sequence).unwrap();
+        assert_eq!(waiter.join().unwrap(), Some(2));
+    }
+
+    #[test]
+    fn close_ends_waits() {
+        let slots = tiny();
+        let f = slots.acquire(SHORT).unwrap();
+        slots.present(&f);
+        slots.close();
+        assert!(slots.acquire(Duration::from_secs(5)).is_none());
+        assert!(!slots.has_free());
+    }
+
+    #[test]
+    fn sequence_wraps_without_skipping() {
+        let slots = tiny();
+        slots.state.lock().unwrap().next = u32::MAX;
+        let f = slots.acquire(SHORT).unwrap();
+        assert_eq!((f.sequence, f.index), (u32::MAX, 1));
+        slots.ack(slots.present(&f).sequence).unwrap();
+        assert_eq!(slots.acquire(SHORT).map(|f| (f.sequence, f.index)), Some((0, 0)));
+    }
+
+    #[test]
+    fn refuses_small_or_unsealed_memory() {
+        let g = Geometry::desktop(4, 2);
+        assert!(Slots::map(create_memfd_of(g.total_bytes() - 1).unwrap(), g).is_err());
+        use std::os::fd::FromRawFd;
+        // SAFETY: a NUL-terminated name.
+        let raw = unsafe { libc::memfd_create(c"unsealed".as_ptr(), libc::MFD_CLOEXEC) };
+        // SAFETY: just created.
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        // SAFETY: fd is a memfd.
+        assert_eq!(unsafe { libc::ftruncate(fd.as_raw_fd(), g.total_bytes() as i64) }, 0);
+        assert!(Slots::map(fd, g).is_err());
     }
 }

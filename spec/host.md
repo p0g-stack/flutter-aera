@@ -1,150 +1,155 @@
 # The AERA host contract
 
-What flutter-aera relies on from AERA Recovery's pixel plugin host. Host
-API 2 is AERA's published contract. Host API 3 is implemented by our patch
-series for AERA in [`third_party/aera/`](../third_party/aera/README.md),
-against AERA 9281346, and is offered upstream from there; until AERA takes
-it, this file is its contract.
+This branch uses upstream **Host API 2**, not the colliding Host API 3 wire
+protocol. Base desktop rendering and input require no recovery patch. Optional
+desktop keyboard control and Files-over-desktop require the small, negotiated
+extension set in `third_party/aera/patches-api2/`.
 
-This file, `vendor/aera/protocol_v3.hpp`, the patches and `src/host/`
-change together. `tests/drift.rs` checks our numbers against both headers
-and that `protocol_v3.hpp` is what the patches produce.
+## Sources and drift gate
 
-## Sources
+Upstream revision: `1cabc50919d2587ba986f679f946f52963130fc1` in
+[AERA-Recovery/android_bootable_recovery](https://github.com/AERA-Recovery/android_bootable_recovery/tree/1cabc50919d2587ba986f679f946f52963130fc1).
 
-| File | From | sha256 |
+| Vendored file | Upstream source | SHA-256 |
 | --- | --- | --- |
-| `vendor/aera/protocol.hpp` | AERA-Recovery/android_bootable_recovery@9281346 (unchanged since abf3316) `aeraui/features/plugin_api/protocol.hpp`, verbatim | `82d7b8df63bed0e68773931e955be119bce76ebda04efeeac03077a28ae56822` |
-| `vendor/aera/protocol_v3.hpp` | the same file after `third_party/aera/patches` | `dd8a97407be6643c5a321860ebfa9442df22ea90e7b212185a8ea0b11e1930fc` |
+| `vendor/aera/protocol.hpp` | `aeraui/features/plugin_api/protocol.hpp` | `0443a091a7d2ce9cc71c0ea90aecf5a047e3cf53e0bd0157ca5d5f6085d6147f` |
+| `vendor/aera/play_protocol.h` | `aeraui/components/play_protocol.h` | `bc8a59215572019ee21b2d73daa75c57b5551c8fe8c0becc5ab390111baf3346` |
 
-Manifest and payload rules: `aeraui/features/plugins/plugin_manager.cpp`
-(patch 0005); see `spec/aerap.md`.
+`tests/drift.rs` checks the Rust wire numbers against the upstream headers and
+the extended header reconstructed from the actual recovery patches. The old
+`third_party/aera/patches/` series is historical comparison material on this
+branch: **do not apply it together with the API 2 extensions**.
 
-## Process
+## Process and handshake
 
-- Host API 2: AERA execs `usr/bin/aera-plugin` from the payload expanded in
-  RAM (`/tmp/aera-p2-XXXXXX`, root-owned, 0700) with a fixed environment:
-  `AERA_PLUGIN_ROOT`, `AERA_PLUGIN_FD=4` (the control socket), `PATH`,
-  `HOME=/tmp`, `LANG`, `AERA_LOCALE`. Plugins run as root in recovery's
-  namespaces and are killed with their process group when their scene is
-  left.
-- Host API 3 adds `--aera-host-api=3`, `AERA_HOST_API=3`,
-  `AERA_SURFACE_FD=3` and `AERA_PLUGIN_DATA`, a private directory that
-  survives updates (`/sdcard/AERA/plugin-data/<id>`, or RAM when storage is
-  not mounted, then also `AERA_PLUGIN_DATA_VOLATILE=1`, patch 0022), and
-  `AERA_APPEARANCE=light|dark` from AERA's theme.
-- Nothing gates the GPU (`/dev/kgsl-3d0`, the DMA heap): plugins are root.
+Upstream `features/plugin_api/launcher.cpp` passes only the control socket on
+fd 4 (`AERA_PLUGIN_FD=4`), `AERA_HOST_API=2`, `--aera-host-api=2`, and
+`AERA_PLUGIN_ROOT`. fd 3 is closed. The verified payload is expanded into
+root-owned mode-0700 `/tmp/aera-p2-XXXXXX`. Plugins run as root in recovery's
+namespaces. No persistent per-plugin data environment or appearance hint is
+provided by upstream; see `aerap.md` for the resulting storage limitation.
 
-## Wire
+Control packets are 1144 bytes: six little-endian u32 fields (`magic`
+`0x41325049`, `version=2`, `kind`, `request_id`, `value`, `flags`), followed
+by NUL-terminated `title[96]` and `text[1024]`. Transport is SOCK_SEQPACKET.
+Upstream limits control requests to 128 per second; frames use a separate
+channel and are not control packets.
 
-Host API 2: `SOCK_SEQPACKET`, one 1144-byte `Message` per packet
-(`magic` `A2PI`, `version`, `kind`, `request_id`, `value`, `flags`,
-`title[96]`, `text[1024]`, little-endian, strings NUL-terminated). A packet
-that fails `Valid()` ends the session. At most 128 plugin messages a
-second, `PRESENT` excepted.
+1. Send `Hello=1`, minimum and maximum both 2, with
+   `request_id=0xA2E20000 | requested_optional_bits`.
+2. Read `HelloAck=64`, value 2, supported requested features in flags. The
+   original metrics/back bits are also advertised. Require desktop bit 7;
+   never send an optional request solely because its number is known.
+3. `Lifecycle=66`, value 1, resumes the plugin.
+4. Send `OpenDesktop=21`, nonzero request ID. Zero dimensions request
+   960×540; with resolution bit 8 the allowed sizes are 640×360, 960×540,
+   1280×720 and 1920×1080.
+5. `DesktopReady=72` echoes the request ID and gives width/height in
+   value/flags, with **exactly two SCM_RIGHTS descriptors**, frame memfd first
+   and input SOCK_SEQPACKET second. Failure has zero dimensions and no fds.
+   The receiver owns the delivered descriptors, validates packet truncation,
+   dimensions and memfd size/seals, and closes invalid ancillary descriptors.
 
-Host API 3 packets carry `version` 3.
+Messages received during setup must not be discarded. The descriptor-bearing
+reply needs `recvmsg`, not `recv`.
 
-### Handshake
+## Frames, damage and timing
 
-1. Plugin → `HELLO` (1), `value` = min, `flags` = max protocol version
-   (3, 3). A pixel scene accepts only a range that includes 3.
-2. Host → `HELLO_ACK` (64), `value` = 3, `flags` = features:
-   `BACK_NAVIGATION` (1 << 1), `PIXEL_SURFACE` (1 << 2), `KEYBOARD_INSET`
-   (1 << 3), `FILE_PICKER` (1 << 4). The embedder refuses a host without
-   `PIXEL_SURFACE`.
-3. Host → `SURFACE` (68): `value` width, `flags` height, `request_id`
-   stride (bytes), `title` `BGRA8888`, `text` `slots=N scale=S refresh=HZ`
-   (unknown keys ignored; defaults 3, 1.0, 60). AERA sizes it to the panel
-   pixels below its status bar, `scale` from `ro.sf.lcd_density` / 160.
-4. Host → `LIFECYCLE` (66) `RESUME`.
+The shared memfd contains two tightly packed BGRA8888 frames, top-down,
+`width * height * 4` bytes each. The host seals growth/shrinkage. Publish
+sequence N into slot `N % 2`, starting at N=1. The desktop channel carries
+20-byte `PlayMessage { u32 magic, kind, sequence; i32 x, y; }`, magic
+`0x41575031`. Send `PLAY_FRAME=1` with x/y equal to dimensions.
 
-Messages other than these that arrive during the handshake are replayed
-once the engine runs.
+Upstream's 16 ms desktop timer sends `PLAY_ACK=2` for its previous received
+sequence, then receives and latches at most one new frame. It validates exact
+sequence progression and dimensions. The embedder must preserve parity and
+not reuse an unacknowledged slot; limiting publication to one outstanding
+frame also avoids overwriting the displayed slot before its replacement.
+ACK is **not** a compositor fence, scanout timestamp or display vsync. Flutter
+uses estimated 60 Hz pacing with slot availability as backpressure.
 
-### Frames
+There is no damage field: each submitted slot must be a complete image even
+when Flutter repaints only part of its framebuffer. There is no in-place
+resize/rotation event. The host opens a landscape overlay and restores the
+setup orientation on EXIT. Scale 1 is an embedder policy, not host-reported
+physical DPI. These restrictions also apply to the simulator's base mode.
 
-- fd 3: a sealed memfd of `slots` frames, each `stride × height` bytes,
-  BGRA8888 (B, G, R, A bytes), top-down.
-- Plugin → `PRESENT` (12): `request_id` sequence (from 1, wraps, never 0
-  or repeated), `value` a slot the plugin owns.
-- Host → `FRAME_DONE` (69): `request_id` sequence; that slot is the
-  plugin's again. AERA sends it at once for a frame a newer `PRESENT`
-  superseded before it was shown, and otherwise when a newer frame has
-  replaced it on screen: the frame on screen stays AERA's, since LVGL may
-  redraw from it. With 3 slots one is on screen, one waits for the next
-  refresh, one is being drawn. The embedder grants Flutter a vsync only
-  while a slot is free.
-- Rotation (patch 0020): the memfd is sized at launch for either
-  orientation (`slots × long side² × 4` bytes). When AERA rotates, it sends
-  a new `SURFACE` on the same fd with the new width, height and stride;
-  that starts a new generation (0 for the first), and every slot is the
-  plugin's again. `PRESENT` `flags` carries the generation the frame was
-  drawn for; AERA answers a frame of an older generation with `FRAME_DONE`
-  and does not show it. AERA's rotation toggle no longer leaves a running
-  pixel plugin.
+## Desktop input
 
-### Input
-
-| Kind | Fields |
+| Play kind | Meaning |
 | --- | --- |
-| `TOUCH_DOWN` 70, `TOUCH_MOVE` 71, `TOUCH_UP` 72 | `request_id` pointer id, `value` x, `flags` y, surface pixels |
-| `KEY` 73 | `value` Unicode code point; 8 backspace, 13 Enter, also sent by the single-line keyboard's OK |
-| `BACK` 74 | AERA's Back (gesture or key) |
-| `KEYBOARD_INSET` 75 | `value` keyboard height over the surface in pixels, 0 hidden; sent on every show, hide (including AERA's own) and resize |
+| KEY 3 | x X11 keysym, y key down/up |
+| BUTTON 4 | x mouse button, y down/up |
+| POINTER 5 | absolute desktop x/y |
+| LOOK 6 | game-relative mouse motion, not multitouch |
+| RELEASE 7 | release held input |
+| CLOSE 8 | desktop closed |
+| WHEEL 9 | upstream wheel amount in x |
 
-AERA keeps touches that start on the side edges (its Back gesture) or the
-bottom edge (Recents), and those over its keyboard.
+MENU-mode touches become one pointer/button stream, not raw touch IDs. The
+host's toolbar intercepts virtual x<580,y<65 (coordinates relative to a
+960×540 layout); game mode sends game controls. ESC can be mapped to Flutter
+`popRoute`, but is not proof that recovery's system edge-back is delivered to
+Flutter. The base keyboard is user-opened with KEYS and only forwards ASCII
+and selected special keysyms. Physical keys have separate down/up edges.
 
-Back goes to the app. The way out of an app is AERA's own: the bottom
-swipe up (Home) when gesture navigation is on, which AERA takes before
-the app sees the touch, or AERA Remote's Home button (R0003). The app is paused, as for Home, and stays in
-Recents. (A held Back that also left the app, patch 0024, was dropped on
-2026-10-05: Yuv, swipe-up is the intended behaviour.)
+## Negotiated desktop integration extension
 
-Plugin → host: `KEYBOARD_SHOW` (13) with `value` purpose (0 text, 2
-digits) and `flags` 1 for multiline; `KEYBOARD_HIDE` (14).
+Feature bit 12 (`kFeatureDesktopIntegration`) adds:
 
-### Lifecycle
+- `SetDesktopKeyboard=29`: nonzero request ID, value 1 show / 0 hide;
+  flags use input-number 2 or multiline 4, empty strings. The desktop keyboard
+  sends `DesktopKeyboardInset=76`, value the bottom occlusion in desktop
+  framebuffer pixels (zero hidden). Host toolbar changes also report it.
+- Unicode keysyms from the desktop keyboard, retaining the existing
+  `PLAY_KEY` packet. Unicode beyond Latin-1 uses `0x01000000 | scalar`.
+- Existing `PickFile=28` may open over the desktop, suspending and releasing
+  desktop input until the native overlay completes. Without bit 12 upstream
+  explicitly rejects this request while a desktop is open.
 
-Host API 2: `LIFECYCLE` (66) `value` 1 resume, 2 pause, 3 stop; plugin
-`CLOSE` (7) to leave, after which AERA navigates back. The embedder sends
-`CLOSE` when the app pops its last route (`SystemNavigator.pop`) and exits
-on stop or when the socket closes.
+`flutter/textinput` keeps Flutter's editing model and maps Play keys to
+`TextInputClient.updateEditingState` / `performAction`; keyboard show/hide
+uses kind 29 only when negotiated. Base hosts return not-implemented for
+show/hide: the user can still open KEYS manually. No fake inset is supplied.
 
-Host API 3 (patch 0021) keeps a running pixel plugin when its scene is
-left, as AERA keeps Browser:
+Feature bit 13 (`kFeatureDesktopTextInput`) separately permits native setup
+fields to open modally over the desktop: `EditTextInput=30` and
+`DismissTextInput=31`, request ID the existing field ID, all other fields
+empty/zero. It reuses upstream `TextInputResult=74`. This native editor is
+**not** a Flutter IME: it emits only submitted/cancelled results, has a
+255-code-point limit, and sends no draft, selection or composing-range
+updates. Flutter uses the incremental desktop keyboard path instead.
 
-| `value` | When | Qt | Flutter |
-| --- | --- | --- | --- |
-| 1 resume | on screen and taking input | ApplicationActive | `resumed` |
-| 4 inactive | on screen, but the status shade, a sheet or AERA's picker takes the input; resume follows | ApplicationInactive | `inactive` |
-| 2 pause | its scene was left (Home, Recents, another app): not shown, no `FRAME_DONE`, so drawing stalls | ApplicationHidden, then ApplicationSuspended | `hidden`, then `paused` |
-| 3 stop | ending; the process group is terminated next | aboutToQuit | `detached` |
+## Files
 
-After a pause AERA sends nothing until the plugin is opened again (from
-Recents or the plugin list), then a new `SURFACE` (every slot is the
-plugin's again, in the current orientation) and resume; or stop and
-`CLOSE` when it ends: the plugin's own `CLOSE`, Recents cleared or dropping
-it, or an update replacing it. Opened again while it is still on screen
-(its own Recents card), it keeps running and gets the same new `SURFACE`
-and resume, without a pause. A plugin that ignores inactive still
-behaves correctly. Inactive is appended to the enum, so no released value
-moves.
+Feature bit 11 is upstream `kFeatureFilePicker`. `PickFile=28` has nonzero
+request ID, value 0 file / 1 folder, flags zero, optional absolute starting
+directory in text and comma-separated dotted extension filters in title
+(for example `.zip,.img`; folder mode requires empty title).
+`FilePickerResult=75` echoes the ID, value zero, with exactly one flag:
+selected 1 (absolute path in text), cancelled 2 (empty text), error 4
+(diagnostic in text). Only one picker is allowed.
 
-### Files
+The stock Linux `file_selector` Pigeon channel maps single file/directory
+requests to this contract. Multi-select and save return explicit
+`unsupported`, not an invented selection or a silently reduced request.
+Overlong paths/filters are rejected rather than wire-truncated.
 
-`FILE_PICKER` (patch 0019): plugin → `REQUEST_OPERATION` (6) with a
-non-zero `request_id` and `value` 8 (`kPickFiles`) opens AERA's file picker
-(patch 0018, the same browsing as AERA's Files) over the surface. `flags`
-is the mode (0 one file, 1 several, 2 a folder, 3 a name to save as),
-`title` the folder to start in (empty: the current storage), `text` the
-extensions to show (`zip,img`; empty: all) or, to save, the suggested name.
-Host → `OPERATION_RESULT` (67) per chosen path: `value` 1, `text` the
-absolute path, `flags` 1 while more follow. A closed picker answers `value`
-0 with empty `text`; a refusal (one picker at a time) `value` 0 with the
-reason. No permission or prompt: the pick is the user's consent. The
-embedder answers the stock `file_selector` plugin's Linux channel with it.
+## Clipboard and lifecycle
+
+Upstream clipboard feature bit 9 provides GET22/SET23/CHUNK24 and result73,
+acknowledged chunks up to 1023 bytes, 1 MiB total. UTF-8 may span chunks.
+It requires a foreground plugin view and no conflicting host modal. This
+branch's Flutter platform handler still uses its existing process-local
+clipboard; it does not claim native clipboard integration.
+
+Lifecycle values remain resume 1, pause 2, stop 3. No API 3 inactive value
+is sent. Desktop plugins cannot opt into upstream background mode. Leaving
+the scene destroys the desktop and stops the process group; EXIT closes
+the overlay and returns to setup. Channel loss and RELEASE/CLOSE must stop
+input/rendering cleanly, not leave held buttons or a blocked raster thread.
+
 
 ## Sound
 
@@ -161,13 +166,8 @@ features' `launcher.cpp`; AERA's volume (`/tmp/aera-audio-volume`) is
 AERA's. In the payload, ALSA's default device writes there
 (`audio/pcm_aera.c`).
 
-## Not used
+## Remaining upstream gaps
 
-Host API 2's declarative UI (`BEGIN_PAGE` … `SET_BACK_ACTION`), which ends
-a pixel session, and the other mediated operations, which AERA refuses to
-pixel plugins: a Flutter app draws its own UI.
-
-## Later (not in the patches yet)
-
-dma-buf slots with sync_file fences (zero copy); damage rectangles on
-`PRESENT`.
+See `docs/upstream-host-api-2.md` for feasibility evidence, the smallest
+upstream-shaped additions, verification results, and Cuttlefish requirements.
+No physical device is part of this branch's qualification.

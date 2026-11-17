@@ -2,8 +2,8 @@
 //!
 //! `path_provider_linux` (and anything else following the XDG base
 //! directory spec, as on GTK) finds its directories through `XDG_*`. AERA
-//! gives each plugin a persistent directory (Host API 3's `AERA_PLUGIN_DATA`), so
-//! the XDG homes point inside it, and so does `HOME` (AERA sets `/tmp`).
+//! accepts an optional launcher-provided `AERA_PLUGIN_DATA` override. Upstream
+//! Host API 2 does not set it; absent an override, XDG homes remain unchanged.
 //! Temporary files go to a folder of the app's own in recovery's RAM `/tmp`
 //! (AERA's `TMPDIR` is `/tmp` itself, shared with AERA and every plugin).
 //! Documents and Downloads come from the payload's `xdg-user-dir`

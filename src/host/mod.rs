@@ -1,134 +1,223 @@
-//! AERA's generic pixel + GPU plugin host (Host API 3), as far as this
-//! embedder relies on it.
+//! AERA's Host API 2 (`vendor/aera/protocol.hpp`, verbatim upstream) as far
+//! as this embedder relies on it, plus the feature-gated recovery
+//! extensions we carry for AERA (`third_party/aera/patches-api2`).
 //!
-//! Host API 2 is AERA's (`vendor/aera/protocol.hpp`, verbatim). Host API 3
-//! is our patch series for AERA (`third_party/aera/`), whose header is
-//! vendored as `vendor/aera/protocol_v3.hpp` until AERA takes it. That
-//! header, this module and `spec/host.md` change together; `tests/drift.rs`
-//! keeps the numbers in step.
+//! The control socket is the upstream `SOCK_SEQPACKET` on fd 4, one
+//! 1144-byte [`Message`] per packet. Pixels and input travel on the optional
+//! desktop surface: `OPEN_DESKTOP` → `DESKTOP_READY` with two `SCM_RIGHTS`
+//! descriptors (a sealed double BGRA framebuffer and a `PlayMessage`
+//! socket, [`play`]). That header, this module and `spec/host.md` change
+//! together; `tests/drift.rs` keeps the numbers in step.
 
+pub mod desktop;
+pub mod input;
+pub mod play;
 pub mod surface;
 pub mod transport;
 
+pub use desktop::Desktop;
+pub use play::{PlayChannel, PlayMessage};
 pub use surface::{Geometry, Slots};
 pub use transport::Control;
 
-/// `A2PI`, Host API 2.
+/// `A2PI`.
 pub const MAGIC: u32 = 0x4132_5049;
-/// Host API 3 (`kProtocolVersion3`); Host API 2 is 2.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// `kProtocolVersion`.
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const TITLE_LEN: usize = 96;
 pub const TEXT_LEN: usize = 1024;
-/// `sizeof(aeraui::plugin_api::Message)`, Host API 2.
+/// `sizeof(aeraui::plugin_api::Message)`.
 pub const MESSAGE_LEN: usize = 6 * 4 + TITLE_LEN + TEXT_LEN;
 
-/// Host API 2: the control socket, also named in `AERA_PLUGIN_FD`.
+/// The control socket. Upstream closes fd 3 and passes nothing else.
 pub const CONTROL_FD: i32 = 4;
+/// Upstream sets it to `4`; anything else is not Host API 2.
 pub const CONTROL_FD_ENV: &str = "AERA_PLUGIN_FD";
-/// Host API 3: the frame memfd, also named in `AERA_SURFACE_FD`.
-pub const SURFACE_FD: i32 = 3;
-pub const SURFACE_FD_ENV: &str = "AERA_SURFACE_FD";
-/// Host API 2: where the payload was extracted.
+/// Upstream sets it to `2`.
+pub const HOST_API_ENV: &str = "AERA_HOST_API";
+pub const HOST_API: &str = "2";
+/// The argument upstream passes to the worker.
+pub const HOST_API_ARG: &str = "--aera-host-api=2";
+/// Where the payload was extracted.
 pub const ROOT_ENV: &str = "AERA_PLUGIN_ROOT";
-/// Host API 3: persistent per-plugin data directory.
+/// A persistent per-plugin data directory. Upstream does not set it; our
+/// simulator and developer setups may.
 pub const DATA_ENV: &str = "AERA_PLUGIN_DATA";
+
+/// `kFeatureRequestMagic`: `HELLO.request_id` is this or'ed with the
+/// optional features the worker asks for.
+pub const FEATURE_REQUEST_MAGIC: u32 = 0xA2E2_0000;
 
 /// `HELLO_ACK` feature bits.
 pub mod feature {
-    /// Host API 2.
     pub const METRICS: u32 = 1 << 0;
-    /// Host API 2.
     pub const BACK_NAVIGATION: u32 = 1 << 1;
-    /// Host API 3.
-    pub const PIXEL_SURFACE: u32 = 1 << 2;
-    /// Host API 3.
-    pub const KEYBOARD_INSET: u32 = 1 << 3;
-    /// Host API 3: `REQUEST_OPERATION` [`super::operation::PICK_FILES`].
-    pub const FILE_PICKER: u32 = 1 << 4;
+    pub const BACKGROUND: u32 = 1 << 2;
+    pub const ACTIVITIES: u32 = 1 << 3;
+    pub const RICH_PRESENTATION: u32 = 1 << 4;
+    pub const PACKAGE_REVIEW: u32 = 1 << 5;
+    pub const READABLE_PRESENTATION: u32 = 1 << 6;
+    /// `OPEN_DESKTOP` / `DESKTOP_READY`.
+    pub const DESKTOP: u32 = 1 << 7;
+    /// `OPEN_DESKTOP` may name one of [`super::DESKTOP_SIZES`].
+    pub const DESKTOP_RESOLUTION: u32 = 1 << 8;
+    pub const CLIPBOARD: u32 = 1 << 9;
+    /// Setup-page native text inputs.
+    pub const TEXT_INPUT: u32 = 1 << 10;
+    /// `PICK_FILE` / `FILE_PICKER_RESULT`.
+    pub const FILE_PICKER: u32 = 1 << 11;
+    /// Recovery extension: `PICK_FILE` over an open desktop,
+    /// `SET_DESKTOP_KEYBOARD`, `DESKTOP_KEYBOARD_INSET` and Unicode keysyms
+    /// from the desktop keyboard.
+    pub const DESKTOP_INTEGRATION: u32 = 1 << 12;
+    /// Recovery extension: `EDIT_TEXT_INPUT` / `DISMISS_TEXT_INPUT`, native
+    /// modal editors over the desktop.
+    pub const DESKTOP_TEXT_INPUT: u32 = 1 << 13;
 }
 
-/// Host operations (`REQUEST_OPERATION` `value`) this embedder uses.
-pub mod operation {
-    /// Host API 3: AERA's file picker. `flags` a [`super::pick_mode`],
-    /// `title` the start folder, `text` extensions (`zip,img`) or, to save,
-    /// the suggested name. One `OPERATION_RESULT` per path (`value` 1,
-    /// `flags` 1 while more follow); `value` 0 with empty `text` when closed.
-    pub const PICK_FILES: u32 = 8;
-}
+/// Upstream `kOptionalFeatures` plus the recovery extensions: what a
+/// `HELLO` feature request may carry.
+pub const OPTIONAL_FEATURES: u32 = feature::BACKGROUND
+    | feature::ACTIVITIES
+    | feature::RICH_PRESENTATION
+    | feature::PACKAGE_REVIEW
+    | feature::READABLE_PRESENTATION
+    | feature::DESKTOP
+    | feature::DESKTOP_RESOLUTION
+    | feature::CLIPBOARD
+    | feature::TEXT_INPUT
+    | feature::FILE_PICKER
+    | feature::DESKTOP_INTEGRATION
+    | feature::DESKTOP_TEXT_INPUT;
 
-/// Host API 3: `PickMode`.
-pub mod pick_mode {
-    pub const FILE: u32 = 0;
-    pub const FILES: u32 = 1;
-    pub const FOLDER: u32 = 2;
-    pub const SAVE: u32 = 3;
-}
+/// What this embedder asks for. The Flutter typing path is the desktop
+/// keyboard plus `PLAY_KEY`, so `DESKTOP_TEXT_INPUT` (native modal editors)
+/// is not requested.
+pub const REQUESTED_FEATURES: u32 =
+    feature::DESKTOP | feature::DESKTOP_RESOLUTION | feature::FILE_PICKER | feature::DESKTOP_INTEGRATION;
 
-/// Message kinds. Host API 2 numbers are unchanged; Host API 3 kinds are
-/// appended after each direction's last Host API 2 kind.
+/// The desktop sizes `kFeatureDesktopResolution` permits, all landscape.
+pub const DESKTOP_SIZES: [(u32, u32); 4] = [(640, 360), (960, 540), (1280, 720), (1920, 1080)];
+/// What `OPEN_DESKTOP` with zero dimensions gets.
+pub const DEFAULT_DESKTOP: (u32, u32) = (960, 540);
+
+/// Message kinds, upstream numbering; recovery extensions are appended after
+/// each direction's last upstream kind.
 pub mod kind {
-    // Plugin to host, Host API 2.
+    // Worker to host.
     pub const HELLO: u32 = 1;
+    pub const BEGIN_PAGE: u32 = 2;
+    pub const ADD_BUTTON: u32 = 3;
+    pub const COMMIT_PAGE: u32 = 4;
     pub const SET_STATUS: u32 = 5;
-    /// Ask AERA for a host operation: `request_id` (non-zero) is echoed in
-    /// its `OPERATION_RESULT`s, `value` the [`super::operation`].
     pub const REQUEST_OPERATION: u32 = 6;
     pub const CLOSE: u32 = 7;
-    /// Host API 2's last plugin kind.
+    pub const ADD_SECTION: u32 = 8;
+    pub const ADD_METRIC: u32 = 9;
+    pub const UPDATE_METRIC: u32 = 10;
     pub const SET_BACK_ACTION: u32 = 11;
-    // Plugin to host, Host API 3.
-    /// A frame is ready: `request_id` sequence, `value` slot.
-    pub const PRESENT: u32 = 12;
-    /// Show AERA's keyboard: `value` input purpose ([`super::purpose`]),
-    /// `flags` 1 for multiline.
-    pub const KEYBOARD_SHOW: u32 = 13;
-    pub const KEYBOARD_HIDE: u32 = 14;
+    pub const SET_BACKGROUND: u32 = 12;
+    pub const SET_ACTIVITY: u32 = 13;
+    pub const SET_ACTIVITY_STORAGE: u32 = 14;
+    pub const ADD_PROGRESS: u32 = 15;
+    pub const UPDATE_PROGRESS: u32 = 16;
+    pub const ADD_TILE: u32 = 17;
+    pub const SET_PAGE_LAYOUT: u32 = 18;
+    pub const SET_ACTIVITY_FILE: u32 = 19;
+    pub const REVIEW_PACKAGE: u32 = 20;
+    /// `request_id` nonzero, `value`/`flags` width/height or both zero.
+    pub const OPEN_DESKTOP: u32 = 21;
+    pub const GET_CLIPBOARD: u32 = 22;
+    pub const SET_CLIPBOARD: u32 = 23;
+    pub const CLIPBOARD_CHUNK: u32 = 24;
+    pub const ADD_TEXT_INPUT: u32 = 25;
+    pub const UPDATE_TEXT_INPUT: u32 = 26;
+    pub const TEXT_INPUT_PLACEHOLDER: u32 = 27;
+    /// Upstream's last worker kind.
+    pub const PICK_FILE: u32 = 28;
+    /// Extension ([`super::feature::DESKTOP_INTEGRATION`]): `request_id`
+    /// nonzero, `value` 0 hide / 1 show, `flags`
+    /// [`super::text_input::NUMBER`] or [`super::text_input::MULTILINE`].
+    pub const SET_DESKTOP_KEYBOARD: u32 = 29;
+    /// Extension ([`super::feature::DESKTOP_TEXT_INPUT`]): `request_id` a
+    /// setup-page field id.
+    pub const EDIT_TEXT_INPUT: u32 = 30;
+    pub const DISMISS_TEXT_INPUT: u32 = 31;
 
-    // Host to plugin, Host API 2.
+    // Host to worker.
     pub const HELLO_ACK: u32 = 64;
+    /// `request_id` the button id.
+    pub const ACTION: u32 = 65;
     pub const LIFECYCLE: u32 = 66;
-    /// Host API 2's last host kind.
     pub const OPERATION_RESULT: u32 = 67;
-    // Host to plugin, Host API 3.
-    /// Surface geometry: `value` width, `flags` height, `request_id` stride,
-    /// `title` pixel format, `text` `slots=N scale=S refresh=HZ`.
-    pub const SURFACE: u32 = 68;
-    /// The frame `request_id`'s slot is the plugin's again: a newer frame
-    /// replaced it on screen, or superseded it before it was shown.
-    pub const FRAME_DONE: u32 = 69;
-    /// `request_id` pointer, `value` x, `flags` y, in surface pixels.
-    pub const TOUCH_DOWN: u32 = 70;
-    pub const TOUCH_MOVE: u32 = 71;
-    pub const TOUCH_UP: u32 = 72;
-    /// `value` Unicode code point; 8 backspace, 13 enter or submit.
-    pub const KEY: u32 = 73;
-    /// AERA's back gesture.
-    pub const BACK: u32 = 74;
-    /// AERA's keyboard covers `value` surface pixels at the bottom; 0 hidden.
-    pub const KEYBOARD_INSET: u32 = 75;
+    pub const BACKGROUND_RESULT: u32 = 68;
+    pub const ACTIVITY_CANCEL: u32 = 69;
+    pub const ACTIVITY_RESULT: u32 = 70;
+    pub const ACTIVITY_FILE_RESULT: u32 = 71;
+    /// Echoes `request_id`; `value`/`flags` width/height, two `SCM_RIGHTS`
+    /// descriptors (memfd, then seqpacket). Zero dimensions and no
+    /// descriptors on failure.
+    pub const DESKTOP_READY: u32 = 72;
+    pub const CLIPBOARD_RESULT: u32 = 73;
+    pub const TEXT_INPUT_RESULT: u32 = 74;
+    /// Upstream's last host kind.
+    pub const FILE_PICKER_RESULT: u32 = 75;
+    /// Extension ([`super::feature::DESKTOP_INTEGRATION`]): `value` the
+    /// keyboard's bottom occlusion in desktop pixels.
+    pub const DESKTOP_KEYBOARD_INSET: u32 = 76;
 
     pub fn from_plugin(kind: u32) -> bool {
-        (HELLO..=KEYBOARD_HIDE).contains(&kind)
+        (HELLO..=DISMISS_TEXT_INPUT).contains(&kind)
     }
 
     pub fn from_host(kind: u32) -> bool {
-        (HELLO_ACK..=KEYBOARD_INSET).contains(&kind)
+        (HELLO_ACK..=DESKTOP_KEYBOARD_INSET).contains(&kind)
+    }
+
+    /// Whether `kind` may travel given the negotiated `features`: upstream
+    /// kinds always, extension kinds only with their bit.
+    pub fn negotiated(kind: u32, features: u32) -> bool {
+        use super::feature::{DESKTOP_INTEGRATION, DESKTOP_TEXT_INPUT};
+        match kind {
+            SET_DESKTOP_KEYBOARD | DESKTOP_KEYBOARD_INSET => features & DESKTOP_INTEGRATION != 0,
+            EDIT_TEXT_INPUT | DISMISS_TEXT_INPUT => features & DESKTOP_TEXT_INPUT != 0,
+            _ => true,
+        }
     }
 }
 
-/// Host API 2 lifecycle values.
+/// `Lifecycle`.
 pub mod lifecycle {
     pub const RESUME: u32 = 1;
     pub const PAUSE: u32 = 2;
     pub const STOP: u32 = 3;
-    /// Host API 3: on screen, but a shade, sheet or picker takes the input.
-    pub const INACTIVE: u32 = 4;
 }
 
-/// Host API 3: keyboard input purposes, as AERA Browser's keyboard has them.
-pub mod purpose {
-    pub const TEXT: u32 = 0;
-    pub const DIGITS: u32 = 2;
+/// Page `Flags` for buttons.
+pub mod page {
+    pub const PRIMARY: u32 = 1 << 0;
+    pub const DESTRUCTIVE: u32 = 1 << 1;
+    pub const DISABLED: u32 = 1 << 2;
+}
+
+/// `TextInputFlags` and `TextInputResultFlags`.
+pub mod text_input {
+    pub const PASSWORD: u32 = 1 << 0;
+    pub const NUMBER: u32 = 1 << 1;
+    pub const MULTILINE: u32 = 1 << 2;
+    pub const DISABLED: u32 = 1 << 3;
+    pub const SUBMITTED: u32 = 1 << 0;
+    pub const CANCELLED: u32 = 1 << 1;
+    pub const ERROR: u32 = 1 << 2;
+    /// `kMaxInputCharacters`.
+    pub const MAX_CHARACTERS: u32 = 255;
+}
+
+/// `FilePickerResultFlags`.
+pub mod file_picker {
+    pub const SELECTED: u32 = 1 << 0;
+    pub const CANCELLED: u32 = 1 << 1;
+    pub const ERROR: u32 = 1 << 2;
 }
 
 /// One `aeraui::plugin_api::Message`.
@@ -176,8 +265,8 @@ impl Message {
         out
     }
 
-    /// Decodes one packet; `None` for anything Host API 2's `Valid()` would
-    /// reject, except the direction check, which the caller makes.
+    /// Decodes one packet; `None` for anything upstream `Valid()` rejects,
+    /// except the direction check, which the caller makes.
     pub fn decode(bytes: &[u8]) -> Option<Message> {
         if bytes.len() != MESSAGE_LEN {
             return None;
@@ -196,10 +285,10 @@ impl Message {
         })
     }
 
-    /// Host API 2 reads the supported range from `value` (min) and `flags`
-    /// (max).
-    pub fn hello() -> Message {
-        Message::with(kind::HELLO, 0, PROTOCOL_VERSION, PROTOCOL_VERSION)
+    /// `HELLO`: protocol range [2, 2] in `value`/`flags`, the feature request
+    /// marker plus `features` in `request_id`.
+    pub fn hello(features: u32) -> Message {
+        Message::with(kind::HELLO, FEATURE_REQUEST_MAGIC | (features & OPTIONAL_FEATURES), PROTOCOL_VERSION, PROTOCOL_VERSION)
     }
 }
 
@@ -209,25 +298,29 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let m = Message { kind: kind::SURFACE, request_id: 4320, value: 1080, flags: 2100, title: "BGRA8888".into(), text: "slots=3 scale=3".into() };
+        let m = Message { kind: kind::SET_STATUS, request_id: 4320, value: 1080, flags: 2100, title: "t".into(), text: "body".into() };
         assert_eq!(Message::decode(&m.encode()), Some(m));
     }
 
     #[test]
     fn rejects_wrong_magic_version_and_size() {
-        let mut bytes = Message::hello().encode();
+        let mut bytes = Message::hello(0).encode();
+        assert!(Message::decode(&bytes).is_some());
         assert!(Message::decode(&bytes[..MESSAGE_LEN - 1]).is_none());
-        bytes[4] = 2;
-        assert!(Message::decode(&bytes).is_none());
         bytes[4] = 3;
+        assert!(Message::decode(&bytes).is_none());
+        bytes[4] = 2;
         bytes[0] = 0;
         assert!(Message::decode(&bytes).is_none());
     }
 
     #[test]
     fn rejects_unterminated_strings() {
-        let mut bytes = Message::hello().encode();
+        let mut bytes = Message::hello(0).encode();
         bytes[24..24 + TITLE_LEN].fill(b'a');
+        assert!(Message::decode(&bytes).is_none());
+        let mut bytes = Message::hello(0).encode();
+        bytes[24 + TITLE_LEN..].fill(b'a');
         assert!(Message::decode(&bytes).is_none());
     }
 
@@ -240,8 +333,28 @@ mod tests {
     }
 
     #[test]
+    fn hello_requests_features_behind_the_marker() {
+        let h = Message::hello(REQUESTED_FEATURES | 1 << 20);
+        assert_eq!((h.kind, h.value, h.flags), (kind::HELLO, 2, 2));
+        assert_eq!(h.request_id & 0xFFFF_0000, FEATURE_REQUEST_MAGIC);
+        assert_eq!(h.request_id & 0xFFFF, REQUESTED_FEATURES);
+        assert_eq!(REQUESTED_FEATURES & feature::DESKTOP_TEXT_INPUT, 0);
+    }
+
+    #[test]
     fn directions() {
-        assert!(kind::from_plugin(kind::PRESENT) && !kind::from_plugin(kind::FRAME_DONE));
-        assert!(kind::from_host(kind::KEYBOARD_INSET) && !kind::from_host(kind::CLOSE));
+        assert!(kind::from_plugin(kind::OPEN_DESKTOP) && kind::from_plugin(kind::DISMISS_TEXT_INPUT));
+        assert!(!kind::from_plugin(kind::DESKTOP_READY) && !kind::from_plugin(32));
+        assert!(kind::from_host(kind::DESKTOP_READY) && kind::from_host(kind::DESKTOP_KEYBOARD_INSET));
+        assert!(!kind::from_host(kind::CLOSE) && !kind::from_host(77));
+    }
+
+    #[test]
+    fn extensions_need_their_bit() {
+        assert!(kind::negotiated(kind::DESKTOP_READY, 0));
+        assert!(!kind::negotiated(kind::DESKTOP_KEYBOARD_INSET, feature::DESKTOP));
+        assert!(kind::negotiated(kind::DESKTOP_KEYBOARD_INSET, feature::DESKTOP_INTEGRATION));
+        assert!(!kind::negotiated(kind::EDIT_TEXT_INPUT, feature::DESKTOP_INTEGRATION));
+        assert!(kind::negotiated(kind::DISMISS_TEXT_INPUT, feature::DESKTOP_TEXT_INPUT));
     }
 }
