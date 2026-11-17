@@ -8,10 +8,10 @@ set -euo pipefail
 work=$(realpath -m "${1:?usage: ci/aera-host-check.sh WORKDIR}")
 repo=$(cd "$(dirname "$0")/.." && pwd)
 pin=$(sed -n 's/^pin: *//p' "$repo/third_party/aera/README.md")
-# Release kit-3.47.5's flutter-aera-kit-linux-x64-debug-3.47.5.tar.xz, by asset
-# id (a replaced asset gets a new id) and the SHA256 of its downloaded bytes.
-kit=https://api.github.com/repos/p0g-stack/flutter-aera/releases/assets/610973281
-kit_sha256=89502b18226472ee3d981eda915f1afee9b5643af67c8da9a1beeb8338ad52aa
+# Flutter 3.50.0 / Mesa 26.2.7 kit, qualified by Kit run 44132241882.
+# Keep this runtime matched to the SDK used for the counter's kernel assets.
+kit=https://github.com/p0g-stack/flutter-aera/releases/download/kit-3.50.0-b90bec61e31d10554fe7fdcc394b70c5df22cf5e/flutter-aera-kit-linux-x64-debug-3.50.0.tar.xz
+kit_sha256=120edae6fd95202847dc81c0d345b1e769b3447fd034ab754cad8b9c614ec31f
 
 aera=$work/aera
 if [ ! -d "$aera/.git" ]; then

@@ -42,3 +42,18 @@ All four published headers match the vendored header byte for byte.
 | Drivers | Zink + softpipe (gallium), Turnip on KGSL and msm (Vulkan) |
 
 `tests/drift.rs` fails if the vendored header's hash is not in this file.
+
+## Debug kit qualification
+
+[Kit run 44132241882](https://github.com/p0g-stack/flutter-aera/actions/runs/44132241882)
+built Mesa 26.2.7 and passed the counter-tap image comparison on both arm64
+and x64, then published immutable release
+[`kit-3.50.0-b90bec61e31d10554fe7fdcc394b70c5df22cf5e`](https://github.com/p0g-stack/flutter-aera/releases/tag/kit-3.50.0-b90bec61e31d10554fe7fdcc394b70c5df22cf5e).
+
+| Archive | SHA256 |
+| --- | --- |
+| `flutter-aera-kit-linux-arm64-debug-3.50.0.tar.xz` | `24689ad78bc83f325c6247e2614d8a8eb270f7ed9a80821c58b3549c3706d721` |
+| `flutter-aera-kit-linux-x64-debug-3.50.0.tar.xz` | `120edae6fd95202847dc81c0d345b1e769b3447fd034ab754cad8b9c614ec31f` |
+
+This is simulator evidence, not physical-device or recovery-image qualification.
+The AERA recovery pin and Host API 3 patch series are unchanged.
